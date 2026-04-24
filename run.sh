@@ -137,6 +137,18 @@ if (cargo === updated) {
   process.exit(1);
 }
 fs.writeFileSync(cargoPath, updated);
+
+const indexPath = path.resolve("index.html");
+const indexHtml = fs.readFileSync(indexPath, "utf8");
+const indexUpdated = indexHtml.replace(
+  /(<span id="app-version-badge"[^>]*>)v[0-9]+\.[0-9]+\.[0-9]+(<\/span>)/,
+  `$1v${version}$2`
+);
+if (indexHtml === indexUpdated) {
+  console.error("Failed to update version badge in index.html");
+  process.exit(1);
+}
+fs.writeFileSync(indexPath, indexUpdated);
 '
 
   git add -A
