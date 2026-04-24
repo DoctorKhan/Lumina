@@ -346,6 +346,7 @@ Enjoy writing!
         async function loadInitialContent() {
             const params = new URLSearchParams(window.location.search);
             const fileParam = params.get('file');
+            const fileDisplayName = params.get('name');
 
             if (!fileParam) {
                 updatePreview();
@@ -359,7 +360,8 @@ Enjoy writing!
                 }
 
                 const text = await response.text();
-                setEditorContent(text, `Editing: ${fileParam}`);
+                const displayName = fileDisplayName || fileParam;
+                setEditorContent(text, `Editing: ${displayName}`);
             } catch (_) {
                 updatePreview();
             }
