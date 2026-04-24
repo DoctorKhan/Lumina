@@ -22,7 +22,10 @@ require_command cargo "Install Rust via https://rustup.rs/"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   echo "Updating existing checkout in $INSTALL_DIR"
   git -C "$INSTALL_DIR" fetch --all --tags
-  git -C "$INSTALL_DIR" pull --ff-only
+  # This install directory is managed by the installer, so we can safely
+  # discard local/untracked build artifacts before updating.
+  git -C "$INSTALL_DIR" reset --hard "origin/main"
+  git -C "$INSTALL_DIR" clean -fd
 else
   echo "Cloning repository to $INSTALL_DIR"
   git clone "$REPO_URL" "$INSTALL_DIR"
