@@ -41,6 +41,13 @@ install_cli_launcher() {
   mkdir -p "$bin_dir"
 
   launcher_path="${bin_dir}/lumina"
+  if [[ -L "$launcher_path" || -f "$launcher_path" ]]; then
+    rm -f "$launcher_path"
+  elif [[ -e "$launcher_path" ]]; then
+    echo "Cannot install CLI launcher: $launcher_path exists and is not a file or symlink."
+    return 1
+  fi
+
   cat >"$launcher_path" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -56,6 +63,10 @@ EOF
 
   echo "Installed CLI launcher: $launcher_path"
 
+  if [[ ":$PATH:" == *":$bin_dir:"* ]]; then
+    return
+  fi
+
   local linked_dir=""
   local old_ifs="$IFS"
   local seen_dirs=":"
@@ -66,6 +77,10 @@ EOF
       continue
     fi
     seen_dirs="${seen_dirs}${path_dir}:"
+
+    if [[ "$path_dir/lumina" == "$launcher_path" ]]; then
+      continue
+    fi
 
     if [[ -d "$path_dir" && -w "$path_dir" ]]; then
       if ln -sf "$launcher_path" "$path_dir/lumina" 2>/dev/null; then
