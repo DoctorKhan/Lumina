@@ -28,6 +28,18 @@
             height: calc(100vh - 64px);
         }
 
+        .editor-collapsed .editor-pane {
+            display: none;
+        }
+
+        .editor-collapsed .preview-pane {
+            flex: 1 1 100%;
+        }
+
+        .editor-collapsed .preview-pane {
+            border-left: none;
+        }
+
         #editor {
             font-family: 'Fira Code', monospace;
             resize: none;
@@ -81,11 +93,12 @@
             </button>
             <button id="download-btn" class="text-sm px-4 py-2 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">Download .md</button>
             <button id="copy-html-btn" class="text-sm px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-colors">Copy HTML</button>
+            <button id="toggle-source-btn" class="text-sm px-4 py-2 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">Hide Source</button>
         </div>
     </header>
 
     <main class="editor-container flex w-full">
-        <div class="flex-1 flex flex-col min-w-0">
+        <div class="editor-pane flex-1 flex flex-col min-w-0">
             <div class="h-10 bg-slate-800 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-slate-400 justify-between">
                 <span id="filename-display">Editor (Markdown + LaTeX)</span>
                 <span id="char-count">0 chars</span>
@@ -93,7 +106,7 @@
             <textarea id="editor" class="flex-1 p-6 text-base leading-relaxed" spellcheck="false" placeholder="Start typing your masterpiece..."></textarea>
         </div>
 
-        <div class="flex-1 flex flex-col min-w-0 border-l border-slate-800">
+        <div class="preview-pane flex-1 flex flex-col min-w-0 border-l border-slate-800">
             <div class="h-10 bg-slate-200 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-slate-600">
                 Live Preview
             </div>
@@ -110,7 +123,10 @@
         const openFileBtn = document.getElementById('open-file-btn');
         const downloadBtn = document.getElementById('download-btn');
         const copyHtmlBtn = document.getElementById('copy-html-btn');
+        const toggleSourceBtn = document.getElementById('toggle-source-btn');
+        const editorContainer = document.querySelector('.editor-container');
         let mermaidInitialized = false;
+        let sourceCollapsed = false;
 
         marked.setOptions({
             // Keep default markdown line-break behavior so multiline KaTeX
@@ -368,6 +384,11 @@ Enjoy writing!
         openFileBtn.addEventListener('click', () => fileInput.click());
         downloadBtn.addEventListener('click', downloadContent);
         copyHtmlBtn.addEventListener('click', () => copyToClipboard(copyHtmlBtn));
+        toggleSourceBtn.addEventListener('click', () => {
+            sourceCollapsed = !sourceCollapsed;
+            editorContainer.classList.toggle('editor-collapsed', sourceCollapsed);
+            toggleSourceBtn.textContent = sourceCollapsed ? 'Show Source' : 'Hide Source';
+        });
 
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
