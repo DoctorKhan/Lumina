@@ -115,6 +115,13 @@ if [[ -n "$INITIAL_FILE_PATH" ]]; then
   fi
 
   cp "$SOURCE_FILE" "$ROOT_DIR/$SERVE_FILE_NAME"
+  SOURCE_BASENAME="$(basename "$SOURCE_FILE")"
+  URL_NAME_PARAM="$(python3 - "$SOURCE_BASENAME" <<'PY'
+import sys
+import urllib.parse
+print(urllib.parse.quote(sys.argv[1]))
+PY
+)"
 fi
 
 cd "$ROOT_DIR"
@@ -127,7 +134,7 @@ PORT="$RESOLVED_PORT"
 
 URL="http://localhost:${PORT}"
 if [[ -n "$INITIAL_FILE_PATH" ]]; then
-  URL="${URL}/?file=${SERVE_FILE_NAME}"
+  URL="${URL}/?file=${SERVE_FILE_NAME}&name=${URL_NAME_PARAM}"
 fi
 
 echo "Starting Lumina at ${URL}"
