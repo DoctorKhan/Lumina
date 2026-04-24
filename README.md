@@ -28,3 +28,12 @@ This installer will:
 ./run.sh build
 ./run.sh tauri:build
 ```
+
+## Faster compile tips
+
+- Rust/Tauri builds now auto-parallelize using your CPU core count via `CARGO_BUILD_JOBS`.
+- You can override it manually, for example:
+
+```bash
+CARGO_BUILD_JOBS=12 ./run.sh tauri:build
+```

@@ -36,7 +36,7 @@ cd "$INSTALL_DIR"
 ./scripts/ensure-tauri-icons.sh
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
-  pnpm tauri build --bundles app
+  ./run.sh tauri:build:app
 else
   ./run.sh tauri:build
 fi
