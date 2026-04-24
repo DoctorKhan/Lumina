@@ -52,11 +52,10 @@ detect_parallel_jobs() {
 }
 
 run_tauri() {
-  local subcommand="$1"
   local jobs
   jobs="$(detect_parallel_jobs)"
   echo "Using CARGO_BUILD_JOBS=${jobs}"
-  CARGO_BUILD_JOBS="$jobs" pnpm tauri "$subcommand"
+  CARGO_BUILD_JOBS="$jobs" pnpm tauri "$@"
 }
 
 usage() {
@@ -104,7 +103,7 @@ case "$cmd" in
     ensure_command pnpm "Install pnpm: https://pnpm.io/installation"
     ensure_command cargo "Install Rust toolchain: https://rustup.rs/"
     ./scripts/ensure-tauri-icons.sh
-    run_tauri "build --bundles app"
+    run_tauri build --bundles app
     ;;
   -h|--help|help)
     usage
