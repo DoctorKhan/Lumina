@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lumina | Markdown + LaTeX Editor</title>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Fira+Code:wght@400;500&display=swap');
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a;
+            color: #e2e8f0;
+            overflow: hidden;
+        }
+
+        .editor-container {
+            height: calc(100vh - 64px);
+        }
+
+        #editor {
+            font-family: 'Fira Code', monospace;
+            resize: none;
+            outline: none;
+            background: #1e293b;
+            color: #cbd5e1;
+            scrollbar-width: thin;
+            scrollbar-color: #475569 transparent;
+        }
+
+        #preview {
+            background: #ffffff;
+            color: #1e293b;
+            scrollbar-width: thin;
+            scrollbar-color: #cbd5e1 transparent;
+        }
+
+        .prose h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; margin-top: 1.5rem; font-weight: 700; font-size: 2.25rem; }
+        .prose h2 { border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3rem; margin-top: 1.2rem; font-weight: 600; font-size: 1.8rem; }
+        .prose h3 { font-weight: 600; font-size: 1.5rem; }
+        .prose p { margin: 1rem 0; line-height: 1.7; }
+        .prose code:not(pre code) { background: #f1f5f9; padding: 0.2rem 0.4rem; border-radius: 4px; font-family: 'Fira Code', monospace; font-size: 0.9em; color: #e11d48; }
+        .prose pre { background: #1e293b; border-radius: 8px; padding: 1rem; overflow-x: auto; margin: 1rem 0; }
+        .prose blockquote { border-left: 4px solid #cbd5e1; padding-left: 1rem; font-style: italic; color: #64748b; margin: 1rem 0; }
+        .prose ul, .prose ol { margin-left: 1.5rem; margin-bottom: 1rem; }
+        .prose li { margin: 0.25rem 0; }
+        .prose img { max-width: 100%; border-radius: 8px; margin: 1rem auto; display: block; }
+        .prose table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+        .prose th, .prose td { border: 1px solid #e2e8f0; padding: 0.5rem; text-align: left; }
+        .prose th { background: #f8fafc; }
+
+        .katex-display { margin: 1.5em 0; overflow-x: auto; overflow-y: hidden; }
+
+        #file-input {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <header class="h-16 border-b border-slate-800 flex items-center justify-between px-6 bg-slate-900">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/20">L</div>
+            <h1 class="text-xl font-semibold tracking-tight text-slate-100">Lumina <span class="text-slate-500 font-normal text-sm ml-2">v1.1</span></h1>
+        </div>
+        <div class="flex items-center gap-2">
+            <input type="file" id="file-input" accept=".md,.txt,.markdown">
+            <button id="open-file-btn" class="text-sm px-4 py-2 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/></svg>
+                Open File
+            </button>
+            <button id="download-btn" class="text-sm px-4 py-2 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">Download .md</button>
+            <button id="copy-html-btn" class="text-sm px-4 py-2 rounded-md bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-colors">Copy HTML</button>
+        </div>
+    </header>
+
+    <main class="editor-container flex w-full">
+        <div class="flex-1 flex flex-col min-w-0">
+            <div class="h-10 bg-slate-800 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-slate-400 justify-between">
+                <span id="filename-display">Editor (Markdown + LaTeX)</span>
+                <span id="char-count">0 chars</span>
+            </div>
+            <textarea id="editor" class="flex-1 p-6 text-base leading-relaxed" spellcheck="false" placeholder="Start typing your masterpiece..."></textarea>
+        </div>
+
+        <div class="flex-1 flex flex-col min-w-0 border-l border-slate-800">
+            <div class="h-10 bg-slate-200 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-slate-600">
+                Live Preview
+            </div>
+            <div id="preview" class="flex-1 p-8 overflow-y-auto prose max-w-none"></div>
+        </div>
+    </main>
+
+    <script>
+        const editor = document.getElementById('editor');
+        const preview = document.getElementById('preview');
+        const charCount = document.getElementById('char-count');
+        const fileInput = document.getElementById('file-input');
+        const filenameDisplay = document.getElementById('filename-display');
+        const openFileBtn = document.getElementById('open-file-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const copyHtmlBtn = document.getElementById('copy-html-btn');
+
+        marked.setOptions({
+            // Keep default markdown line-break behavior so multiline KaTeX
+            // blocks are not split by injected <br> nodes.
+            breaks: false,
+            gfm: true
+        });
+
+        const initialValue = `# Welcome to Lumina
+
+Lumina is a high-performance Markdown editor with built-in support for **LaTeX** mathematics.
+
+## 1. Mathematical Notation
+You can write inline math using single dollar signs, like $E = mc^2$, or block math using double dollar signs:
+
+$$\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
+
+Complex calculus works perfectly too:
+
+$$\\oint_{\\partial \\Sigma} \\mathbf{E} \\cdot d\\boldsymbol{\\ell} = -\\frac{d}{dt} \\iint_{\\Sigma} \\mathbf{B} \\cdot d\\mathbf{S}$$
+
+## 2. Code Blocks
+Syntax highlighting is automatically applied:
+
+\`\`\`javascript
+function helloWorld() {
+  console.log("Hello, Lumina!");
+}
+\`\`\`
+
+## 3. Features
+* **Real-time Rendering**: See changes as you type.
+* **File Support**: Open local .md files directly.
+* **GFM Support**: GitHub Flavored Markdown tables and lists.
+
+| Feature | Support |
+| :--- | :--- |
+| LaTeX | Full |
+| Tables | Yes |
+| Task Lists | [x] |
+
+Enjoy writing!
+`;
+
+        editor.value = initialValue;
+
+        function setEditorContent(content, label) {
+            editor.value = content;
+            filenameDisplay.textContent = label;
+            updatePreview();
+        }
+
+        function highlightCodeBlocks() {
+            const blocks = preview.querySelectorAll('pre code');
+            blocks.forEach((block) => hljs.highlightElement(block));
+        }
+
+        function looksLikeLatexBlock(lines) {
+            const body = lines.join('\n').trim();
+            if (!body) return false;
+
+            // Heuristic signals for math/LaTeX content.
+            return /\\[a-zA-Z]+/.test(body) ||          // \frac, \begin, \sum, ...
+                /[_^]/.test(body) ||                    // x_i, x^2
+                /\{.*\}/.test(body) ||                  // grouped LaTeX terms
+                /\\begin\{.*\}|\\end\{.*\}/.test(body) ||
+                /\\\\/.test(body) ||                    // line breaks in cases/aligned
+                /\b(min|max|sin|cos|log)\b/.test(body); // common math tokens
+        }
+
+        function normalizeMathBlocks(input) {
+            // Detect standalone bracket blocks that are likely LaTeX and
+            // convert only those to $$...$$. Leaves non-math brackets unchanged.
+            const lines = input.split('\n');
+            const output = [];
+            let inCodeFence = false;
+            let bracketStart = -1;
+            let bracketBody = [];
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+
+                if (trimmed.startsWith('```')) {
+                    if (bracketStart !== -1) {
+                        output.push('[');
+                        output.push(...bracketBody);
+                        bracketStart = -1;
+                        bracketBody = [];
+                    }
+                    inCodeFence = !inCodeFence;
+                    output.push(line);
+                    continue;
+                }
+
+                if (inCodeFence) {
+                    output.push(line);
+                    continue;
+                }
+
+                if (bracketStart === -1 && trimmed === '[') {
+                    bracketStart = output.length;
+                    bracketBody = [];
+                    continue;
+                }
+
+                if (bracketStart !== -1 && trimmed === ']') {
+                    if (looksLikeLatexBlock(bracketBody)) {
+                        output.push('$$');
+                        output.push(...bracketBody);
+                        output.push('$$');
+                    } else {
+                        output.push('[');
+                        output.push(...bracketBody);
+                        output.push(']');
+                    }
+                    bracketStart = -1;
+                    bracketBody = [];
+                    continue;
+                }
+
+                if (bracketStart !== -1) {
+                    bracketBody.push(line);
+                    continue;
+                }
+
+                output.push(line);
+            }
+
+            // Unclosed bracket block: keep original text verbatim.
+            if (bracketStart !== -1) {
+                output.push('[');
+                output.push(...bracketBody);
+            }
+
+            return output.join('\n');
+        }
+
+        function normalizeEscapedLatexDelimiters(input) {
+            // Convert escaped LaTeX delimiters into dollar delimiters before
+            // Markdown parsing, so marked does not swallow the backslashes.
+            // Display math: \[ ... \] -> $$ ... $$
+            let output = input.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_, expr) => {
+                return `$$\n${expr.trim()}\n$$`;
+            });
+
+            // Inline math: \( ... \) -> $ ... $
+            output = output.replace(/\\\((.*?)\\\)/g, (_, expr) => {
+                return `$${expr.trim()}$`;
+            });
+
+            return output;
+        }
+
+        function updatePreview() {
+            const rawValue = editor.value;
+            charCount.textContent = `${rawValue.length} chars`;
+            const normalizedValue = normalizeEscapedLatexDelimiters(
+                normalizeMathBlocks(rawValue)
+            );
+            preview.innerHTML = marked.parse(normalizedValue);
+            highlightCodeBlocks();
+
+            renderMathInElement(preview, {
+                delimiters: [
+                    { left: '$$', right: '$$', display: true },
+                    { left: '$', right: '$', display: false },
+                    { left: '\\(', right: '\\)', display: false },
+                    { left: '\\[', right: '\\]', display: true }
+                ],
+                throwOnError: false
+            });
+        }
+
+        function downloadContent() {
+            const blob = new Blob([editor.value], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `lumina-document-${Date.now()}.md`;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        async function copyToClipboard(button) {
+            try {
+                await navigator.clipboard.writeText(preview.innerHTML);
+            } catch (_) {
+                const fallback = document.createElement('textarea');
+                fallback.value = preview.innerHTML;
+                document.body.appendChild(fallback);
+                fallback.select();
+                document.execCommand('copy');
+                document.body.removeChild(fallback);
+            }
+
+            const originalText = button.textContent;
+            button.textContent = 'Copied!';
+            button.classList.add('bg-green-600');
+            button.classList.remove('bg-indigo-600');
+
+            setTimeout(() => {
+                button.textContent = originalText;
+                button.classList.add('bg-indigo-600');
+                button.classList.remove('bg-green-600');
+            }, 2000);
+        }
+
+        openFileBtn.addEventListener('click', () => fileInput.click());
+        downloadBtn.addEventListener('click', downloadContent);
+        copyHtmlBtn.addEventListener('click', () => copyToClipboard(copyHtmlBtn));
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                editor.value = event.target.result;
+                filenameDisplay.textContent = `Editing: ${file.name}`;
+                updatePreview();
+            };
+            reader.readAsText(file);
+        });
+
+        let timeout = null;
+        editor.addEventListener('input', () => {
+            clearTimeout(timeout);
+            timeout = setTimeout(updatePreview, 50);
+        });
+
+        editor.onscroll = function () {
+            const scrollPercentage = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
+            preview.scrollTop = scrollPercentage * (preview.scrollHeight - preview.clientHeight);
+        };
+
+        async function loadInitialContent() {
+            const params = new URLSearchParams(window.location.search);
+            const fileParam = params.get('file');
+
+            if (!fileParam) {
+                updatePreview();
+                return;
+            }
+
+            try {
+                const response = await fetch(fileParam, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`Failed to load ${fileParam}`);
+                }
+
+                const text = await response.text();
+                setEditorContent(text, `Editing: ${fileParam}`);
+            } catch (_) {
+                updatePreview();
+            }
+        }
+
+        loadInitialContent();
+    </script>
+</body>
+</html>
