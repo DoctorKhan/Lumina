@@ -1,76 +1,45 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Lumina macOS Build Automator
-# This script converts index.html into a standalone .app
+REPO_URL="${REPO_URL:-https://github.com/DoctorKhan/Lumina.git}"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.lumina}"
+APP_NAME="Lumina.app"
 
-APP_NAME="Lumina"
-BUILD_DIR="lumina_build"
-
-echo "🚀 Starting build process for $APP_NAME..."
-
-# 1. Check for Node.js
-if ! command -v node &> /dev/null; then
-    echo "❌ Error: Node.js is not installed. Please install it from https://nodejs.org/"
+require_command() {
+  local cmd="$1"
+  local help="$2"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Missing dependency: $cmd"
+    echo "$help"
     exit 1
-fi
-
-# 2. Check if index.html exists
-if [ ! -f "index.html" ]; then
-    echo "❌ Error: index.html not found in the current directory."
-    exit 1
-fi
-
-# 3. Create build directory
-echo "📁 Creating build directory..."
-mkdir -p $BUILD_DIR
-cp index.html $BUILD_DIR/
-cd $BUILD_DIR
-
-# 4. Initialize Node project
-echo "📦 Initializing Node project..."
-npm init -y > /dev/null
-
-# 5. Create Electron main.js
-echo "📝 Creating Electron entry point..."
-cat <<EOF > main.js
-const { app, BrowserWindow } = require('electron');
-const path = require('path');
-
-function createWindow() {
-  const win = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    title: "$APP_NAME",
-    titleBarStyle: 'hiddenInset',
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true
-    }
-  });
-
-  win.loadFile('index.html');
+  fi
 }
 
-app.whenReady().then(createWindow);
+require_command git "Install git from https://git-scm.com/"
+require_command pnpm "Install pnpm from https://pnpm.io/installation"
+require_command cargo "Install Rust via https://rustup.rs/"
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+  echo "Updating existing checkout in $INSTALL_DIR"
+  git -C "$INSTALL_DIR" fetch --all --tags
+  git -C "$INSTALL_DIR" pull --ff-only
+else
+  echo "Cloning repository to $INSTALL_DIR"
+  git clone "$REPO_URL" "$INSTALL_DIR"
+fi
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
-EOF
+cd "$INSTALL_DIR"
+./run.sh setup
+./run.sh tauri:build
 
-# 6. Install Electron and Packager
-echo "📥 Installing Electron dependencies (this may take a minute)..."
-npm install electron electron-packager --save-dev > /dev/null
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  BUNDLE_PATH="$INSTALL_DIR/src-tauri/target/release/bundle/macos/$APP_NAME"
+  if [[ -d "$BUNDLE_PATH" ]]; then
+    cp -R "$BUNDLE_PATH" /Applications/
+    echo "Installed /Applications/$APP_NAME"
+    exit 0
+  fi
+fi
 
-# 7. Package the app
-echo "🏗️  Packaging macOS app..."
-npx electron-packager . $APP_NAME --platform=darwin --arch=universal --out=../dist --overwrite
-
-echo "------------------------------------------------"
-echo "✅ Success! Your app is ready in the 'dist' folder."
-echo "📂 Path: $(pwd)/../dist/$APP_NAME-darwin-universal/$APP_NAME.app"
-echo "------------------------------------------------"
+echo "Build complete."
+echo "Install artifact is in: $INSTALL_DIR/src-tauri/target/release/bundle"
