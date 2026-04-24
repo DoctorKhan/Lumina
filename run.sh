@@ -55,11 +55,13 @@ case "$cmd" in
   tauri:dev)
     ensure_command pnpm "Install pnpm: https://pnpm.io/installation"
     ensure_command cargo "Install Rust toolchain: https://rustup.rs/"
+    ./scripts/ensure-tauri-icons.sh
     pnpm tauri:dev
     ;;
   tauri:build)
     ensure_command pnpm "Install pnpm: https://pnpm.io/installation"
     ensure_command cargo "Install Rust toolchain: https://rustup.rs/"
+    ./scripts/ensure-tauri-icons.sh
     pnpm tauri:build
     ;;
   -h|--help|help)
