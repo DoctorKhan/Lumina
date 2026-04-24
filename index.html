@@ -82,6 +82,7 @@
         .terminal-pane {
             flex: 0 0 34%;
             min-width: 320px;
+            min-height: 0;
             background: #070b16;
         }
 
@@ -92,6 +93,8 @@
         #terminal {
             height: 100%;
             min-height: 0;
+            box-sizing: border-box;
+            overflow: hidden;
             padding: 0.5rem;
         }
 
@@ -141,6 +144,10 @@
             >
                 Contribute
             </a>
+            <button id="check-update-btn" title="Check GitHub releases for updates" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Check Updates</button>
+            <button id="install-update-btn" title="Install the detected GitHub release" class="hidden text-sm px-4 py-2 rounded-md bg-emerald-700 hover:bg-emerald-600 text-white font-medium transition-colors">Install Update</button>
+            <button id="install-checkout-btn" title="Install this local checkout" class="hidden text-sm px-4 py-2 rounded-md bg-amber-700 hover:bg-amber-600 text-white font-medium transition-colors">Install Current Checkout</button>
+            <span id="update-status" class="max-w-48 truncate text-xs text-slate-500" title="">Not checked</span>
             <input type="file" id="file-input" accept=".md,.txt,.markdown">
             <button id="open-file-btn" title="Open file (Cmd/Ctrl+O)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors flex items-center gap-2">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/></svg>
@@ -149,7 +156,7 @@
             <button id="download-btn" title="Download markdown (Cmd/Ctrl+S)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Download .md</button>
             <button id="copy-html-btn" title="Copy preview HTML (Cmd/Ctrl+Shift+C)" class="text-sm px-4 py-2 rounded-md bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-500 hover:to-sky-500 text-white font-medium transition-colors">Copy HTML</button>
             <button id="toggle-source-btn" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Hide Source</button>
-            <button id="toggle-terminal-btn" title="Toggle terminal (Cmd/Ctrl+`)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Show Terminal</button>
+            <button id="toggle-terminal-btn" title="Toggle terminal (Cmd/Ctrl+`)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Hide Terminal</button>
         </div>
     </header>
 
@@ -171,7 +178,7 @@
             <div id="preview" class="flex-1 p-8 overflow-y-auto prose max-w-none"></div>
         </div>
 
-        <aside id="terminal-pane" class="terminal-pane hidden flex flex-col min-w-0 border-l border-slate-800">
+        <aside id="terminal-pane" class="terminal-pane flex flex-col min-w-0 border-l border-slate-800">
             <div class="h-10 bg-slate-950 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-slate-400 justify-between border-b border-slate-800">
                 <span>Terminal</span>
                 <div class="flex items-center gap-3">
@@ -198,6 +205,10 @@
         const openFileBtn = document.getElementById('open-file-btn');
         const downloadBtn = document.getElementById('download-btn');
         const copyHtmlBtn = document.getElementById('copy-html-btn');
+        const checkUpdateBtn = document.getElementById('check-update-btn');
+        const installUpdateBtn = document.getElementById('install-update-btn');
+        const installCheckoutBtn = document.getElementById('install-checkout-btn');
+        const updateStatus = document.getElementById('update-status');
         const toggleSourceBtn = document.getElementById('toggle-source-btn');
         const toggleTerminalBtn = document.getElementById('toggle-terminal-btn');
         const closeTerminalBtn = document.getElementById('close-terminal-btn');
@@ -213,10 +224,16 @@
         let isResizing = false;
         let terminal = null;
         let fitAddon = null;
-        let terminalVisible = false;
+        let terminalVisible = true;
         let terminalStarted = false;
         let terminalOutputUnlisten = null;
         let terminalResizeFrame = null;
+        let terminalInputBuffer = '';
+        let latestReleaseTag = null;
+        let currentCheckoutInstallCommand = null;
+        const releaseApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/releases/latest';
+        const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
+        const currentVersion = document.getElementById('app-version-badge').textContent.trim().replace(/^v/i, '');
 
         marked.setOptions({
             // Keep default markdown line-break behavior so multiline KaTeX
@@ -472,11 +489,164 @@ Enjoy writing!
             }, 2000);
         }
 
+        function setUpdateStatus(message) {
+            updateStatus.textContent = message;
+            updateStatus.title = message;
+        }
+
+        function parseVersion(value) {
+            const match = String(value || '').match(/v?(\d+)\.(\d+)\.(\d+)/i);
+            if (!match) return null;
+            return match.slice(1).map((part) => Number(part));
+        }
+
+        function compareVersions(left, right) {
+            const a = parseVersion(left);
+            const b = parseVersion(right);
+            if (!a || !b) return 0;
+
+            for (let i = 0; i < 3; i += 1) {
+                if (a[i] !== b[i]) return a[i] - b[i];
+            }
+
+            return 0;
+        }
+
+        function shellQuote(value) {
+            return `'${String(value).replaceAll("'", "'\\''")}'`;
+        }
+
+        function releaseInstallCommand(tagName) {
+            return `curl -fsSL ${publicInstallerUrl} | GIT_REF=${shellQuote(tagName)} bash`;
+        }
+
+        async function runCommandInTerminal(command, label) {
+            await toggleTerminal(true);
+            terminal?.write(`\r\n${label}\r\n`);
+            await invoke('terminal_write', { data: `${command}\r` });
+            terminal?.focus();
+        }
+
+        async function checkForUpdate() {
+            checkUpdateBtn.disabled = true;
+            installUpdateBtn.classList.add('hidden');
+            latestReleaseTag = null;
+            setUpdateStatus('Checking GitHub releases...');
+
+            try {
+                const response = await fetch(releaseApiUrl, {
+                    headers: { Accept: 'application/vnd.github+json' },
+                    cache: 'no-store'
+                });
+
+                if (response.status === 404) {
+                    setUpdateStatus('No GitHub releases published yet.');
+                    return;
+                }
+
+                if (!response.ok) {
+                    throw new Error(`GitHub returned ${response.status}`);
+                }
+
+                const release = await response.json();
+                const tagName = release.tag_name || '';
+                const latestVersion = parseVersion(tagName);
+
+                if (!latestVersion) {
+                    setUpdateStatus(`Latest release has an unexpected tag: ${tagName || 'unknown'}`);
+                    return;
+                }
+
+                if (compareVersions(tagName, currentVersion) > 0) {
+                    latestReleaseTag = tagName;
+                    installUpdateBtn.classList.remove('hidden');
+                    setUpdateStatus(`Update available: ${tagName}`);
+                } else {
+                    setUpdateStatus(`Up to date: v${currentVersion}`);
+                }
+            } catch (error) {
+                setUpdateStatus(`Update check failed: ${error?.message || error}`);
+            } finally {
+                checkUpdateBtn.disabled = false;
+            }
+        }
+
+        async function installDetectedUpdate() {
+            if (!latestReleaseTag) {
+                setUpdateStatus('Check for updates first.');
+                return;
+            }
+
+            const confirmed = window.confirm(
+                `Install Lumina ${latestReleaseTag} from GitHub?\n\nThis runs the public install.sh script and rebuilds the app locally.`
+            );
+            if (!confirmed) return;
+
+            await runCommandInTerminal(
+                releaseInstallCommand(latestReleaseTag),
+                `Installing Lumina ${latestReleaseTag} from GitHub releases...`
+            );
+        }
+
+        async function loadCurrentCheckoutInstaller() {
+            try {
+                const info = await invoke('current_checkout_install_info');
+                if (!info.available || !info.command) return;
+
+                currentCheckoutInstallCommand = info.command;
+                installCheckoutBtn.title = info.label;
+                installCheckoutBtn.classList.remove('hidden');
+            } catch (_) {
+                installCheckoutBtn.classList.add('hidden');
+            }
+        }
+
+        async function installCurrentCheckout() {
+            if (!currentCheckoutInstallCommand) return;
+
+            const confirmed = window.confirm(
+                'Install the current local checkout into /Applications?\n\nUse this only for development and local testing, not normal user updates.'
+            );
+            if (!confirmed) return;
+
+            await runCommandInTerminal(
+                currentCheckoutInstallCommand,
+                'Installing the current local checkout...'
+            );
+        }
+
         function cleanTerminalPath(path) {
             return path
                 .trim()
                 .replace(/^[<("'`]+/, '')
                 .replace(/[>)"'`,;.]+$/, '');
+        }
+
+        function handleTerminalCommandInput(data) {
+            if (data === '\u0003') {
+                terminalInputBuffer = '';
+                return;
+            }
+
+            if (data === '\u007f') {
+                terminalInputBuffer = terminalInputBuffer.slice(0, -1);
+                return;
+            }
+
+            if (data === '\r') {
+                const command = terminalInputBuffer.trim();
+                terminalInputBuffer = '';
+                const cdMatch = command.match(/^cd(?:\s+(.+))?$/);
+                if (cdMatch) {
+                    const target = cdMatch[1]?.trim() || '~';
+                    invoke('terminal_set_cwd', { path: target }).catch(() => {});
+                }
+                return;
+            }
+
+            if (/^[\x20-\x7e]+$/.test(data)) {
+                terminalInputBuffer += data;
+            }
         }
 
         async function openClickedTerminalFile(path) {
@@ -500,7 +670,7 @@ Enjoy writing!
             }
 
             const text = line.translateToString(true);
-            const filePathPattern = /(?:~|\/|\.\.?\/)[^\s"'<>]+/g;
+            const filePathPattern = /(?:~|\/|\.\.?\/)?[A-Za-z0-9._@%+-][^\s"'<>]*(?:\.md|\.markdown|\.txt)(?::\d+(?::\d+)?)?/gi;
             const links = [];
             let match = null;
 
@@ -570,6 +740,7 @@ Enjoy writing!
             terminal.open(terminalElement);
             terminal.registerLinkProvider({ provideLinks: provideTerminalFileLinks });
             terminal.onData((data) => {
+                handleTerminalCommandInput(data);
                 invoke('terminal_write', { data }).catch((error) => {
                     terminal.write(`\r\nTerminal write failed: ${error}\r\n`);
                 });
@@ -588,6 +759,8 @@ Enjoy writing!
             });
             terminalStarted = true;
             terminalStatus.textContent = 'Running';
+            resizeTerminal();
+            setTimeout(resizeTerminal, 80);
         }
 
         async function toggleTerminal(forceVisible) {
@@ -610,6 +783,9 @@ Enjoy writing!
         openFileBtn.addEventListener('click', () => fileInput.click());
         downloadBtn.addEventListener('click', downloadContent);
         copyHtmlBtn.addEventListener('click', () => copyToClipboard(copyHtmlBtn));
+        checkUpdateBtn.addEventListener('click', checkForUpdate);
+        installUpdateBtn.addEventListener('click', installDetectedUpdate);
+        installCheckoutBtn.addEventListener('click', installCurrentCheckout);
         toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
         closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
         toggleSourceBtn.addEventListener('click', () => {
@@ -720,6 +896,8 @@ Enjoy writing!
         }
 
         loadInitialContent();
+        loadCurrentCheckoutInstaller();
+        toggleTerminal(true);
     </script>
 </body>
 </html>

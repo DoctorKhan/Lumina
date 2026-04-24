@@ -58,6 +58,28 @@ run_tauri() {
   CARGO_BUILD_JOBS="$jobs" pnpm tauri "$@"
 }
 
+install_macos_app() {
+  local app_name="Lumina.app"
+  local bundle_path="$ROOT_DIR/src-tauri/target/release/bundle/macos/$app_name"
+
+  if [[ "$OSTYPE" != "darwin"* ]]; then
+    echo "install:app is currently only supported on macOS."
+    exit 1
+  fi
+
+  ensure_command ditto "ditto is required on macOS."
+  "$0" tauri:build:app
+
+  if [[ ! -d "$bundle_path" ]]; then
+    echo "Missing app bundle: $bundle_path"
+    exit 1
+  fi
+
+  rm -rf "/Applications/$app_name"
+  ditto "$bundle_path" "/Applications/$app_name"
+  echo "Installed /Applications/$app_name"
+}
+
 resolve_release_version() {
   local current="$1"
   local target="${2:-patch}"
@@ -169,6 +191,7 @@ Commands:
   tauri:dev     Run Tauri in development mode
   tauri:build   Build distributable Tauri app
   tauri:build:app Build macOS .app bundle only
+  install:app   Build and install /Applications/Lumina.app from this checkout
   release [patch|minor|major|x.y.z]
                Bump versions, commit, and push current branch
 EOF
@@ -206,6 +229,9 @@ case "$cmd" in
     ensure_command cargo "Install Rust toolchain: https://rustup.rs/"
     ./scripts/ensure-tauri-icons.sh
     run_tauri build --bundles app
+    ;;
+  install:app)
+    install_macos_app
     ;;
   release)
     run_release "${2:-patch}"

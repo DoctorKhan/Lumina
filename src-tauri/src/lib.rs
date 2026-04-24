@@ -1,6 +1,7 @@
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use std::{
+    collections::HashSet,
     env, fs,
     io::{Read, Write},
     path::PathBuf,
@@ -24,6 +25,17 @@ struct OpenedFile {
     content: String,
 }
 
+#[derive(Serialize)]
+struct CheckoutInstallInfo {
+    available: bool,
+    command: Option<String>,
+    label: String,
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 fn expand_user_path(path: &str, base_dir: Option<&PathBuf>) -> PathBuf {
     if path == "~" {
         if let Some(home) = env::var_os("HOME") {
@@ -45,6 +57,53 @@ fn expand_user_path(path: &str, base_dir: Option<&PathBuf>) -> PathBuf {
     }
 
     path
+}
+
+fn terminal_path() -> String {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        for path in [
+            home.join(".volta/bin"),
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join(".bun/bin"),
+        ] {
+            if path.is_dir() {
+                let path = path.to_string_lossy().to_string();
+                if seen.insert(path.clone()) {
+                    paths.push(path);
+                }
+            }
+        }
+    }
+
+    for path in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        if seen.insert(path.to_string()) {
+            paths.push(path.to_string());
+        }
+    }
+
+    if let Ok(existing_path) = env::var("PATH") {
+        for path in env::split_paths(&existing_path) {
+            let path = path.to_string_lossy().to_string();
+            if seen.insert(path.clone()) {
+                paths.push(path);
+            }
+        }
+    }
+
+    paths.join(":")
 }
 
 #[tauri::command]
@@ -79,6 +138,8 @@ fn terminal_spawn(
         .map(PathBuf::from)
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
     command.cwd(&cwd);
+    command.env("PATH", terminal_path());
+    command.env("TERM", "xterm-256color");
     if let Ok(mut state_cwd) = state.cwd.lock() {
         *state_cwd = Some(cwd);
     }
@@ -131,6 +192,23 @@ fn terminal_spawn(
         }
     });
 
+    Ok(())
+}
+
+#[tauri::command]
+fn terminal_set_cwd(state: State<'_, TerminalState>, path: String) -> Result<(), String> {
+    let mut cwd = state
+        .cwd
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?;
+    let next = expand_user_path(path.trim(), cwd.as_ref());
+    let next = fs::canonicalize(&next).map_err(|error| error.to_string())?;
+
+    if !next.is_dir() {
+        return Err("Path is not a directory.".to_string());
+    }
+
+    *cwd = Some(next);
     Ok(())
 }
 
@@ -231,6 +309,45 @@ fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<Opene
     })
 }
 
+#[tauri::command]
+fn current_checkout_install_info() -> CheckoutInstallInfo {
+    if !cfg!(debug_assertions) {
+        return CheckoutInstallInfo {
+            available: false,
+            command: None,
+            label: "Local checkout install is only shown in development builds.".to_string(),
+        };
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let Some(root_dir) = manifest_dir.parent() else {
+        return CheckoutInstallInfo {
+            available: false,
+            command: None,
+            label: "Unable to resolve the current checkout path.".to_string(),
+        };
+    };
+    let run_script = root_dir.join("run.sh");
+
+    if !run_script.is_file() {
+        return CheckoutInstallInfo {
+            available: false,
+            command: None,
+            label: "Unable to find run.sh for this checkout.".to_string(),
+        };
+    }
+
+    let root_dir = root_dir.to_string_lossy().to_string();
+    CheckoutInstallInfo {
+        available: true,
+        command: Some(format!(
+            "cd {} && ./run.sh install:app",
+            shell_quote(&root_dir)
+        )),
+        label: format!("Install current checkout from {root_dir}"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -240,7 +357,9 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_kill,
-            open_file_path
+            terminal_set_cwd,
+            open_file_path,
+            current_checkout_install_info
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
