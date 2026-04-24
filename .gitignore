@@ -19,6 +19,8 @@ dist/
 build/
 .cache/
 .turbo/
+src-tauri/target/
+src-tauri/gen/
 
 # Environment files
 .env
