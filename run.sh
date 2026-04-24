@@ -42,7 +42,7 @@ kill_lumina_server_on_port() {
   fi
 
   if is_lumina_server_pid "$pid"; then
-    echo "Stopping stale Lumina server on port ${port} (pid ${pid})."
+    echo "Stopping stale Lumina server on port ${port} (pid ${pid})." >&2
     kill "$pid" 2>/dev/null || true
     local waited=0
     while kill -0 "$pid" 2>/dev/null; do

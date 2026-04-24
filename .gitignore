@@ -1,0 +1,29 @@
+# Lumina runtime artifacts
+.lumina-open.md
+.lumina-server.log
+.lumina-server.pid
+
+# OS files
+.DS_Store
+
+# Node / package manager artifacts
+node_modules/
+.pnpm-store/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build / cache output
+dist/
+build/
+.cache/
+.turbo/
+
+# Environment files
+.env
+.env.*
+
+# Editor / IDE
+.idea/
+.vscode/
