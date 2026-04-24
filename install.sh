@@ -21,6 +21,10 @@ install_cli_launcher() {
 
   if [[ -z "$bin_dir" ]]; then
     bin_dir="$HOME/.local/bin"
+  fi
+
+  if ! mkdir -p "$bin_dir" 2>/dev/null; then
+    bin_dir="$HOME/.local/bin"
     mkdir -p "$bin_dir"
   fi
 
