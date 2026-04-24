@@ -58,13 +58,14 @@ EOF
 
   local linked_dir=""
   local old_ifs="$IFS"
+  local linked_any=0
   IFS=':'
   for path_dir in $PATH; do
     if [[ -d "$path_dir" && -w "$path_dir" ]]; then
       if ln -sf "$launcher_path" "$path_dir/lumina" 2>/dev/null; then
         linked_dir="$path_dir"
+        linked_any=1
         echo "Linked launcher at: $path_dir/lumina"
-        break
       fi
     fi
   done
@@ -81,7 +82,7 @@ EOF
     done
   fi
 
-  if [[ -n "$linked_dir" ]]; then
+  if [[ "$linked_any" -eq 1 ]]; then
     return
   fi
 
