@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/DoctorKhan/Lumina.git}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.lumina}"
+GIT_REF="${GIT_REF:-origin/main}"
 APP_NAME="Lumina.app"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.doctorkhan.lumina}"
 
@@ -160,7 +161,7 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
   git -C "$INSTALL_DIR" fetch --all --tags
   # This install directory is managed by the installer, so we can safely
   # discard local/untracked build artifacts before updating.
-  git -C "$INSTALL_DIR" reset --hard "origin/main"
+  git -C "$INSTALL_DIR" reset --hard "$GIT_REF"
   git -C "$INSTALL_DIR" clean -fd
 else
   echo "Cloning repository to $INSTALL_DIR"
@@ -168,6 +169,15 @@ else
 fi
 
 cd "$INSTALL_DIR"
+if [[ ! -d ".git" ]]; then
+  echo "Install directory is not a git checkout: $INSTALL_DIR"
+  exit 1
+fi
+
+echo "Installing Lumina from $GIT_REF"
+git fetch --all --tags
+git reset --hard "$GIT_REF"
+git clean -fd
 ./run.sh setup
 ./scripts/ensure-tauri-icons.sh
 
@@ -180,7 +190,8 @@ fi
 if [[ "$OSTYPE" == "darwin"* ]]; then
   BUNDLE_PATH="$INSTALL_DIR/src-tauri/target/release/bundle/macos/$APP_NAME"
   if [[ -d "$BUNDLE_PATH" ]]; then
-    cp -R "$BUNDLE_PATH" /Applications/
+    rm -rf "/Applications/$APP_NAME"
+    ditto "$BUNDLE_PATH" "/Applications/$APP_NAME"
     echo "Installed /Applications/$APP_NAME"
     install_cli_launcher
     associate_markdown_files
