@@ -58,6 +58,94 @@ run_tauri() {
   CARGO_BUILD_JOBS="$jobs" pnpm tauri "$@"
 }
 
+resolve_release_version() {
+  local current="$1"
+  local target="${2:-patch}"
+
+  node -e '
+const current = process.argv[1];
+const target = process.argv[2];
+const semver = /^(\d+)\.(\d+)\.(\d+)$/;
+const m = current.match(semver);
+if (!m) {
+  console.error(`Invalid current version: ${current}`);
+  process.exit(1);
+}
+let major = Number(m[1]);
+let minor = Number(m[2]);
+let patch = Number(m[3]);
+
+if (target === "patch") patch += 1;
+else if (target === "minor") { minor += 1; patch = 0; }
+else if (target === "major") { major += 1; minor = 0; patch = 0; }
+else if (semver.test(target)) {
+  const n = target.match(semver);
+  major = Number(n[1]);
+  minor = Number(n[2]);
+  patch = Number(n[3]);
+} else {
+  console.error("Release target must be patch, minor, major, or x.y.z");
+  process.exit(1);
+}
+
+console.log(`${major}.${minor}.${patch}`);
+' "$current" "$target"
+}
+
+run_release() {
+  ensure_command git "Install git: https://git-scm.com/"
+  ensure_command node "Install Node.js: https://nodejs.org/"
+
+  local target="${1:-patch}"
+  local branch
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  if [[ "$branch" == "HEAD" ]]; then
+    echo "Detached HEAD is not supported for release."
+    exit 1
+  fi
+
+  local current_version
+  current_version="$(node -e "const p=require('./package.json'); console.log(p.version)")"
+  local next_version
+  next_version="$(resolve_release_version "$current_version" "$target")"
+
+  if [[ "$next_version" == "$current_version" ]]; then
+    echo "Version unchanged ($current_version); nothing to release."
+    exit 1
+  fi
+
+  echo "Releasing version $next_version from $current_version on branch $branch"
+
+  RELEASE_VERSION="$next_version" node -e '
+const fs = require("fs");
+const path = require("path");
+const version = process.env.RELEASE_VERSION;
+const updateJsonVersion = (file) => {
+  const p = path.resolve(file);
+  const data = JSON.parse(fs.readFileSync(p, "utf8"));
+  data.version = version;
+  fs.writeFileSync(p, JSON.stringify(data, null, 2) + "\n");
+};
+updateJsonVersion("package.json");
+updateJsonVersion("src-tauri/tauri.conf.json");
+
+const cargoPath = path.resolve("src-tauri/Cargo.toml");
+const cargo = fs.readFileSync(cargoPath, "utf8");
+const updated = cargo.replace(/^version\s*=\s*"[0-9]+\.[0-9]+\.[0-9]+"$/m, `version = "${version}"`);
+if (cargo === updated) {
+  console.error("Failed to update version in src-tauri/Cargo.toml");
+  process.exit(1);
+}
+fs.writeFileSync(cargoPath, updated);
+'
+
+  git add -A
+  git commit -m "chore(release): v${next_version}"
+  git push origin "$branch"
+
+  echo "Release version v${next_version} committed and pushed."
+}
+
 usage() {
   cat <<'EOF'
 Usage: ./run.sh <command>
@@ -69,6 +157,8 @@ Commands:
   tauri:dev     Run Tauri in development mode
   tauri:build   Build distributable Tauri app
   tauri:build:app Build macOS .app bundle only
+  release [patch|minor|major|x.y.z]
+               Bump versions, commit, and push current branch
 EOF
 }
 
@@ -104,6 +194,9 @@ case "$cmd" in
     ensure_command cargo "Install Rust toolchain: https://rustup.rs/"
     ./scripts/ensure-tauri-icons.sh
     run_tauri build --bundles app
+    ;;
+  release)
+    run_release "${2:-patch}"
     ;;
   -h|--help|help)
     usage
