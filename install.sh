@@ -8,25 +8,9 @@ APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.doctorkhan.lumina}"
 
 install_cli_launcher() {
   local launcher_target="/Applications/${APP_NAME}"
-  local candidate_dirs=("/usr/local/bin" "/opt/homebrew/bin" "$HOME/.local/bin")
-  local bin_dir=""
+  local bin_dir="$HOME/.local/bin"
   local launcher_path=""
-
-  for dir in "${candidate_dirs[@]}"; do
-    if [[ -d "$dir" && -w "$dir" ]]; then
-      bin_dir="$dir"
-      break
-    fi
-  done
-
-  if [[ -z "$bin_dir" ]]; then
-    bin_dir="$HOME/.local/bin"
-  fi
-
-  if ! mkdir -p "$bin_dir" 2>/dev/null; then
-    bin_dir="$HOME/.local/bin"
-    mkdir -p "$bin_dir"
-  fi
+  mkdir -p "$bin_dir"
 
   launcher_path="${bin_dir}/lumina"
   cat >"$launcher_path" <<EOF
@@ -36,8 +20,40 @@ EOF
   chmod +x "$launcher_path"
 
   echo "Installed CLI launcher: $launcher_path"
+
+  local linked_dir=""
+  local old_ifs="$IFS"
+  IFS=':'
+  for path_dir in $PATH; do
+    if [[ -d "$path_dir" && -w "$path_dir" ]]; then
+      if ln -sf "$launcher_path" "$path_dir/lumina" 2>/dev/null; then
+        linked_dir="$path_dir"
+        echo "Linked launcher at: $path_dir/lumina"
+        break
+      fi
+    fi
+  done
+  IFS="$old_ifs"
+
+  if [[ -z "$linked_dir" ]]; then
+    for fallback_dir in /usr/local/bin /opt/homebrew/bin; do
+      if [[ -d "$fallback_dir" && -w "$fallback_dir" ]]; then
+        ln -sf "$launcher_path" "$fallback_dir/lumina" || true
+        echo "Linked launcher at: $fallback_dir/lumina"
+        linked_dir="$fallback_dir"
+        break
+      fi
+    done
+  fi
+
+  if [[ -n "$linked_dir" ]]; then
+    return
+  fi
+
   if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
     echo "Add $bin_dir to your PATH to use 'lumina' from terminal."
+  else
+    echo "No writable PATH directory found for symlink; using $launcher_path directly."
   fi
 }
 
