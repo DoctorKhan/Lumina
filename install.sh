@@ -6,6 +6,34 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.lumina}"
 APP_NAME="Lumina.app"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.doctorkhan.lumina}"
 
+is_interactive_shell() {
+  [[ -t 0 && -t 1 ]]
+}
+
+confirm() {
+  local prompt="$1"
+  local default="${2:-N}"
+  local reply=""
+
+  if ! is_interactive_shell; then
+    return 1
+  fi
+
+  if [[ "$default" == "Y" ]]; then
+    printf "%s [Y/n]: " "$prompt"
+  else
+    printf "%s [y/N]: " "$prompt"
+  fi
+
+  read -r reply || return 1
+  if [[ -z "$reply" ]]; then
+    [[ "$default" == "Y" ]]
+    return
+  fi
+
+  [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
 install_cli_launcher() {
   local launcher_target="/Applications/${APP_NAME}"
   local bin_dir="$HOME/.local/bin"
@@ -17,7 +45,7 @@ install_cli_launcher() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "\${1:-}" == "update" ]]; then
+if [[ "\${1:-}" == "update" || "\${1:-}" == "--update" ]]; then
   curl -fsSL https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
   exit 0
 fi
@@ -66,8 +94,22 @@ EOF
 
 associate_markdown_files() {
   if ! command -v duti >/dev/null 2>&1; then
-    echo "Optional: install duti to set .md default app automatically:"
-    echo "  brew install duti"
+    if command -v brew >/dev/null 2>&1 && confirm "Install duti to set file associations now?" "N"; then
+      brew install duti
+    else
+      echo "Optional: install duti later to set .md defaults automatically:"
+      echo "  brew install duti"
+      return
+    fi
+  fi
+
+  if ! command -v duti >/dev/null 2>&1; then
+    echo "duti is not available; skipping file association setup."
+    return
+  fi
+
+  if ! confirm "Associate .md/.markdown/.txt with Lumina?" "Y"; then
+    echo "Skipped file association setup."
     return
   fi
 
