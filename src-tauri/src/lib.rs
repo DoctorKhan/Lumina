@@ -1,6 +1,247 @@
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use serde::Serialize;
+use std::{
+    env, fs,
+    io::{Read, Write},
+    path::PathBuf,
+    sync::Mutex,
+    thread,
+};
+use tauri::{AppHandle, Emitter, State};
+
+#[derive(Default)]
+struct TerminalState {
+    child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
+    master: Mutex<Option<Box<dyn MasterPty + Send>>>,
+    writer: Mutex<Option<Box<dyn Write + Send>>>,
+    cwd: Mutex<Option<PathBuf>>,
+}
+
+#[derive(Serialize)]
+struct OpenedFile {
+    path: String,
+    name: String,
+    content: String,
+}
+
+fn expand_user_path(path: &str, base_dir: Option<&PathBuf>) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+
+    let path = PathBuf::from(path);
+    if path.is_relative() {
+        if let Some(base_dir) = base_dir {
+            return base_dir.join(path);
+        }
+    }
+
+    path
+}
+
+#[tauri::command]
+fn terminal_spawn(
+    app: AppHandle,
+    state: State<'_, TerminalState>,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    if state
+        .child
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: rows.max(1),
+            cols: cols.max(1),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| error.to_string())?;
+
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let mut command = CommandBuilder::new(shell);
+    let cwd = env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+    command.cwd(&cwd);
+    if let Ok(mut state_cwd) = state.cwd.lock() {
+        *state_cwd = Some(cwd);
+    }
+
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| error.to_string())?;
+    drop(pair.slave);
+
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|error| error.to_string())?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|error| error.to_string())?;
+
+    *state
+        .child
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())? = Some(child);
+    *state
+        .master
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())? = Some(pair.master);
+    *state
+        .writer
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())? = Some(writer);
+
+    thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    let output = String::from_utf8_lossy(&buffer[..count]).to_string();
+                    let _ = app.emit("terminal-output", output);
+                }
+                Err(error) => {
+                    let _ = app.emit(
+                        "terminal-output",
+                        format!("\r\nTerminal closed: {error}\r\n"),
+                    );
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn terminal_write(state: State<'_, TerminalState>, data: String) -> Result<(), String> {
+    let mut writer = state
+        .writer
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?;
+    let writer = writer
+        .as_mut()
+        .ok_or_else(|| "Terminal is not running.".to_string())?;
+
+    writer
+        .write_all(data.as_bytes())
+        .map_err(|error| error.to_string())?;
+    writer.flush().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn terminal_resize(state: State<'_, TerminalState>, rows: u16, cols: u16) -> Result<(), String> {
+    let mut master = state
+        .master
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?;
+    let master = master
+        .as_mut()
+        .ok_or_else(|| "Terminal is not running.".to_string())?;
+
+    master
+        .resize(PtySize {
+            rows: rows.max(1),
+            cols: cols.max(1),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn terminal_kill(state: State<'_, TerminalState>) -> Result<(), String> {
+    if let Some(mut child) = state
+        .child
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?
+        .take()
+    {
+        let _ = child.kill();
+    }
+
+    state
+        .writer
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?
+        .take();
+    state
+        .master
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?
+        .take();
+
+    Ok(())
+}
+
+#[tauri::command]
+fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<OpenedFile, String> {
+    let path = path
+        .trim()
+        .trim_matches(|character| matches!(character, '"' | '\'' | '`' | '<' | '>' | ')' | '('));
+    let path = path
+        .trim_end_matches(|character: char| matches!(character, ',' | ';' | '.'))
+        .split_once(':')
+        .map_or(path, |(candidate, _)| candidate);
+    let cwd = state
+        .cwd
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?;
+    let path = expand_user_path(path, cwd.as_ref());
+    let path = fs::canonicalize(&path).map_err(|error| error.to_string())?;
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+
+    if !metadata.is_file() {
+        return Err("Clicked path is not a file.".to_string());
+    }
+
+    let content =
+        fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+
+    Ok(OpenedFile {
+        path: path.to_string_lossy().to_string(),
+        name,
+        content,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(TerminalState::default())
+        .invoke_handler(tauri::generate_handler![
+            terminal_spawn,
+            terminal_write,
+            terminal_resize,
+            terminal_kill,
+            open_file_path
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

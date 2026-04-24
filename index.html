@@ -79,6 +79,30 @@
             scrollbar-color: #cbd5e1 transparent;
         }
 
+        .terminal-pane {
+            flex: 0 0 34%;
+            min-width: 320px;
+            background: #070b16;
+        }
+
+        .terminal-pane.hidden {
+            display: none;
+        }
+
+        #terminal {
+            height: 100%;
+            min-height: 0;
+            padding: 0.5rem;
+        }
+
+        #terminal .xterm {
+            height: 100%;
+        }
+
+        #terminal .xterm-viewport {
+            background-color: transparent;
+        }
+
         .prose h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; margin-top: 1.5rem; font-weight: 700; font-size: 2.1rem; letter-spacing: -0.02em; }
         .prose h2 { border-bottom: 1px solid #e2e8f0; padding-bottom: 0.35rem; margin-top: 1.2rem; font-weight: 650; font-size: 1.65rem; letter-spacing: -0.01em; }
         .prose h3 { font-weight: 620; font-size: 1.35rem; }
@@ -125,6 +149,7 @@
             <button id="download-btn" title="Download markdown (Cmd/Ctrl+S)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Download .md</button>
             <button id="copy-html-btn" title="Copy preview HTML (Cmd/Ctrl+Shift+C)" class="text-sm px-4 py-2 rounded-md bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-500 hover:to-sky-500 text-white font-medium transition-colors">Copy HTML</button>
             <button id="toggle-source-btn" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Hide Source</button>
+            <button id="toggle-terminal-btn" title="Toggle terminal (Cmd/Ctrl+`)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Show Terminal</button>
         </div>
     </header>
 
@@ -145,9 +170,26 @@
             </div>
             <div id="preview" class="flex-1 p-8 overflow-y-auto prose max-w-none"></div>
         </div>
+
+        <aside id="terminal-pane" class="terminal-pane hidden flex flex-col min-w-0 border-l border-slate-800">
+            <div class="h-10 bg-slate-950 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-slate-400 justify-between border-b border-slate-800">
+                <span>Terminal</span>
+                <div class="flex items-center gap-3">
+                    <span id="terminal-status" class="normal-case tracking-normal text-slate-500">Stopped</span>
+                    <button id="close-terminal-btn" class="text-slate-400 hover:text-slate-100 transition-colors" title="Hide terminal">Close</button>
+                </div>
+            </div>
+            <div id="terminal" class="flex-1 min-h-0"></div>
+        </aside>
     </main>
 
-    <script>
+    <script type="module">
+        import { invoke } from '@tauri-apps/api/core';
+        import { listen } from '@tauri-apps/api/event';
+        import { Terminal } from '@xterm/xterm';
+        import { FitAddon } from '@xterm/addon-fit';
+        import '@xterm/xterm/css/xterm.css';
+
         const editor = document.getElementById('editor');
         const preview = document.getElementById('preview');
         const charCount = document.getElementById('char-count');
@@ -157,6 +199,11 @@
         const downloadBtn = document.getElementById('download-btn');
         const copyHtmlBtn = document.getElementById('copy-html-btn');
         const toggleSourceBtn = document.getElementById('toggle-source-btn');
+        const toggleTerminalBtn = document.getElementById('toggle-terminal-btn');
+        const closeTerminalBtn = document.getElementById('close-terminal-btn');
+        const terminalPane = document.getElementById('terminal-pane');
+        const terminalElement = document.getElementById('terminal');
+        const terminalStatus = document.getElementById('terminal-status');
         const editorContainer = document.querySelector('.editor-container');
         const editorPane = document.querySelector('.editor-pane');
         const previewPane = document.querySelector('.preview-pane');
@@ -164,6 +211,12 @@
         let mermaidInitialized = false;
         let sourceCollapsed = false;
         let isResizing = false;
+        let terminal = null;
+        let fitAddon = null;
+        let terminalVisible = false;
+        let terminalStarted = false;
+        let terminalOutputUnlisten = null;
+        let terminalResizeFrame = null;
 
         marked.setOptions({
             // Keep default markdown line-break behavior so multiline KaTeX
@@ -419,13 +472,151 @@ Enjoy writing!
             }, 2000);
         }
 
+        function cleanTerminalPath(path) {
+            return path
+                .trim()
+                .replace(/^[<("'`]+/, '')
+                .replace(/[>)"'`,;.]+$/, '');
+        }
+
+        async function openClickedTerminalFile(path) {
+            const cleanPath = cleanTerminalPath(path);
+            if (!cleanPath) return;
+
+            try {
+                const file = await invoke('open_file_path', { path: cleanPath });
+                setEditorContent(file.content, `Editing: ${file.path}`);
+                filenameDisplay.title = file.path;
+            } catch (error) {
+                terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
+            }
+        }
+
+        function provideTerminalFileLinks(bufferLineNumber, callback) {
+            const line = terminal?.buffer.active.getLine(bufferLineNumber - 1);
+            if (!line) {
+                callback(undefined);
+                return;
+            }
+
+            const text = line.translateToString(true);
+            const filePathPattern = /(?:~|\/|\.\.?\/)[^\s"'<>]+/g;
+            const links = [];
+            let match = null;
+
+            while ((match = filePathPattern.exec(text)) !== null) {
+                const rawPath = cleanTerminalPath(match[0]);
+                if (!rawPath || rawPath.endsWith('/')) continue;
+
+                links.push({
+                    text: rawPath,
+                    range: {
+                        start: { x: match.index + 1, y: bufferLineNumber },
+                        end: { x: match.index + match[0].length, y: bufferLineNumber }
+                    },
+                    activate: () => openClickedTerminalFile(rawPath)
+                });
+            }
+
+            callback(links.length > 0 ? links : undefined);
+        }
+
+        function resizeTerminal() {
+            if (!terminalVisible || !terminal || !fitAddon) return;
+
+            cancelAnimationFrame(terminalResizeFrame);
+            terminalResizeFrame = requestAnimationFrame(() => {
+                fitAddon.fit();
+                invoke('terminal_resize', {
+                    cols: terminal.cols,
+                    rows: terminal.rows
+                }).catch(() => {});
+            });
+        }
+
+        async function ensureTerminal() {
+            if (terminalStarted) return;
+
+            terminal = new Terminal({
+                cursorBlink: true,
+                convertEol: true,
+                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: 13,
+                theme: {
+                    background: '#070b16',
+                    foreground: '#d9e2ef',
+                    cursor: '#38bdf8',
+                    selectionBackground: '#1e3a8a',
+                    black: '#020617',
+                    red: '#fb7185',
+                    green: '#34d399',
+                    yellow: '#facc15',
+                    blue: '#60a5fa',
+                    magenta: '#c084fc',
+                    cyan: '#22d3ee',
+                    white: '#e2e8f0',
+                    brightBlack: '#475569',
+                    brightRed: '#fda4af',
+                    brightGreen: '#86efac',
+                    brightYellow: '#fde047',
+                    brightBlue: '#93c5fd',
+                    brightMagenta: '#d8b4fe',
+                    brightCyan: '#67e8f9',
+                    brightWhite: '#f8fafc'
+                }
+            });
+            fitAddon = new FitAddon();
+            terminal.loadAddon(fitAddon);
+            terminal.open(terminalElement);
+            terminal.registerLinkProvider({ provideLinks: provideTerminalFileLinks });
+            terminal.onData((data) => {
+                invoke('terminal_write', { data }).catch((error) => {
+                    terminal.write(`\r\nTerminal write failed: ${error}\r\n`);
+                });
+            });
+
+            terminalStatus.textContent = 'Starting';
+            terminal.write('Starting shell...\r\n');
+            terminalOutputUnlisten = await listen('terminal-output', (event) => {
+                terminal.write(event.payload);
+            });
+
+            fitAddon.fit();
+            await invoke('terminal_spawn', {
+                cols: terminal.cols,
+                rows: terminal.rows
+            });
+            terminalStarted = true;
+            terminalStatus.textContent = 'Running';
+        }
+
+        async function toggleTerminal(forceVisible) {
+            terminalVisible = typeof forceVisible === 'boolean' ? forceVisible : !terminalVisible;
+            terminalPane.classList.toggle('hidden', !terminalVisible);
+            toggleTerminalBtn.textContent = terminalVisible ? 'Hide Terminal' : 'Show Terminal';
+
+            if (terminalVisible) {
+                try {
+                    await ensureTerminal();
+                    resizeTerminal();
+                    terminal.focus();
+                } catch (error) {
+                    terminalStatus.textContent = 'Error';
+                    terminal?.write(`\r\nTerminal failed to start: ${error}\r\n`);
+                }
+            }
+        }
+
         openFileBtn.addEventListener('click', () => fileInput.click());
         downloadBtn.addEventListener('click', downloadContent);
         copyHtmlBtn.addEventListener('click', () => copyToClipboard(copyHtmlBtn));
+        toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
+        closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
         toggleSourceBtn.addEventListener('click', () => {
             sourceCollapsed = !sourceCollapsed;
             editorContainer.classList.toggle('editor-collapsed', sourceCollapsed);
             toggleSourceBtn.textContent = sourceCollapsed ? 'Show Source' : 'Hide Source';
+            resizeTerminal();
         });
 
         paneResizer.addEventListener('mousedown', () => {
@@ -450,6 +641,7 @@ Enjoy writing!
             const previewPercent = 100 - editorPercent;
             editorPane.style.flex = `0 0 ${editorPercent}%`;
             previewPane.style.flex = `0 0 ${previewPercent}%`;
+            resizeTerminal();
         });
 
         fileInput.addEventListener('change', (e) => {
@@ -484,6 +676,17 @@ Enjoy writing!
             } else if (event.shiftKey && event.key.toLowerCase() === 'c') {
                 event.preventDefault();
                 copyToClipboard(copyHtmlBtn);
+            } else if (event.key === '`') {
+                event.preventDefault();
+                toggleTerminal();
+            }
+        });
+
+        window.addEventListener('resize', resizeTerminal);
+        window.addEventListener('beforeunload', () => {
+            terminalOutputUnlisten?.();
+            if (terminalStarted) {
+                invoke('terminal_kill').catch(() => {});
             }
         });
 
