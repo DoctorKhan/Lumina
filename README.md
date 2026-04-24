@@ -13,6 +13,8 @@ This installer will:
 - install dependencies with `pnpm`
 - build the app with Tauri
 - copy `Lumina.app` to `/Applications` on macOS
+- install a `lumina` CLI launcher (opens `Lumina.app`)
+- associate `.md`, `.markdown`, and `.txt` with Lumina when `duti` is available
 
 ## Local development
 
