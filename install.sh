@@ -30,7 +30,13 @@ fi
 
 cd "$INSTALL_DIR"
 ./run.sh setup
-./run.sh tauri:build
+./scripts/ensure-tauri-icons.sh
+
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  pnpm tauri build --bundles app
+else
+  ./run.sh tauri:build
+fi
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
   BUNDLE_PATH="$INSTALL_DIR/src-tauri/target/release/bundle/macos/$APP_NAME"
