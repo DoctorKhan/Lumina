@@ -15,6 +15,13 @@ install_cli_launcher() {
   launcher_path="${bin_dir}/lumina"
   cat >"$launcher_path" <<EOF
 #!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "update" ]]; then
+  curl -fsSL https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
+  exit 0
+fi
+
 open -a "$launcher_target" "\$@"
 EOF
   chmod +x "$launcher_path"
