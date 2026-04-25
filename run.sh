@@ -35,11 +35,15 @@ ensure_just() {
       ;;
   esac
 
+  JUST_BIN_DIR="${JUST_INSTALL_DIR:-$HOME/.local/bin}"
+  mkdir -p "$JUST_BIN_DIR"
+
   curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh |
-    bash -s -- --to "${JUST_INSTALL_DIR:-/usr/local/bin}"
+    bash -s -- --to "$JUST_BIN_DIR"
 
   if ! command -v just >/dev/null 2>&1; then
-    echo "'just' was installed, but it is still not available on PATH." >&2
+    echo "'just' was installed to $JUST_BIN_DIR, but it is still not available on PATH." >&2
+    echo "Add it to PATH or rerun with JUST_INSTALL_DIR set to a directory already on PATH." >&2
     exit 127
   fi
 }
