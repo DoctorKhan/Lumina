@@ -1,7 +1,7 @@
 /**
  * Parses install.sh / `curl | bash` log lines for the in-app update progress card.
- * Must match install.sh: install_progress_line(), start_step(), and legacy
- *   [6/9] label (elapsed X, ETA Y, Z%)
+ * Must match install.sh: install_progress_line(), start_step(), legacy
+ *   [6/9] label (elapsed X, ETA Y, Z%), and emit_lumina_install_done_marker()
  * Input may include ANSI (24-bit SGR, etc.); this module strips it before matching.
  */
 // Bar: [#---], [██░], with optional ANSI; then spaces and "12%".
@@ -63,6 +63,12 @@ export function processInstallProgressLine(state, line) {
     const t = stripAnsi(line).trim();
     if (!t) {
         return { changed: false, done: false };
+    }
+
+    // install.sh: explicit completion when the last progress line is not 100% (e.g. macOS
+    // build succeeded but the .app was not in the expected bundle path — estimates never hit 100%).
+    if (t === 'LUMINA_INSTALL_COMPLETE') {
+        return { changed: true, done: true };
     }
 
     let changed = false;
