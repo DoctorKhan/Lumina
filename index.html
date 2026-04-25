@@ -530,7 +530,8 @@ Enjoy writing!
 
         async function runCommandInTerminal(command, label) {
             await toggleTerminal(true);
-            terminal?.write(`\r\n${label}\r\n`);
+            terminal?.write(`\r\n${label}\r\n$ ${command}\r\n`);
+            terminal?.scrollToBottom();
             await invoke('terminal_write', { data: `${command}\r` });
             terminal?.focus();
         }
@@ -590,10 +591,13 @@ Enjoy writing!
             );
             if (!confirmed) return;
 
+            installUpdateBtn.disabled = true;
+            setUpdateStatus(`Installing ${latestReleaseTag}; see terminal.`);
             await runCommandInTerminal(
                 releaseInstallCommand(latestReleaseTag),
                 `Installing Lumina ${latestReleaseTag} from GitHub releases...`
             );
+            installUpdateBtn.disabled = false;
         }
 
         async function loadCurrentCheckoutInstaller() {
@@ -617,10 +621,12 @@ Enjoy writing!
             );
             if (!confirmed) return;
 
+            installCheckoutBtn.disabled = true;
             await runCommandInTerminal(
                 currentCheckoutInstallCommand,
                 'Installing the current local checkout...'
             );
+            installCheckoutBtn.disabled = false;
         }
 
         function cleanTerminalPath(path) {
