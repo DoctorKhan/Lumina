@@ -12,6 +12,12 @@ body {
 
 .editor-container {
     height: calc(100vh - 64px);
+    min-width: 0;
+}
+
+.workspace-panes {
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .editor-collapsed .editor-pane {
@@ -95,11 +101,36 @@ body {
     scrollbar-color: #cbd5e1 transparent;
 }
 
-.terminal-pane {
+.side-pane {
     flex: 0 0 34%;
-    min-width: 320px;
+    min-width: min(320px, 45vw);
+    max-width: 70vw;
     min-height: 0;
     background: #070b16;
+}
+
+.side-pane.hidden,
+.side-pane-resizer.hidden {
+    display: none;
+}
+
+.side-pane-resizer {
+    flex: 0 0 6px;
+}
+
+.terminal-pane {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    background: #070b16;
+}
+
+.side-pane-split .terminal-pane {
+    flex-basis: 50%;
+}
+
+.side-pane-split .terminal-pane + .terminal-pane:not(.hidden) {
+    border-top: 1px solid #1e293b;
 }
 
 .terminal-pane.hidden {
