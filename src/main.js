@@ -43,12 +43,17 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         const installProgressDetail = document.getElementById('install-progress-detail');
         const installProgressPercent = document.getElementById('install-progress-percent');
         const editorContainer = document.querySelector('.editor-container');
+        const workspacePanes = document.getElementById('workspace-panes');
+        const sidePane = document.getElementById('side-pane');
+        const sidePaneResizer = document.getElementById('side-pane-resizer');
         const editorPane = document.querySelector('.editor-pane');
         const previewPane = document.querySelector('.preview-pane');
         const paneResizer = document.getElementById('pane-resizer');
         let mermaidInitialized = false;
         let sourceCollapsed = false;
         let isResizing = false;
+        let isResizingSidePane = false;
+        let sidePanePercent = 34;
         let terminal = null;
         let fitAddon = null;
         let terminalVisible = false;
@@ -1342,9 +1347,19 @@ async function replaceSelectionFromClipboard() {
             syncAppMenu();
         }
 
+        function syncSidePaneLayout() {
+            const sidePaneVisible = terminalVisible || claudeVisible;
+            sidePane.classList.toggle('hidden', !sidePaneVisible);
+            sidePaneResizer.classList.toggle('hidden', !sidePaneVisible);
+            sidePane.classList.toggle('side-pane-split', terminalVisible && claudeVisible);
+            sidePane.style.flexBasis = sidePaneVisible ? `${sidePanePercent}%` : '';
+            resizeTerminals();
+        }
+
         async function toggleTerminal(forceVisible) {
             terminalVisible = typeof forceVisible === 'boolean' ? forceVisible : !terminalVisible;
             terminalPane.classList.toggle('hidden', !terminalVisible);
+            syncSidePaneLayout();
             syncPaneToggleButtons();
 
             if (terminalVisible) {
@@ -1362,6 +1377,7 @@ async function replaceSelectionFromClipboard() {
         async function toggleClaude(forceVisible) {
             claudeVisible = typeof forceVisible === 'boolean' ? forceVisible : !claudeVisible;
             claudePane.classList.toggle('hidden', !claudeVisible);
+            syncSidePaneLayout();
             syncPaneToggleButtons();
 
             if (claudeVisible) {
