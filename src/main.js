@@ -213,10 +213,12 @@ function readRecentFilePaths() {
 
 function syncAppMenu(paths = readRecentFilePaths()) {
     invoke('sync_app_menu', {
-        paths,
-        sourceShown: !sourceCollapsed,
-        terminalShown: terminalVisible,
-        claudeShown: claudeVisible
+        params: {
+            paths,
+            sourceShown: !sourceCollapsed,
+            terminalShown: terminalVisible,
+            claudeShown: claudeVisible
+        }
     }).catch((error) => {
         setUpdateStatus(`Unable to update menu: ${error?.message || error}`);
     });
@@ -682,7 +684,7 @@ function hideInstallUpdateBadge() {
         }
 
         function releaseInstallCommand(tagName) {
-            return `curl -fsSL ${publicInstallerUrl} | GIT_REF=${shellQuote(tagName)} bash`;
+            return `echo "Downloading the Lumina installer (build steps can take many minutes)…" && curl -fL --connect-timeout 30 --retry 2 ${publicInstallerUrl} | GIT_REF=${shellQuote(tagName)} bash`;
         }
 
         function waitForTerminalToSettle(ms) {
