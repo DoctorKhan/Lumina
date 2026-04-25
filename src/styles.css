@@ -30,6 +30,20 @@ body {
     border-left: none;
 }
 
+.editor-meta-bar {
+    overflow: hidden;
+}
+
+#filename-display {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#char-count {
+    white-space: nowrap;
+}
+
 .update-install-badge {
     margin-left: 0.6rem;
     border-radius: 999px;

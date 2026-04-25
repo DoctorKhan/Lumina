@@ -1034,6 +1034,10 @@ async function replaceSelectionFromClipboard() {
 
             claudeFitAddon.fit();
             if (currentFilePath) {
+                const directory = currentFileDirectory();
+                const accessMessage = `Claude will open this file's folder so it can read and edit the current document:\r\n${directory}\r\nIf macOS asks for folder access, it is for this Claude editing session.\r\n`;
+                claudeTerminal.write(accessMessage);
+                setUpdateStatus(`Claude may ask macOS for access to ${directory}.`);
                 claudeTerminal.write(`Saving and opening Claude in the file directory:\r\n${currentFilePath}\r\n`);
                 await invoke('save_file_path', {
                     path: currentFilePath,

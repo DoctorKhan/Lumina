@@ -35,6 +35,35 @@ test("startup update check is quiet and exposes an install badge", () => {
   assert.match(main, /showInstallUpdateBadge\(latestTag\)/);
 });
 
+test("macOS folder permission prompts explain Claude and file access", () => {
+  const plist = fs.readFileSync("src-tauri/Info.plist", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  for (const key of [
+    "NSDesktopFolderUsageDescription",
+    "NSDocumentsFolderUsageDescription",
+    "NSDownloadsFolderUsageDescription",
+    "NSNetworkVolumesUsageDescription",
+    "NSRemovableVolumesUsageDescription",
+  ]) {
+    assert.match(plist, new RegExp(`<key>${key}</key>`));
+  }
+
+  assert.match(plist, /Claude pane edits the current file's folder/);
+  assert.match(main, /If macOS asks for folder access, it is for this Claude editing session\./);
+});
+
+test("editor metadata bar truncates long filenames without wrapping", () => {
+  const html = fs.readFileSync("index.html", "utf8");
+  const css = fs.readFileSync("src/styles.css", "utf8");
+
+  assert.match(html, /class="editor-meta-bar[^"]*gap-4[^"]*"/);
+  assert.match(html, /id="filename-display" class="[^"]*min-w-0[^"]*flex-1[^"]*truncate[^"]*"/);
+  assert.match(html, /id="char-count" class="[^"]*shrink-0[^"]*whitespace-nowrap[^"]*"/);
+  assert.match(css, /#filename-display\s*\{[\s\S]*text-overflow:\s*ellipsis;[\s\S]*white-space:\s*nowrap;/);
+  assert.match(css, /#char-count\s*\{[\s\S]*white-space:\s*nowrap;/);
+});
+
 test("example guide documents the app features that have regressed before", () => {
   const guide = fs.readFileSync("src/example.md", "utf8");
 
