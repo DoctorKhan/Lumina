@@ -183,6 +183,8 @@ if (indexHtml === indexUpdated) {
 fs.writeFileSync(indexPath, indexUpdated);
 '
 
+  cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+
   git add -A
   git commit -m "chore(release): v${next_version}"
   git tag -a "$tag" -m "Release ${tag}"
