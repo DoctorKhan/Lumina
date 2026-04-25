@@ -1,7 +1,7 @@
         import exampleMarkdown from './example.md?raw';
         import { invoke } from '@tauri-apps/api/core';
         import { listen } from '@tauri-apps/api/event';
-        import { open as openDialog } from '@tauri-apps/plugin-dialog';
+        import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { compareVersions, parseVersion, selectLatestUpdateTag } from './update.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
@@ -211,16 +211,21 @@ function readRecentFilePaths() {
     }
 }
 
-function syncRecentFilesMenu(paths = readRecentFilePaths()) {
-    invoke('sync_recent_files_menu', { paths }).catch((error) => {
-        setUpdateStatus(`Unable to update recents menu: ${error?.message || error}`);
+function syncAppMenu(paths = readRecentFilePaths()) {
+    invoke('sync_app_menu', {
+        paths,
+        sourceShown: !sourceCollapsed,
+        terminalShown: terminalVisible,
+        claudeShown: claudeVisible
+    }).catch((error) => {
+        setUpdateStatus(`Unable to update menu: ${error?.message || error}`);
     });
 }
 
 function writeRecentFilePaths(paths) {
     const recentPaths = [...new Set(paths)].slice(0, maxRecentFilePaths);
     localStorage.setItem(recentFilePathsKey, JSON.stringify(recentPaths));
-    syncRecentFilesMenu(recentPaths);
+    syncAppMenu(recentPaths);
 }
 
         function rememberOpenedPath(path) {
@@ -588,14 +593,45 @@ async function openRecentFile(recentIndex = null) {
             });
         }
 
-        function downloadContent() {
-            const blob = new Blob([editor.value], { type: 'text/markdown' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `lumina-document-${Date.now()}.md`;
-            link.click();
-            URL.revokeObjectURL(url);
+        async function saveDocument() {
+            if (!currentFilePath) {
+                await saveDocumentAs();
+                return;
+            }
+            try {
+                const file = await invoke('write_document', {
+                    path: currentFilePath,
+                    content: editor.value
+                });
+                currentFilePath = file.path;
+                filenameDisplay.textContent = `Editing: ${file.path}`;
+                filenameDisplay.title = file.path;
+                setUpdateStatus('Saved.');
+            } catch (error) {
+                setUpdateStatus(`Save failed: ${error?.message || error}`);
+            }
+        }
+
+        async function saveDocumentAs() {
+            const defaultPath = currentFilePath || undefined;
+            try {
+                const path = await saveDialog({
+                    title: 'Save',
+                    defaultPath,
+                    filters: [
+                        { name: 'Markdown', extensions: ['md', 'markdown', 'txt'] }
+                    ]
+                });
+                if (!path) return;
+                const file = await invoke('write_document', { path, content: editor.value });
+                currentFilePath = file.path;
+                filenameDisplay.textContent = `Editing: ${file.path}`;
+                filenameDisplay.title = file.path;
+                rememberOpenedPath(file.path);
+                setUpdateStatus('Saved.');
+            } catch (error) {
+                setUpdateStatus(`Save failed: ${error?.message || error}`);
+            }
         }
 
         async function copyToClipboard(button = null) {
@@ -946,16 +982,32 @@ async function checkForUpdate({ background = false } = {}) {
             callback(links.length > 0 ? links : undefined);
         }
 
+        function applyTerminalFit() {
+            if (!terminalVisible || !fitAddon || !terminal) return;
+            fitAddon.fit();
+            invoke('terminal_resize', {
+                cols: terminal.cols,
+                rows: terminal.rows
+            }).catch(() => {});
+        }
+
+        function applyClaudeFit() {
+            if (!claudeVisible || !claudeFitAddon || !claudeTerminal) return;
+            claudeFitAddon.fit();
+            invoke('claude_resize', {
+                cols: claudeTerminal.cols,
+                rows: claudeTerminal.rows
+            }).catch(() => {});
+        }
+
         function resizeTerminal() {
             if (!terminalVisible || !terminal || !fitAddon) return;
 
             cancelAnimationFrame(terminalResizeFrame);
             terminalResizeFrame = requestAnimationFrame(() => {
-                fitAddon.fit();
-                invoke('terminal_resize', {
-                    cols: terminal.cols,
-                    rows: terminal.rows
-                }).catch(() => {});
+                applyTerminalFit();
+                // xterm’s FitAddon reads parent size; a second pass runs after this pane’s flex layout is final.
+                requestAnimationFrame(applyTerminalFit);
             });
         }
 
@@ -964,11 +1016,8 @@ async function checkForUpdate({ background = false } = {}) {
 
             cancelAnimationFrame(claudeResizeFrame);
             claudeResizeFrame = requestAnimationFrame(() => {
-                claudeFitAddon.fit();
-                invoke('claude_resize', {
-                    cols: claudeTerminal.cols,
-                    rows: claudeTerminal.rows
-                }).catch(() => {});
+                applyClaudeFit();
+                requestAnimationFrame(applyClaudeFit);
             });
         }
 
@@ -1152,7 +1201,7 @@ async function replaceSelectionFromClipboard() {
                 claudeTerminal.write(accessMessage);
                 setUpdateStatus(`Claude may ask macOS for access to ${directory}.`);
                 claudeTerminal.write(`Saving and opening Claude in the file directory:\r\n${currentFilePath}\r\n`);
-                await invoke('save_file_path', {
+                await invoke('write_document', {
                     path: currentFilePath,
                     content: editor.value
                 });
@@ -1192,6 +1241,7 @@ async function replaceSelectionFromClipboard() {
             toggleSourceBtn.title = sourceCollapsed ? 'Show source pane' : 'Hide source pane';
             toggleTerminalBtn.title = terminalVisible ? 'Hide terminal' : 'Show terminal';
             toggleClaudeBtn.title = claudeVisible ? 'Hide Claude' : 'Show Claude';
+            syncAppMenu();
         }
 
         async function toggleTerminal(forceVisible) {
@@ -1259,8 +1309,11 @@ async function replaceSelectionFromClipboard() {
             case 'lumina_open_recent_file':
                 openRecentFile();
                 break;
-                case 'lumina_download_markdown':
-                    downloadContent();
+                case 'lumina_save':
+                    void saveDocument();
+                    break;
+                case 'lumina_save_as':
+                    void saveDocumentAs();
                     break;
                 case 'lumina_undo':
                     undoEditor();
@@ -1319,7 +1372,7 @@ async function replaceSelectionFromClipboard() {
             setUpdateStatus(`Open-file events unavailable: ${error?.message || error}`);
         });
         flushPendingOpenPathsFromBackend();
-        syncRecentFilesMenu();
+        syncAppMenu();
 installUpdateBadge.addEventListener('click', installDetectedUpdate);
         toggleSourceBtn.addEventListener('click', toggleSource);
         toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
@@ -1557,7 +1610,11 @@ document.addEventListener('click', (event) => {
                 openFileWithDialog();
             } else if (event.key.toLowerCase() === 's') {
                 event.preventDefault();
-                downloadContent();
+                if (event.shiftKey) {
+                    void saveDocumentAs();
+                } else {
+                    void saveDocument();
+                }
             } else if (event.shiftKey && event.key.toLowerCase() === 'c') {
                 event.preventDefault();
                 copyToClipboard();

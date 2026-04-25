@@ -2,24 +2,37 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 
-test("Help menu exposes the bundled example guide", () => {
+test("Help menu exposes the bundled example guide as Lumina Help", () => {
   const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
 
   assert.match(rust, /MENU_OPEN_EXAMPLE_GUIDE/);
-  assert.match(rust, /Open Example Guide/);
+  assert.match(rust, /Lumina Help/);
   assert.match(main, /case 'lumina_open_example_guide':/);
   assert.match(main, /loadExampleGuide\(\)/);
 });
 
-test("Contribute on GitHub uses the native external URL command", () => {
+test("Lumina on GitHub uses the native external URL command", () => {
   const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
 
+  assert.match(rust, /Lumina on GitHub/);
   assert.match(rust, /fn open_external_url/);
   assert.match(rust, /https:\/\/github\.com\/DoctorKhan\/Lumina/);
   assert.match(main, /invoke\('open_external_url'/);
   assert.doesNotMatch(main, /window\.open\('https:\/\/github\.com\/DoctorKhan\/Lumina'/);
+});
+
+test("app menu sync and native save are wired for standard File menu", () => {
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  assert.match(rust, /fn sync_app_menu/);
+  assert.match(rust, /fn write_document/);
+  assert.match(rust, /CheckMenuItemBuilder/);
+  assert.match(main, /sync_app_menu/);
+  assert.match(main, /'lumina_save'/);
+  assert.match(main, /'lumina_save_as'/);
 });
 
 test("CLI and Open With pass file paths into the editor via pending open queue", () => {
