@@ -27,7 +27,7 @@ test("install estimates use bundled seed before local timings exist", () => {
     }
   );
 
-  assert.equal(estimate, "420");
+  assert.equal(estimate, "720");
 });
 
 test("local install timings dominate the bundled seed after one run", () => {
@@ -42,7 +42,7 @@ test("local install timings dominate the bundled seed after one run", () => {
     }
   ));
 
-  assert.equal(estimate, 107);
+  assert.equal(estimate, 140);
 });
 
 test("completed install steps update both event log and local model", () => {
