@@ -30,7 +30,9 @@ test("app menu sync and native save are wired for standard File menu", () => {
   assert.match(rust, /fn sync_app_menu/);
   assert.match(rust, /fn write_document/);
   assert.match(rust, /CheckMenuItemBuilder/);
+  assert.match(rust, /MENU_NEW_FILE/);
   assert.match(main, /invoke\('sync_app_menu',\s*\{\s*params:\s*\{/);
+  assert.match(main, /'lumina_new_file'/);
   assert.match(main, /'lumina_save'/);
   assert.match(main, /'lumina_save_as'/);
 });

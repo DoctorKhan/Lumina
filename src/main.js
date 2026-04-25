@@ -222,6 +222,18 @@ const currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             editor.focus();
         }
 
+        function newUntitledDocument() {
+            currentFilePath = null;
+            editor.value = '';
+            filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
+            filenameDisplay.title = '';
+            resetEditorHistory();
+            updateEditorMetrics();
+            schedulePreviewUpdate();
+            setUpdateStatus('New document.');
+            editor.focus();
+        }
+
         function dirname(path) {
             const cleanPath = String(path || '').replace(/\/+$/, '');
             const index = cleanPath.lastIndexOf('/');
@@ -1456,6 +1468,9 @@ async function replaceSelectionFromClipboard() {
             }
 
             switch (command) {
+                case 'lumina_new_file':
+                    newUntitledDocument();
+                    break;
                 case 'lumina_open_file':
                     openFileWithDialog();
                     break;
@@ -1785,6 +1800,9 @@ document.addEventListener('click', (event) => {
                 } else {
                     undoEditor();
                 }
+            } else if (event.key.toLowerCase() === 'n' && !event.shiftKey) {
+                event.preventDefault();
+                newUntitledDocument();
             } else if (event.key.toLowerCase() === 'o') {
                 event.preventDefault();
                 openFileWithDialog();

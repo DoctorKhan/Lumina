@@ -14,6 +14,7 @@ use tauri::{
     AppHandle, Emitter, Manager, Runtime, State, Wry,
 };
 
+const MENU_NEW_FILE: &str = "lumina_new_file";
 const MENU_OPEN_FILE: &str = "lumina_open_file";
 const MENU_OPEN_LAST_FILE: &str = "lumina_open_last_file";
 const MENU_OPEN_RECENT_FILE_PREFIX: &str = "lumina_open_recent_file:";
@@ -211,6 +212,7 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
     terminal_shown: bool,
     claude_shown: bool,
 ) -> tauri::Result<Menu<R>> {
+    let new_file = menu_item(manager, MENU_NEW_FILE, "New", Some("CmdOrCtrl+N"))?;
     let open_file = menu_item(manager, MENU_OPEN_FILE, "Open…", Some("CmdOrCtrl+O"))?;
     let open_last_file = menu_item(
         manager,
@@ -293,6 +295,7 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .build()?;
 
     let file_menu = SubmenuBuilder::new(manager, "File")
+        .item(&new_file)
         .item(&open_file)
         .item(&open_last_file)
         .item(&recent_files_menu)
@@ -345,7 +348,8 @@ fn is_lumina_menu_id(id: &str) -> bool {
     id.starts_with(MENU_OPEN_RECENT_FILE_PREFIX)
         || matches!(
             id,
-            MENU_OPEN_FILE
+            MENU_NEW_FILE
+                | MENU_OPEN_FILE
                 | MENU_OPEN_LAST_FILE
                 | MENU_SAVE
                 | MENU_SAVE_AS
