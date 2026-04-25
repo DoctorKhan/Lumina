@@ -50,7 +50,11 @@ test("CLI and Open With pass file paths into the editor via pending open queue",
 test("startup update check is quiet and exposes an install badge", () => {
   const html = fs.readFileSync("index.html", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
+  const capabilities = fs.readFileSync("src-tauri/capabilities/default.json", "utf8");
 
+  assert.match(main, /from '@tauri-apps\/plugin-process'/);
+  assert.match(main, /\brelaunch\b/);
+  assert.match(capabilities, /"process:default"/);
   assert.match(html, /id="install-update-badge"/);
   assert.match(main, /checkForUpdate\(\{ background = false \} = \{\}\)/);
   assert.match(main, /checkForUpdate\(\{ background: true \}\)/);

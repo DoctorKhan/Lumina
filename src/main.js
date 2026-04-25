@@ -2,6 +2,7 @@
         import { getVersion } from '@tauri-apps/api/app';
         import { invoke } from '@tauri-apps/api/core';
         import { listen } from '@tauri-apps/api/event';
+        import { relaunch } from '@tauri-apps/plugin-process';
         import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { compareVersions, parseVersion, selectLatestUpdateTag } from './update.js';
         import {
@@ -798,9 +799,16 @@ function hideInstallUpdateBadge() {
                 const target = latestReleaseTag
                     ? String(latestReleaseTag).trim()
                     : 'the new build';
-                setUpdateStatus(
-                    `Install finished (${target}). This window is still v${currentVersion} until you quit Lumina completely and open it again (e.g. from /Applications). The title bar only updates after relaunch.`
-                );
+                setUpdateStatus(`Install finished (${target}). Relaunching…`);
+                void (async () => {
+                    try {
+                        await relaunch();
+                    } catch (_) {
+                        setUpdateStatus(
+                            `Install finished (${target}). Quit Lumina completely and open it again (e.g. from /Applications) to load the new version. The title bar shows the version after relaunch.`
+                        );
+                    }
+                })();
             }, 4500);
         }
 
