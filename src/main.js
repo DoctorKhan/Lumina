@@ -59,6 +59,7 @@ let claudeWorkspaceFilePath = null;
 const recentFilePathsKey = 'lumina:recent-file-paths';
 const maxRecentFilePaths = 10;
         const releaseApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/releases/latest';
+        const tagsApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/tags?per_page=100';
         const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
         const currentVersion = document.getElementById('app-version-badge').textContent.trim().replace(/^v/i, '');
 
@@ -619,6 +620,13 @@ async function openRecentFile(recentIndex = null) {
             return 0;
         }
 
+        function newestSemverTag(tags) {
+            return tags
+                .map((tag) => tag?.name || tag?.tag_name || '')
+                .filter((tag) => parseVersion(tag))
+                .sort((left, right) => compareVersions(right, left))[0] || null;
+        }
+
         function shellQuote(value) {
             return `'${String(value).replaceAll("'", "'\\''")}'`;
         }
@@ -641,37 +649,53 @@ async function openRecentFile(recentIndex = null) {
             if (updateCheckInProgress) return;
             updateCheckInProgress = true;
             latestReleaseTag = null;
-            setUpdateStatus('Checking GitHub releases...');
+            setUpdateStatus('Checking GitHub releases and tags...');
 
             try {
-                const response = await fetch(releaseApiUrl, {
-                    headers: { Accept: 'application/vnd.github+json' },
-                    cache: 'no-store'
-                });
+                let latestTag = null;
+                let source = 'tag';
 
-                if (response.status === 404) {
-                    setUpdateStatus('No GitHub releases published yet.');
+                const [releaseResponse, tagsResponse] = await Promise.all([
+                    fetch(releaseApiUrl, {
+                        headers: { Accept: 'application/vnd.github+json' },
+                        cache: 'no-store'
+                    }),
+                    fetch(tagsApiUrl, {
+                        headers: { Accept: 'application/vnd.github+json' },
+                        cache: 'no-store'
+                    })
+                ]);
+
+                if (releaseResponse.ok) {
+                    const release = await releaseResponse.json();
+                    if (parseVersion(release.tag_name)) {
+                        latestTag = release.tag_name;
+                        source = 'release';
+                    }
+                } else if (releaseResponse.status !== 404) {
+                    throw new Error(`GitHub releases returned ${releaseResponse.status}`);
+                }
+
+                if (!tagsResponse.ok) {
+                    throw new Error(`GitHub tags returned ${tagsResponse.status}`);
+                }
+
+                const newestTag = newestSemverTag(await tagsResponse.json());
+                if (newestTag && (!latestTag || compareVersions(newestTag, latestTag) > 0)) {
+                    latestTag = newestTag;
+                    source = 'tag';
+                }
+
+                if (!latestTag) {
+                    setUpdateStatus('No semver GitHub releases or tags found.');
                     return;
                 }
 
-                if (!response.ok) {
-                    throw new Error(`GitHub returned ${response.status}`);
-                }
-
-                const release = await response.json();
-                const tagName = release.tag_name || '';
-                const latestVersion = parseVersion(tagName);
-
-                if (!latestVersion) {
-                    setUpdateStatus(`Latest release has an unexpected tag: ${tagName || 'unknown'}`);
-                    return;
-                }
-
-                if (compareVersions(tagName, currentVersion) > 0) {
-                    latestReleaseTag = tagName;
-                    setUpdateStatus(`Update available: ${tagName}`);
+                if (compareVersions(latestTag, currentVersion) > 0) {
+                    latestReleaseTag = latestTag;
+                    setUpdateStatus(`Update available: ${latestTag} (${source})`);
                 } else {
-                    setUpdateStatus(`Up to date: v${currentVersion}`);
+                    setUpdateStatus(`Up to date: v${currentVersion}; latest ${source} is ${latestTag}`);
                 }
             } catch (error) {
                 setUpdateStatus(`Update check failed: ${error?.message || error}`);
