@@ -22,6 +22,17 @@ test("Contribute on GitHub uses the native external URL command", () => {
   assert.doesNotMatch(main, /window\.open\('https:\/\/github\.com\/DoctorKhan\/Lumina'/);
 });
 
+test("startup update check is quiet and exposes an install badge", () => {
+  const html = fs.readFileSync("index.html", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  assert.match(html, /id="install-update-badge"/);
+  assert.match(main, /checkForUpdate\(\{ background = false \} = \{\}\)/);
+  assert.match(main, /checkForUpdate\(\{ background: true \}\)/);
+  assert.match(main, /installUpdateBadge\.addEventListener\('click', installDetectedUpdate\)/);
+  assert.match(main, /showInstallUpdateBadge\(latestTag\)/);
+});
+
 test("example guide documents the app features that have regressed before", () => {
   const guide = fs.readFileSync("src/example.md", "utf8");
 
