@@ -218,7 +218,7 @@ case "$cmd" in
     ensure_command pnpm "Install pnpm: https://pnpm.io/installation"
     pnpm install
     ;;
-  dev)
+  vite:dev)
     ensure_command pnpm "Install pnpm: https://pnpm.io/installation"
     pnpm dev
     ;;
@@ -226,7 +226,7 @@ case "$cmd" in
     ensure_command pnpm "Install pnpm: https://pnpm.io/installation"
     pnpm build
     ;;
-  tauri:dev)
+  tauri:dev|dev)
     ensure_command pnpm "Install pnpm: https://pnpm.io/installation"
     ensure_command cargo "Install Rust toolchain: https://rustup.rs/"
     ./scripts/ensure-tauri-icons.sh

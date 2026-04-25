@@ -73,9 +73,14 @@
                 <span>Claude</span>
                 <div class="flex items-center gap-3">
                     <span id="claude-status" class="normal-case tracking-normal text-violet-300/70">Stopped</span>
+                    <button id="claude-send-context-btn" class="text-violet-200/80 hover:text-white transition-colors normal-case tracking-normal" title="Send file and selection context to Claude">Context</button>
+                    <button id="claude-presets-btn" class="text-violet-200/80 hover:text-white transition-colors normal-case tracking-normal" title="Send a preset Claude prompt">Prompts</button>
+                    <button id="claude-pull-file-btn" class="text-violet-200/80 hover:text-white transition-colors normal-case tracking-normal" title="Pull Claude's edited temp file into the editor">Pull File</button>
+                    <button id="claude-replace-selection-btn" class="text-violet-200/80 hover:text-white transition-colors normal-case tracking-normal" title="Replace the current selection with clipboard text">Apply Clipboard</button>
                     <button id="close-claude-btn" class="text-violet-200/80 hover:text-white transition-colors" title="Hide Claude">Close</button>
                 </div>
             </div>
+            <div id="claude-workspace-status" class="border-b border-violet-900 bg-violet-950/80 px-4 py-1 text-xs text-violet-200/70 truncate">Claude workspace: not started</div>
             <div id="claude-terminal" class="flex-1 min-h-0"></div>
         </aside>
     </main>
