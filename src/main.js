@@ -18,8 +18,8 @@ import {
 } from './installProgressAnimate.js';
         import {
             applyKatexToPreview,
-            getMarked,
             highlightCodeBlocksIn,
+            marked,
             renderMermaidInPreview
         } from './previewLoaders.js';
         import { Terminal } from '@xterm/xterm';
@@ -560,7 +560,6 @@ async function openRecentFile(recentIndex = null) {
             const normalizedValue = normalizeEscapedLatexDelimiters(
                 normalizeMathBlocks(rawValue)
             );
-            const marked = await getMarked();
             preview.innerHTML = marked.parse(normalizedValue);
             applySmartOutlineStyles();
             await highlightCodeBlocksIn(preview);

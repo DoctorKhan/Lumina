@@ -1,44 +1,41 @@
 /**
- * Lazy-load heavy preview dependencies so startup/bundle work stays light
- * and optional features (Mermaid, KaTeX, code highlighting) only load when used.
+ * Preview stack: `marked` is loaded eagerly (small, must match the marked v9+ token renderer API).
+ * Mermaid, KaTeX, and highlight.js stay lazy so they only load when needed.
  */
-let markedConfigured = null;
+import { marked, Renderer } from 'marked';
+import { mayNeedKatex } from './previewMathHeuristic.js';
 
-export async function getMarked() {
-    if (!markedConfigured) {
-        const { marked, Renderer } = await import('marked');
-        marked.setOptions({
-            breaks: false,
-            gfm: true
-        });
-        const renderer = new Renderer();
-        renderer.code = (code, infostring) => {
-            const language = (infostring || '').trim().toLowerCase();
-            if (language === 'mermaid') {
-                return `<pre class="mermaid">${code}</pre>`;
-            }
-            const escapedCode = code
-                .replaceAll('&', '&amp;')
-                .replaceAll('<', '&lt;')
-                .replaceAll('>', '&gt;');
-            const className = language ? `language-${language}` : '';
-            return `<pre><code class="${className}">${escapedCode}</code></pre>`;
-        };
-        marked.use({ renderer });
-        markedConfigured = marked;
+const renderer = new Renderer();
+// Marked v18+ passes a single token: { text, lang, escaped, ... }
+renderer.code = (token) => {
+    const code = token.text;
+    const language = (token.lang || '').trim().toLowerCase();
+    if (language === 'mermaid') {
+        return `<pre class="mermaid">${code}</pre>`;
     }
-    return markedConfigured;
-}
+    const escapedCode = code
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+    const className = language ? `language-${language}` : '';
+    return `<pre><code class="${className}">${escapedCode}</code></pre>`;
+};
 
-let hljsCssPromise = null;
+marked.setOptions({
+    breaks: false,
+    gfm: true
+});
+marked.use({ renderer });
+
+export { marked, mayNeedKatex };
+
 let hljsModulePromise = null;
 
 function ensureHljs() {
     if (!hljsModulePromise) {
-        hljsCssPromise = import('highlight.js/styles/github-dark.css');
         hljsModulePromise = import('highlight.js').then((m) => m.default);
     }
-    return Promise.all([hljsCssPromise, hljsModulePromise]).then(([, hljs]) => hljs);
+    return hljsModulePromise;
 }
 
 export async function highlightCodeBlocksIn(preview) {
@@ -50,32 +47,6 @@ export async function highlightCodeBlocksIn(preview) {
     blocks.forEach((block) => {
         hljs.highlightElement(block);
     });
-}
-
-/** Skip KaTeX if the (normalized) source clearly has no math delimiters. */
-export function mayNeedKatex(s) {
-    if (!s || !s.trim()) {
-        return false;
-    }
-    if (s.includes('$$')) {
-        return true;
-    }
-    if (/\\\(|\\\[|\\\)|\\\]/.test(s)) {
-        return true;
-    }
-    // $\cmd or $x — inline start (not a lone “$5” for currency)
-    if (/(^|[^\\])\$\\/.test(s) || /(^|[^\\])\$[a-zA-Z]/m.test(s)) {
-        return true;
-    }
-    // $x^2$, subscripts, etc.
-    if (/(^|[^\\])\$[^$]*[\\^_{}][^$]*\$/m.test(s)) {
-        return true;
-    }
-    // Purely numeric / symbolic formulas like $2+2$ or $(1)$ , without letters
-    if (/(^|[^\\])\$[\d\s+*/=().,~-]+\$/m.test(s)) {
-        return true;
-    }
-    return false;
 }
 
 let katexCssPromise = null;

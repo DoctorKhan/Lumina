@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mayNeedKatex } from "../src/previewLoaders.js";
+import { mayNeedKatex } from "../src/previewMathHeuristic.js";
 
 test("mayNeedKatex is false for plain text and unpaired $", () => {
     assert.equal(mayNeedKatex(""), false);
