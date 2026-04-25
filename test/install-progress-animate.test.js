@@ -30,6 +30,8 @@ test("interpolated percent rises between terminal updates when ETA is known", ()
         "[----------------------]   0%  |  about 2m 0s left  |  4s elapsed"
     );
     refreshInstallProgressAnchor(anchor, s);
+    // Shell 2m is total remaining; segment [56%, 67%] scales to ~30s (11/44 of 120s).
+    assert.equal(anchor.etaSeconds, 30);
     const p0 = getInterpolatedInstallPercent(anchor, s, anchor.anchorMs);
     const pHalf = getInterpolatedInstallPercent(anchor, s, anchor.anchorMs + 60_000);
     assert.equal(p0, 56);
@@ -37,13 +39,15 @@ test("interpolated percent rises between terminal updates when ETA is known", ()
     assert.ok(pHalf <= 67);
 });
 
-test("countdown ticks down from anchor ETA", () => {
+test("countdown ticks down from scaled segment ETA (not full install remaining)", () => {
     const anchor = createInstallProgressAnchorState();
     const s = createInstallProgressState();
     processInstallProgressLine(s, "[###-------------------]  12%  |  about 90s left  |");
     refreshInstallProgressAnchor(anchor, s);
-    assert.equal(getCountdownSecondsRemaining(anchor, anchor.anchorMs), 90);
-    assert.equal(getCountdownSecondsRemaining(anchor, anchor.anchorMs + 30_000), 60);
-    assert.equal(getCountdownSecondsRemaining(anchor, anchor.anchorMs + 89_000), 1);
+    // 90s to ~100%; animating 12%→99% uses (87/88) of that ≈ 89s.
+    assert.equal(anchor.etaSeconds, 89);
+    assert.equal(getCountdownSecondsRemaining(anchor, anchor.anchorMs), 89);
+    assert.equal(getCountdownSecondsRemaining(anchor, anchor.anchorMs + 30_000), 59);
+    assert.equal(getCountdownSecondsRemaining(anchor, anchor.anchorMs + 88_000), 1);
     assert.equal(getCountdownSecondsRemaining(anchor, anchor.anchorMs + 95_000), 0);
 });
