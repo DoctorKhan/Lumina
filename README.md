@@ -20,7 +20,7 @@ This installer will:
 
 ```bash
 ./run.sh setup
-./run.sh tauri:dev
+./run.sh tauri-dev
 ```
 
 ## Useful commands
@@ -28,7 +28,7 @@ This installer will:
 ```bash
 ./run.sh dev
 ./run.sh build
-./run.sh tauri:build
+./run.sh tauri-build
 ```
 
 ## Faster compile tips
@@ -37,5 +37,5 @@ This installer will:
 - You can override it manually, for example:
 
 ```bash
-CARGO_BUILD_JOBS=12 ./run.sh tauri:build
+CARGO_BUILD_JOBS=12 ./run.sh tauri-build
 ```
