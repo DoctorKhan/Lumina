@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --port 1420 --strictPort",
     "build": "vite build",
+    "test": "node --test",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",

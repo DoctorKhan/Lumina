@@ -628,9 +628,6 @@ async function openRecentFile(recentIndex = null) {
             setUpdateStatus('Checking GitHub releases and tags...');
 
             try {
-                let latestTag = null;
-                let source = 'tag';
-
                 const [releaseResponse, tagsResponse] = await Promise.all([
                     fetch(releaseApiUrl, {
                         headers: { Accept: 'application/vnd.github+json' },
@@ -642,12 +639,10 @@ async function openRecentFile(recentIndex = null) {
                     })
                 ]);
 
+                let latestReleaseTagName = null;
                 if (releaseResponse.ok) {
                     const release = await releaseResponse.json();
-                    if (parseVersion(release.tag_name)) {
-                        latestTag = release.tag_name;
-                        source = 'release';
-                    }
+                    latestReleaseTagName = release.tag_name;
                 } else if (releaseResponse.status !== 404) {
                     throw new Error(`GitHub releases returned ${releaseResponse.status}`);
                 }
@@ -656,17 +651,17 @@ async function openRecentFile(recentIndex = null) {
                     throw new Error(`GitHub tags returned ${tagsResponse.status}`);
                 }
 
-                const newestTag = newestSemverTag(await tagsResponse.json());
-                if (newestTag && (!latestTag || compareVersions(newestTag, latestTag) > 0)) {
-                    latestTag = newestTag;
-                    source = 'tag';
-                }
+                const latestTagInfo = selectLatestUpdateTag({
+                    latestReleaseTag: latestReleaseTagName,
+                    tags: await tagsResponse.json()
+                });
 
-                if (!latestTag) {
+                if (!latestTagInfo) {
                     setUpdateStatus('No semver GitHub releases or tags found.');
                     return;
                 }
 
+                const { tag: latestTag, source } = latestTagInfo;
                 if (compareVersions(latestTag, currentVersion) > 0) {
                     latestReleaseTag = latestTag;
                     setUpdateStatus(`Update available: ${latestTag} (${source})`);

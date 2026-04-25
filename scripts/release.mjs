@@ -12,7 +12,7 @@ process.chdir(rootDir);
 const semver = /^(\d+)\.(\d+)\.(\d+)$/;
 const target = process.argv[2] ?? "patch";
 
-function run(command, args, options = {}) {
+export function run(command, args, options = {}) {
   return execFileSync(command, args, {
     cwd: rootDir,
     encoding: "utf8",
@@ -20,7 +20,7 @@ function run(command, args, options = {}) {
   });
 }
 
-function ensureCommand(command, help) {
+export function ensureCommand(command, help) {
   try {
     run(command, ["--version"], { capture: true });
   } catch {
@@ -30,15 +30,15 @@ function ensureCommand(command, help) {
   }
 }
 
-function readJson(file) {
+export function readJson(file) {
   return JSON.parse(fs.readFileSync(path.resolve(rootDir, file), "utf8"));
 }
 
-function writeJson(file, data) {
+export function writeJson(file, data) {
   fs.writeFileSync(path.resolve(rootDir, file), `${JSON.stringify(data, null, 2)}\n`);
 }
 
-function resolveReleaseVersion(current, requested) {
+export function resolveReleaseVersion(current, requested) {
   const match = current.match(semver);
   if (!match) {
     throw new Error(`Invalid current version: ${current}`);
@@ -69,7 +69,7 @@ function resolveReleaseVersion(current, requested) {
   return `${major}.${minor}.${patch}`;
 }
 
-function updateVersions(version) {
+export function updateVersions(version) {
   const packageJson = readJson("package.json");
   packageJson.version = version;
   writeJson("package.json", packageJson);
@@ -101,6 +101,36 @@ function updateVersions(version) {
   fs.writeFileSync(indexPath, updatedIndex);
 }
 
+export function releaseCommandPlan({ branch, tag, nextVersion }) {
+  return [
+    ["cargo", ["generate-lockfile", "--manifest-path", "src-tauri/Cargo.toml"]],
+    ["git", ["add", "-A"]],
+    ["git", ["commit", "-m", `chore(release): v${nextVersion}`]],
+    ["git", ["tag", "-a", tag, "-m", `Release ${tag}`]],
+    ["git", ["push", "origin", branch]],
+    ["git", ["push", "origin", tag]],
+    [
+      "gh",
+      [
+        "release",
+        "create",
+        tag,
+        "--verify-tag",
+        "--latest",
+        "--title",
+        `Lumina ${tag}`,
+        "--notes",
+        `Release ${tag}`,
+      ],
+    ],
+  ];
+}
+
+export function isMainModule() {
+  return process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+}
+
+if (isMainModule()) {
 try {
   ensureCommand("git", "Install git: https://git-scm.com/");
   ensureCommand("node", "Install Node.js: https://nodejs.org/");
@@ -142,26 +172,13 @@ try {
   console.log(`Releasing version ${nextVersion} from ${currentVersion} on branch ${branch}`);
 
   updateVersions(nextVersion);
-  run("cargo", ["generate-lockfile", "--manifest-path", "src-tauri/Cargo.toml"]);
-  run("git", ["add", "-A"]);
-  run("git", ["commit", "-m", `chore(release): v${nextVersion}`]);
-  run("git", ["tag", "-a", tag, "-m", `Release ${tag}`]);
-  run("git", ["push", "origin", branch]);
-  run("git", ["push", "origin", tag]);
-  run("gh", [
-    "release",
-    "create",
-    tag,
-    "--verify-tag",
-    "--latest",
-    "--title",
-    `Lumina ${tag}`,
-    "--notes",
-    `Release ${tag}`,
-  ]);
+  for (const [command, args] of releaseCommandPlan({ branch, tag, nextVersion })) {
+    run(command, args);
+  }
 
   console.log(`Release version ${tag} committed, tagged, pushed, and published on GitHub.`);
 } catch (error) {
   console.error(error.message);
   process.exit(1);
+}
 }
