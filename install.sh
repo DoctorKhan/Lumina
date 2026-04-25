@@ -188,9 +188,9 @@ git clean -fd
 ./scripts/ensure-tauri-icons.sh
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
-  ./run.sh tauri:build:app
+  ./run.sh tauri-build-app
 else
-  ./run.sh tauri:build
+  ./run.sh tauri-build
 fi
 
 if [[ "$OSTYPE" == "darwin"* ]]; then

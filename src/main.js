@@ -16,6 +16,8 @@
         const toggleClaudeBtn = document.getElementById('toggle-claude-btn');
 const claudeSendContextBtn = document.getElementById('claude-send-context-btn');
 const claudePresetsBtn = document.getElementById('claude-presets-btn');
+const claudeApplyMenuBtn = document.getElementById('claude-apply-menu-btn');
+const claudeApplyMenu = document.getElementById('claude-apply-menu');
 const claudePullFileBtn = document.getElementById('claude-pull-file-btn');
 const claudeReplaceSelectionBtn = document.getElementById('claude-replace-selection-btn');
         const closeTerminalBtn = document.getElementById('close-terminal-btn');
@@ -954,6 +956,8 @@ async function sendClaudePreset() {
 }
 
 async function pullClaudeWorkspaceFile() {
+    claudeApplyMenu.classList.add('hidden');
+    claudeApplyMenuBtn.setAttribute('aria-expanded', 'false');
     if (!claudeWorkspaceFilePath) {
         setUpdateStatus('Claude workspace file is not available yet.');
         return;
@@ -973,6 +977,8 @@ async function pullClaudeWorkspaceFile() {
 }
 
 async function replaceSelectionFromClipboard() {
+    claudeApplyMenu.classList.add('hidden');
+    claudeApplyMenuBtn.setAttribute('aria-expanded', 'false');
     try {
         const text = await navigator.clipboard.readText();
         if (!text) {
@@ -1093,8 +1099,9 @@ async function replaceSelectionFromClipboard() {
             });
             claudeWorkspaceFilePath = workspaceInfo?.filePath || currentFilePath;
             claudeWorkspaceStatus.textContent = claudeWorkspaceFilePath
-                ? `Claude file: ${claudeWorkspaceFilePath}`
-                : 'Claude workspace: current terminal directory';
+            ? `Editing ${basename(claudeWorkspaceFilePath)}`
+            : 'Using terminal directory';
+        claudeWorkspaceStatus.title = claudeWorkspaceFilePath || 'Claude is using the current terminal directory';
             claudeStarted = true;
             claudeStatus.textContent = 'Running';
             resizeClaude();
@@ -1160,8 +1167,12 @@ async function replaceSelectionFromClipboard() {
             syncPaneToggleButtons();
         }
 
-        function openGithub() {
-            window.open('https://github.com/DoctorKhan/Lumina', '_blank', 'noopener,noreferrer');
+        async function openGithub() {
+            try {
+                await invoke('open_external_url', { url: 'https://github.com/DoctorKhan/Lumina' });
+            } catch (error) {
+                setUpdateStatus(`Unable to open GitHub: ${error?.message || error}`);
+            }
         }
 
         function handleMenuCommand(command) {
@@ -1237,10 +1248,21 @@ async function replaceSelectionFromClipboard() {
         toggleClaudeBtn.addEventListener('click', () => toggleClaude());
 claudeSendContextBtn.addEventListener('click', () => sendClaudeContext());
 claudePresetsBtn.addEventListener('click', sendClaudePreset);
+claudeApplyMenuBtn.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const isHidden = claudeApplyMenu.classList.toggle('hidden');
+    claudeApplyMenuBtn.setAttribute('aria-expanded', String(!isHidden));
+});
 claudePullFileBtn.addEventListener('click', pullClaudeWorkspaceFile);
 claudeReplaceSelectionBtn.addEventListener('click', replaceSelectionFromClipboard);
         closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
         closeClaudeBtn.addEventListener('click', () => toggleClaude(false));
+document.addEventListener('click', (event) => {
+    if (claudeApplyMenu.classList.contains('hidden')) return;
+    if (claudeApplyMenu.contains(event.target) || claudeApplyMenuBtn.contains(event.target)) return;
+    claudeApplyMenu.classList.add('hidden');
+    claudeApplyMenuBtn.setAttribute('aria-expanded', 'false');
+});
         syncPaneToggleButtons();
 
         paneResizer.addEventListener('mousedown', () => {

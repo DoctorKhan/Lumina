@@ -5,6 +5,7 @@ use std::{
     env, fs,
     io::{Read, Write},
     path::{Path, PathBuf},
+    process::Command,
     sync::Mutex,
     thread,
 };
@@ -31,6 +32,7 @@ const MENU_CLAUDE_CONTEXT: &str = "lumina_claude_context";
 const MENU_CLAUDE_PROMPTS: &str = "lumina_claude_prompts";
 const MENU_CLAUDE_PULL_FILE: &str = "lumina_claude_pull_file";
 const MENU_CLAUDE_APPLY_CLIPBOARD: &str = "lumina_claude_apply_clipboard";
+const MENU_OPEN_EXAMPLE_GUIDE: &str = "lumina_open_example_guide";
 const MENU_OPEN_GITHUB: &str = "lumina_open_github";
 
 #[derive(Default)]
@@ -167,6 +169,7 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         None,
     )?;
     let open_github = menu_item(manager, MENU_OPEN_GITHUB, "Contribute on GitHub", None)?;
+    let open_example_guide = menu_item(manager, MENU_OPEN_EXAMPLE_GUIDE, "Open Example Guide", None)?;
 
     let app_menu = SubmenuBuilder::new(manager, "Lumina")
         .about(Some(AboutMetadata {
@@ -220,6 +223,8 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .build()?;
 
     let help_menu = SubmenuBuilder::new(manager, "Help")
+        .item(&open_example_guide)
+        .separator()
         .item(&open_github)
         .build()?;
 
@@ -253,6 +258,7 @@ fn is_lumina_menu_id(id: &str) -> bool {
                 | MENU_CLAUDE_PROMPTS
                 | MENU_CLAUDE_PULL_FILE
                 | MENU_CLAUDE_APPLY_CLIPBOARD
+                | MENU_OPEN_EXAMPLE_GUIDE
                 | MENU_OPEN_GITHUB
         )
 }
@@ -704,7 +710,7 @@ fn current_checkout_install_info() -> CheckoutInstallInfo {
     CheckoutInstallInfo {
         available: true,
         command: Some(format!(
-            "cd {} && ./run.sh install:app",
+            "cd {} && ./run.sh install-app",
             shell_quote(&root_dir)
         )),
         label: format!("Install current checkout from {root_dir}"),
@@ -717,6 +723,32 @@ fn sync_recent_files_menu(app: AppHandle<Wry>, paths: Vec<String>) -> Result<(),
     app.set_menu(menu)
         .map(|_| ())
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if url != "https://github.com/DoctorKhan/Lumina" {
+        return Err("External URL is not allowed.".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg(&url).status();
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("cmd").args(["/C", "start", "", &url]).status();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = Command::new("xdg-open").arg(&url).status();
+
+    status
+        .map_err(|error| error.to_string())
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("Unable to open URL; command exited with {status}"))
+            }
+        })
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -748,6 +780,7 @@ pub fn run() {
             open_file_path,
             save_file_path,
             sync_recent_files_menu,
+            open_external_url,
             current_checkout_install_info
         ])
         .run(tauri::generate_context!())
