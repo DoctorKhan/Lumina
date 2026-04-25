@@ -110,7 +110,7 @@ default_step_duration() {
     reset_checkout) echo 5 ;;
     js_deps) echo 90 ;;
     tauri_icons) echo 15 ;;
-    tauri_build) echo 420 ;;
+    tauri_build) echo 720 ;; # often cargo link + strip on macOS; prior errs low when cold
     copy_app) echo 10 ;;
     cli_launcher) echo 2 ;;
     file_associations) echo 5 ;;
@@ -204,16 +204,33 @@ estimate_step_duration() {
 }
 
 estimated_remaining() {
+  # “Remaining time” = sum of per-step means, EXCEPT: for the step currently running
+  # (CURRENT_STEP_KEY) subtract time already spent in that step. Otherwise a long
+  # tauri build looks like 1m left for the whole install until it finishes and the
+  # next record_step_duration() updates the local model.
   local first_index="$1"
   local total=0
   local index
   local key
-
+  local est
+  local now
+  local in_step
+  now="$(date +%s)"
   for ((index = first_index; index < INSTALL_TOTAL_STEPS; index++)); do
     key="${INSTALL_STEP_KEYS[$index]}"
-    total=$((total + $(estimate_step_duration "$key")))
+    est="$(estimate_step_duration "$key")"
+    if
+      [[ -n "${CURRENT_STEP_KEY:-}" && "$key" == "$CURRENT_STEP_KEY" && -n "${CURRENT_STEP_STARTED_AT:-}" ]]
+    then
+      in_step=$((now - CURRENT_STEP_STARTED_AT))
+      if ((in_step < est)); then
+        est=$((est - in_step))
+      else
+        est=0
+      fi
+    fi
+    total=$((total + est))
   done
-
   echo "$total"
 }
 
@@ -365,9 +382,10 @@ start_step() {
   CURRENT_STEP_STARTED_AT="$(date +%s)"
   elapsed="$(elapsed_seconds)"
   echo
-  if ((INSTALL_STEP == 1)); then
-    printf "%s\n" "$(install_progress_line 0 "$elapsed")"
-  fi
+  # Refresh progress at the start of every step so long-running steps (e.g. tauri) do
+  # not show a stale “time left” from the previous step’s finish.
+  # remaining_from_index = 0-based index of the first not-yet-finished work (INSTALL_STEP is 1-based).
+  printf "%s\n" "$(install_progress_line $((INSTALL_STEP - 1)) "$elapsed")"
   if install_use_color; then
     printf "  %s" "${C_BOLD}${C_VIO}"
     printf "[%d/%d]" "$INSTALL_STEP" "$INSTALL_TOTAL_STEPS"
@@ -663,11 +681,47 @@ finish_step "Prepared Tauri icons"
 
 if [[ "$OSTYPE" == "darwin"* ]]; then
   start_step "tauri_build" "Building macOS app bundle"
-  ./run.sh tauri-build-app
+  # Refresh ETA/percent while the build runs (this step is usually much longer than the mean;
+  # the in-step adjustment in estimated_remaining() updates “about … left” as time elapses).
+  ./run.sh tauri-build-app &
+  build_pid=$!
+  (
+    while sleep 20; do
+      if ! kill -0 "$build_pid" 2>/dev/null; then
+        break
+      fi
+      printf "%s\n" "$(install_progress_line $((INSTALL_STEP - 1)) "$(elapsed_seconds)")" || true
+    done
+  ) &
+  ticker=$!
+  if ! wait "$build_pid"; then
+    kill "$ticker" 2>/dev/null || true
+    wait "$ticker" 2>/dev/null || true
+    exit 1
+  fi
+  kill "$ticker" 2>/dev/null || true
+  wait "$ticker" 2>/dev/null || true
   finish_step "Built macOS app bundle"
 else
   start_step "tauri_build" "Building Tauri app"
-  ./run.sh tauri-build
+  ./run.sh tauri-build &
+  build_pid=$!
+  (
+    while sleep 20; do
+      if ! kill -0 "$build_pid" 2>/dev/null; then
+        break
+      fi
+      printf "%s\n" "$(install_progress_line $((INSTALL_STEP - 1)) "$(elapsed_seconds)")" || true
+    done
+  ) &
+  ticker=$!
+  if ! wait "$build_pid"; then
+    kill "$ticker" 2>/dev/null || true
+    wait "$ticker" 2>/dev/null || true
+    exit 1
+  fi
+  kill "$ticker" 2>/dev/null || true
+  wait "$ticker" 2>/dev/null || true
   finish_step "Built Tauri app"
 fi
 
