@@ -211,14 +211,27 @@ estimated_remaining() {
 progress_percent() {
   local elapsed="$1"
   local remaining="$2"
+  local completed_steps="${3:-0}"
+  local total_steps="${4:-0}"
   local predicted_total=$((elapsed + remaining))
+  local percent
+  local step_floor=0
 
   if ((predicted_total <= 0)); then
-    echo "0"
-    return
+    percent=0
+  else
+    percent=$(((elapsed * 100) / predicted_total))
   fi
 
-  echo $(((elapsed * 100) / predicted_total))
+  if ((total_steps > 0 && completed_steps > 0)); then
+    step_floor=$(((completed_steps * 100) / total_steps))
+  fi
+
+  if ((percent < step_floor)); then
+    percent="$step_floor"
+  fi
+
+  echo "$percent"
 }
 
 # Plain-text bar (logs, non-TTY, or LUMINA_INSTALL_NO_COLOR) — # and -
@@ -284,7 +297,7 @@ install_progress_line() {
   local remaining
   local percent
   remaining="$(estimated_remaining "$remaining_from_index")"
-  percent="$(progress_percent "$elapsed" "$remaining")"
+  percent="$(progress_percent "$elapsed" "$remaining" "$remaining_from_index" "$INSTALL_TOTAL_STEPS")"
   if ((percent > 99 && remaining > 0)); then
     percent=99
   fi
@@ -343,7 +356,9 @@ start_step() {
   CURRENT_STEP_STARTED_AT="$(date +%s)"
   elapsed="$(elapsed_seconds)"
   echo
-  printf "%s\n" "$(install_progress_line $((INSTALL_STEP - 1)) "$elapsed")"
+  if ((INSTALL_STEP == 1)); then
+    printf "%s\n" "$(install_progress_line 0 "$elapsed")"
+  fi
   if install_use_color; then
     printf "  %s" "${C_BOLD}${C_VIO}"
     printf "[%d/%d]" "$INSTALL_STEP" "$INSTALL_TOTAL_STEPS"

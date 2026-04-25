@@ -5,10 +5,9 @@
 import { compareVersions, parseVersion, selectLatestUpdateTag } from './update.js';
         import {
             createInstallProgressState,
-            formatInstallProgressSubtitle,
-            formatInstallProgressTitle,
             processInstallProgressLine
         } from './installProgressParse.js';
+import { createInstallProgressViewModel } from './installProgressView.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import '@xterm/xterm/css/xterm.css';
@@ -736,16 +735,13 @@ function hideInstallUpdateBadge() {
             if (!installProgressState) {
                 return;
             }
-            const s = installProgressState;
-            const w = s.percent == null ? 0 : s.percent;
-            installProgressFill.style.width = `${Math.min(100, w)}%`;
+            const view = createInstallProgressViewModel(installProgressState);
+            installProgressFill.style.width = `${view.width}%`;
             if (installProgressPercent) {
-                installProgressPercent.textContent = s.percent != null ? `${s.percent}%` : '—';
+                installProgressPercent.textContent = view.percentText;
             }
-            const subtitle = formatInstallProgressSubtitle(s);
-            const full = formatInstallProgressTitle(s);
-            installProgressDetail.textContent = subtitle;
-            installProgressDetail.title = full;
+            installProgressDetail.textContent = view.subtitle;
+            installProgressDetail.title = view.title;
         }
 
         function feedInstallProgressFromTerminal(raw) {
