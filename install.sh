@@ -36,6 +36,47 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
   INSTALL_STEP_KEYS+=(copy_app cli_launcher file_associations)
 fi
 INSTALL_TOTAL_STEPS="${#INSTALL_STEP_KEYS[@]}"
+# Bar width for plain + TTY; keep in sync for consistent %
+INSTALL_BAR_WIDTH=22
+
+# Colors & Unicode: TTY, respect NO_COLOR / LUMINA_INSTALL_NO_COLOR. See https://no-color.org/
+install_use_color() {
+  [[ -t 1 && -z "${NO_COLOR:-}" && -z "${LUMINA_INSTALL_NO_COLOR:-}" ]]
+}
+install_use_unicode() {
+  [[ "${LUMINA_INSTALL_BARS:-auto}" == "unicode" ]] && return 0
+  [[ "${LUMINA_INSTALL_BARS:-auto}" == "ascii" ]] && return 1
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *utf* | *UTF*) return 0 ;;
+  esac
+  return 1
+}
+install_init_term() {
+  if install_use_color; then
+    C_RESET=$'\e[0m'
+    C_BOLD=$'\e[1m'
+    C_DIM=$'\e[2m'
+    C_RED=$'\e[31m'
+    C_GREEN=$'\e[32m'
+    C_VIO=$'\e[38;2;129;140;248m'
+    C_SKY=$'\e[38;2;56;189;248m'
+    C_AMBER=$'\e[38;2;251;191;36m'
+    C_BAR_H=$'\e[38;2;99;102;241m'
+    C_BAR_L=$'\e[2;38;2;100;116;139m'
+  else
+    C_RESET=''
+    C_BOLD=''
+    C_DIM=''
+    C_RED=''
+    C_GREEN=''
+    C_VIO=''
+    C_SKY=''
+    C_AMBER=''
+    C_BAR_H=''
+    C_BAR_L=''
+  fi
+}
+install_init_term
 
 format_duration() {
   local total_seconds="$1"
@@ -180,10 +221,11 @@ progress_percent() {
   echo $(((elapsed * 100) / predicted_total))
 }
 
-# ASCII bar (overall install); percentage uses elapsed + estimated time for steps not done yet.
-format_progress_bar() {
+# Plain-text bar (logs, non-TTY, or LUMINA_INSTALL_NO_COLOR) — # and -
+# Percent uses overall elapsed + remaining step estimates.
+format_progress_bar_plain() {
   local percent="$1"
-  local width=24
+  local width="${2:-$INSTALL_BAR_WIDTH}"
   local filled
   if ((percent < 0)); then
     percent=0
@@ -213,7 +255,29 @@ format_progress_bar() {
   printf "%s %3d%%" "$out" "$percent"
 }
 
-# One line: bar, estimated time left, and elapsed (for TTY and log).
+install_bar_filled_width() {
+  local percent="$1"
+  local width="${2:-$INSTALL_BAR_WIDTH}"
+  local filled
+  if ((percent < 0)); then
+    percent=0
+  elif ((percent > 100)); then
+    percent=100
+  fi
+  filled=$(( (percent * width) / 100 ))
+  if ((percent > 0 && filled < 1)); then
+    filled=1
+  fi
+  if ((percent < 100 && filled >= width)); then
+    filled=$((width - 1))
+  elif ((percent == 100)); then
+    filled=$width
+  fi
+  echo "$filled"
+}
+
+# One line: bar, time left, elapsed.
+# When stdout is a TTY: 24-bit color + Unicode (█/░) or #/-; same " |  about … left  | " for the app parser.
 install_progress_line() {
   local remaining_from_index="$1"
   local elapsed="$2"
@@ -224,10 +288,50 @@ install_progress_line() {
   if ((percent > 99 && remaining > 0)); then
     percent=99
   fi
-  printf "%s  |  about %s left  |  %s elapsed" \
-    "$(format_progress_bar "$percent")" \
-    "$(format_duration "$remaining")" \
-    "$(format_duration "$elapsed")"
+
+  if ! install_use_color; then
+    printf "%s  |  about %s left  |  %s elapsed" \
+      "$(format_progress_bar_plain "$percent")" \
+      "$(format_duration "$remaining")" \
+      "$(format_duration "$elapsed")"
+    printf "\n"
+    return
+  fi
+
+  local width="$INSTALL_BAR_WIDTH"
+  local filled
+  local i
+  local rem
+  local elp
+  rem="$(format_duration "$remaining")"
+  elp="$(format_duration "$elapsed")"
+  filled="$(install_bar_filled_width "$percent" "$width")"
+
+  printf "  %s" "${C_DIM}[${C_RESET}"
+  for ((i = 0; i < width; i++)); do
+    if ((i < filled)); then
+      if install_use_unicode; then
+        printf "%s█" "$C_BAR_H"
+      else
+        printf "%s#" "$C_BAR_H"
+      fi
+    else
+      if install_use_unicode; then
+        printf "%s░" "$C_BAR_L"
+      else
+        printf "%s" "${C_DIM}-"
+      fi
+    fi
+  done
+  printf "%s" "${C_DIM}]${C_RESET}  ${C_BOLD}%3d%%${C_RESET}  " "$percent"
+  printf " |  about "
+  printf "%s" "${C_AMBER}"
+  printf "%s" "$rem"
+  printf "%s" "$C_RESET"
+  printf " left  |  "
+  printf "%s" "${C_DIM}"
+  printf "%s" "$elp"
+  printf " elapsed%s\n" "$C_RESET"
 }
 
 start_step() {
@@ -240,7 +344,13 @@ start_step() {
   elapsed="$(elapsed_seconds)"
   echo
   printf "%s\n" "$(install_progress_line $((INSTALL_STEP - 1)) "$elapsed")"
-  printf "[%d/%d] %s\n" "$INSTALL_STEP" "$INSTALL_TOTAL_STEPS" "$label"
+  if install_use_color; then
+    printf "  %s" "${C_BOLD}${C_VIO}"
+    printf "[%d/%d]" "$INSTALL_STEP" "$INSTALL_TOTAL_STEPS"
+    printf "%s  %s\n" "${C_RESET}" "$label"
+  else
+    printf "[%d/%d] %s\n" "$INSTALL_STEP" "$INSTALL_TOTAL_STEPS" "$label"
+  fi
 }
 
 finish_step() {
@@ -252,7 +362,17 @@ finish_step() {
   duration=$((now - CURRENT_STEP_STARTED_AT))
   record_step_duration "$CURRENT_STEP_KEY" "$label" "$duration"
   elapsed="$(elapsed_seconds)"
-  printf "Done: %s in %s\n" "$label" "$(format_duration "$duration")"
+  if install_use_color; then
+    if install_use_unicode; then
+      printf "  ${C_GREEN}✓${C_RESET} ${C_DIM}done${C_RESET}  %s  ${C_DIM}·${C_RESET}  %s\n" \
+        "$label" "$(format_duration "$duration")"
+    else
+      printf "  ${C_GREEN}*${C_RESET} ${C_DIM}done${C_RESET}  %s  ${C_DIM}·${C_RESET}  %s\n" \
+        "$label" "$(format_duration "$duration")"
+    fi
+  else
+    printf "Done: %s in %s\n" "$label" "$(format_duration "$duration")"
+  fi
   printf "%s\n" "$(install_progress_line "$INSTALL_STEP" "$elapsed")"
 }
 
@@ -484,7 +604,11 @@ if [[ ! -d ".git" ]]; then
   exit 1
 fi
 
-echo "Installing Lumina from $GIT_REF"
+if install_use_color; then
+  printf "\n  ${C_BOLD}${C_VIO}Lumina${C_RESET}  ${C_DIM}·${C_RESET}  install  ${C_DIM}·${C_RESET}  ${C_SKY}%s${C_RESET}\n\n" "$GIT_REF"
+else
+  echo "Installing Lumina from $GIT_REF"
+fi
 start_step "fetch_refs" "Fetching refs"
 git fetch --all --tags --progress
 finish_step "Fetched refs"
@@ -520,7 +644,15 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     start_step "copy_app" "Copying app to /Applications"
     rm -rf "/Applications/$APP_NAME"
     ditto "$BUNDLE_PATH" "/Applications/$APP_NAME"
-    echo "Installed /Applications/$APP_NAME"
+    if install_use_color; then
+      if install_use_unicode; then
+        printf "\n  ${C_GREEN}✓${C_RESET}  ${C_BOLD}Installed${C_RESET}  %s\n\n" "/Applications/$APP_NAME"
+      else
+        printf "\n  ${C_GREEN}*${C_RESET}  ${C_BOLD}Installed${C_RESET}  %s\n\n" "/Applications/$APP_NAME"
+      fi
+    else
+      echo "Installed /Applications/$APP_NAME"
+    fi
     finish_step "Copied app to /Applications"
     start_step "cli_launcher" "Installing CLI launcher"
     install_cli_launcher

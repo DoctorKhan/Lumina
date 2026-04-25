@@ -3,6 +3,12 @@
         import { listen } from '@tauri-apps/api/event';
         import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { compareVersions, parseVersion, selectLatestUpdateTag } from './update.js';
+        import {
+            createInstallProgressState,
+            formatInstallProgressSubtitle,
+            formatInstallProgressTitle,
+            processInstallProgressLine
+        } from './installProgressParse.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import '@xterm/xterm/css/xterm.css';
@@ -33,6 +39,10 @@ const claudeReplaceSelectionBtn = document.getElementById('claude-replace-select
         const claudeElement = document.getElementById('claude-terminal');
         const claudeStatus = document.getElementById('claude-status');
 const claudeWorkspaceStatus = document.getElementById('claude-workspace-status');
+        const installProgressRoot = document.getElementById('install-progress');
+        const installProgressFill = document.getElementById('install-progress-fill');
+        const installProgressDetail = document.getElementById('install-progress-detail');
+        const installProgressPercent = document.getElementById('install-progress-percent');
         const editorContainer = document.querySelector('.editor-container');
         const editorPane = document.querySelector('.editor-pane');
         const previewPane = document.querySelector('.preview-pane');
@@ -49,6 +59,10 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let terminalInputBuffer = '';
         let terminalPtyHangupUnlisten = null;
         let terminalShellRespawnPromise = null;
+        let installProgressTracking = false;
+        let installProgressState = null;
+        let installProgressLineBuffer = '';
+        let installProgressEndTimer = null;
         let claudeTerminal = null;
         let claudeFitAddon = null;
         let claudeVisible = false;
@@ -679,6 +693,79 @@ function hideInstallUpdateBadge() {
     installUpdateBadge.classList.add('hidden');
 }
 
+        function beginInstallProgressSession() {
+            clearTimeout(installProgressEndTimer);
+            installProgressEndTimer = null;
+            installProgressTracking = true;
+            installProgressState = createInstallProgressState();
+            installProgressLineBuffer = '';
+            updateStatus.classList.add('hidden');
+            installProgressRoot.classList.remove('hidden');
+            installProgressFill.style.width = '0%';
+            if (installProgressPercent) {
+                installProgressPercent.textContent = '—';
+            }
+            installProgressDetail.textContent = 'Waiting for the installer in the terminal…';
+            installProgressDetail.title = '';
+        }
+
+        function endInstallProgressSession() {
+            clearTimeout(installProgressEndTimer);
+            installProgressEndTimer = null;
+            installProgressTracking = false;
+            installProgressState = null;
+            installProgressLineBuffer = '';
+            installProgressRoot.classList.add('hidden');
+            updateStatus.classList.remove('hidden');
+        }
+
+        function scheduleEndInstallAfterComplete() {
+            if (installProgressEndTimer) {
+                return;
+            }
+            installProgressEndTimer = setTimeout(() => {
+                installProgressEndTimer = null;
+                endInstallProgressSession();
+                setUpdateStatus(
+                    'Update install finished. Check the terminal, then relaunch the app if a new /Applications build was created.'
+                );
+            }, 4500);
+        }
+
+        function syncInstallProgressView() {
+            if (!installProgressState) {
+                return;
+            }
+            const s = installProgressState;
+            const w = s.percent == null ? 0 : s.percent;
+            installProgressFill.style.width = `${Math.min(100, w)}%`;
+            if (installProgressPercent) {
+                installProgressPercent.textContent = s.percent != null ? `${s.percent}%` : '—';
+            }
+            const subtitle = formatInstallProgressSubtitle(s);
+            const full = formatInstallProgressTitle(s);
+            installProgressDetail.textContent = subtitle;
+            installProgressDetail.title = full;
+        }
+
+        function feedInstallProgressFromTerminal(raw) {
+            if (!installProgressTracking || !installProgressState) {
+                return;
+            }
+            installProgressLineBuffer += raw;
+            const parts = installProgressLineBuffer.split(/\r\n|\n|\r/);
+            installProgressLineBuffer = parts.pop() || '';
+            for (const part of parts) {
+                const { changed, done } = processInstallProgressLine(installProgressState, part);
+                if (changed || done) {
+                    syncInstallProgressView();
+                }
+                if (done) {
+                    scheduleEndInstallAfterComplete();
+                }
+            }
+        }
+
         function shellQuote(value) {
             return `'${String(value).replaceAll("'", "'\\''")}'`;
         }
@@ -758,9 +845,16 @@ function hideInstallUpdateBadge() {
          * Echoes the same line in the buffer so the full command is visible even
          * before the host shell echoes.
          */
-        async function runCommandInTerminal(command, label) {
+        async function runCommandInTerminal(
+            command,
+            label,
+            { trackInstallProgress: trackInstall = false } = {}
+        ) {
             const shellReadyBefore = terminalStarted;
             await toggleTerminal(true);
+            if (trackInstall) {
+                beginInstallProgressSession();
+            }
             terminalInputBuffer = '';
             terminal?.write(`\r\n\x1b[1m${label}\x1b[0m\r\n`);
             terminal?.write(`\x1b[2m${command}\x1b[0m\r\n`);
@@ -772,6 +866,9 @@ function hideInstallUpdateBadge() {
             try {
                 await writeToTerminalPtyWithRetry(`${command}\r`);
             } catch (e) {
+                if (trackInstall) {
+                    endInstallProgressSession();
+                }
                 setUpdateStatus(`Terminal: ${e?.message || e}`);
                 terminal?.write(`\r\n\x1b[31m${e?.message || e}\x1b[0m\r\n`);
             }
@@ -855,10 +952,10 @@ async function checkForUpdate({ background = false } = {}) {
             );
             if (!confirmed) return;
 
-            setUpdateStatus(`Installing ${latestReleaseTag}; see terminal.`);
             await runCommandInTerminal(
                 releaseInstallCommand(latestReleaseTag),
-                `Installing Lumina ${latestReleaseTag} from GitHub releases...`
+                `Installing Lumina ${latestReleaseTag} from GitHub releases...`,
+                { trackInstallProgress: true }
             );
         hideInstallUpdateBadge();
         }
@@ -887,7 +984,8 @@ async function checkForUpdate({ background = false } = {}) {
 
             await runCommandInTerminal(
                 currentCheckoutInstallCommand,
-                'Installing the current local checkout...'
+                'Installing the current local checkout...',
+                { trackInstallProgress: true }
             );
         }
 
@@ -1157,7 +1255,9 @@ async function replaceSelectionFromClipboard() {
             terminalStatus.textContent = 'Starting';
             terminal.write('Starting shell...\r\n');
             terminalOutputUnlisten = await listen('terminal-output', (event) => {
-                terminal.write(event.payload);
+                const payload = event.payload;
+                feedInstallProgressFromTerminal(payload);
+                terminal.write(payload);
             });
 
             fitAddon.fit();

@@ -56,6 +56,9 @@ test("startup update check is quiet and exposes an install badge", () => {
   assert.doesNotMatch(main, /setTimeout\(\(\) => \{\s*checkForUpdate\(\{ background: true \}\)/);
   assert.match(main, /installUpdateBadge\.addEventListener\('click', installDetectedUpdate\)/);
   assert.match(main, /showInstallUpdateBadge\(latestTag\)/);
+  assert.match(html, /id="install-progress"/);
+  assert.match(main, /feedInstallProgressFromTerminal/);
+  assert.match(main, /trackInstallProgress: true/);
 });
 
 test("macOS folder permission prompts explain Claude and file access", () => {
