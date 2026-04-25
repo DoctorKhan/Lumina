@@ -90,7 +90,8 @@
             display: none;
         }
 
-        #terminal {
+        #terminal,
+        #claude-terminal {
             height: 100%;
             min-height: 0;
             box-sizing: border-box;
@@ -98,11 +99,13 @@
             padding: 0.5rem;
         }
 
-        #terminal .xterm {
+        #terminal .xterm,
+        #claude-terminal .xterm {
             height: 100%;
         }
 
-        #terminal .xterm-viewport {
+        #terminal .xterm-viewport,
+        #claude-terminal .xterm-viewport {
             background-color: transparent;
         }
 
@@ -121,7 +124,17 @@
         .prose th { background: #f1f5f9; }
 
         .katex-display { margin: 1.5em 0; overflow-x: auto; overflow-y: hidden; }
-        .mermaid { margin: 1.25rem 0; }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+            margin: 1.5rem 0;
+        }
+
+        .mermaid svg {
+            max-width: 100%;
+            height: auto;
+            filter: drop-shadow(0 14px 24px rgba(15, 23, 42, 0.12));
+        }
 
         #file-input {
             display: none;
@@ -134,29 +147,19 @@
             <div class="w-8 h-8 bg-gradient-to-br from-indigo-500 to-sky-500 rounded-lg flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">L</div>
             <h1 class="text-xl font-semibold tracking-tight text-slate-100">Lumina <span id="app-version-badge" class="text-slate-500 font-normal text-sm ml-2">v0.1.6</span></h1>
         </div>
-        <div class="flex items-center gap-2">
-            <a
-                href="https://github.com/DoctorKhan/Lumina"
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Contribute on GitHub"
-                class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors"
-            >
-                Contribute
-            </a>
-            <button id="check-update-btn" title="Check GitHub releases for updates" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Check Updates</button>
-            <button id="install-update-btn" title="Install the detected GitHub release" class="hidden text-sm px-4 py-2 rounded-md bg-emerald-700 hover:bg-emerald-600 text-white font-medium transition-colors">Install Update</button>
-            <button id="install-checkout-btn" title="Install this local checkout" class="hidden text-sm px-4 py-2 rounded-md bg-amber-700 hover:bg-amber-600 text-white font-medium transition-colors">Install Current Checkout</button>
-            <span id="update-status" class="max-w-48 truncate text-xs text-slate-500" title="">Not checked</span>
+        <div class="flex items-center gap-2 min-w-0">
+            <span id="update-status" class="max-w-80 truncate text-xs text-slate-500" title="">Not checked</span>
+            <div class="h-6 w-px bg-slate-800"></div>
+            <div class="flex items-center gap-1" aria-label="Pane controls">
+                <button id="toggle-source-btn" type="button" class="pane-toggle-btn rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors" title="Hide source pane" aria-label="Toggle source pane" aria-pressed="true">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3"/><path d="m10 8-4 4 4 4"/><path d="m14 8 4 4-4 4"/></svg>
+                </button>
+                <button id="toggle-terminal-btn" type="button" class="pane-toggle-btn rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors" title="Show terminal" aria-label="Toggle terminal pane" aria-pressed="false">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg>
+                </button>
+                <button id="toggle-claude-btn" type="button" class="pane-toggle-btn rounded-md px-2 py-1.5 text-sm font-semibold text-violet-300 hover:text-white hover:bg-violet-900/70 transition-colors" title="Show Claude" aria-label="Toggle Claude pane" aria-pressed="false">C</button>
+            </div>
             <input type="file" id="file-input" accept=".md,.txt,.markdown">
-            <button id="open-file-btn" title="Open file (Cmd/Ctrl+O)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors flex items-center gap-2">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/></svg>
-                Open File
-            </button>
-            <button id="download-btn" title="Download markdown (Cmd/Ctrl+S)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Download .md</button>
-            <button id="copy-html-btn" title="Copy preview HTML (Cmd/Ctrl+Shift+C)" class="text-sm px-4 py-2 rounded-md bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-500 hover:to-sky-500 text-white font-medium transition-colors">Copy HTML</button>
-            <button id="toggle-source-btn" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Hide Source</button>
-            <button id="toggle-terminal-btn" title="Toggle terminal (Cmd/Ctrl+`)" class="text-sm px-4 py-2 rounded-md bg-slate-800/90 hover:bg-slate-700 text-slate-200 transition-colors">Hide Terminal</button>
         </div>
     </header>
 
@@ -178,7 +181,7 @@
             <div id="preview" class="flex-1 p-8 overflow-y-auto prose max-w-none"></div>
         </div>
 
-        <aside id="terminal-pane" class="terminal-pane flex flex-col min-w-0 border-l border-slate-800">
+        <aside id="terminal-pane" class="terminal-pane hidden flex flex-col min-w-0 border-l border-slate-800">
             <div class="h-10 bg-slate-950 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-slate-400 justify-between border-b border-slate-800">
                 <span>Terminal</span>
                 <div class="flex items-center gap-3">
@@ -188,11 +191,23 @@
             </div>
             <div id="terminal" class="flex-1 min-h-0"></div>
         </aside>
+
+        <aside id="claude-pane" class="terminal-pane hidden flex flex-col min-w-0 border-l border-slate-800">
+            <div class="h-10 bg-violet-950 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-violet-200 justify-between border-b border-violet-900">
+                <span>Claude</span>
+                <div class="flex items-center gap-3">
+                    <span id="claude-status" class="normal-case tracking-normal text-violet-300/70">Stopped</span>
+                    <button id="close-claude-btn" class="text-violet-200/80 hover:text-white transition-colors" title="Hide Claude">Close</button>
+                </div>
+            </div>
+            <div id="claude-terminal" class="flex-1 min-h-0"></div>
+        </aside>
     </main>
 
     <script type="module">
         import { invoke } from '@tauri-apps/api/core';
         import { listen } from '@tauri-apps/api/event';
+        import { open as openDialog } from '@tauri-apps/plugin-dialog';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import '@xterm/xterm/css/xterm.css';
@@ -202,19 +217,18 @@
         const charCount = document.getElementById('char-count');
         const fileInput = document.getElementById('file-input');
         const filenameDisplay = document.getElementById('filename-display');
-        const openFileBtn = document.getElementById('open-file-btn');
-        const downloadBtn = document.getElementById('download-btn');
-        const copyHtmlBtn = document.getElementById('copy-html-btn');
-        const checkUpdateBtn = document.getElementById('check-update-btn');
-        const installUpdateBtn = document.getElementById('install-update-btn');
-        const installCheckoutBtn = document.getElementById('install-checkout-btn');
         const updateStatus = document.getElementById('update-status');
         const toggleSourceBtn = document.getElementById('toggle-source-btn');
         const toggleTerminalBtn = document.getElementById('toggle-terminal-btn');
+        const toggleClaudeBtn = document.getElementById('toggle-claude-btn');
         const closeTerminalBtn = document.getElementById('close-terminal-btn');
+        const closeClaudeBtn = document.getElementById('close-claude-btn');
         const terminalPane = document.getElementById('terminal-pane');
         const terminalElement = document.getElementById('terminal');
         const terminalStatus = document.getElementById('terminal-status');
+        const claudePane = document.getElementById('claude-pane');
+        const claudeElement = document.getElementById('claude-terminal');
+        const claudeStatus = document.getElementById('claude-status');
         const editorContainer = document.querySelector('.editor-container');
         const editorPane = document.querySelector('.editor-pane');
         const previewPane = document.querySelector('.preview-pane');
@@ -224,13 +238,22 @@
         let isResizing = false;
         let terminal = null;
         let fitAddon = null;
-        let terminalVisible = true;
+        let terminalVisible = false;
         let terminalStarted = false;
         let terminalOutputUnlisten = null;
         let terminalResizeFrame = null;
         let terminalInputBuffer = '';
+        let claudeTerminal = null;
+        let claudeFitAddon = null;
+        let claudeVisible = false;
+        let claudeStarted = false;
+        let claudeOutputUnlisten = null;
+        let claudeResizeFrame = null;
         let latestReleaseTag = null;
+        let updateCheckInProgress = false;
         let currentCheckoutInstallCommand = null;
+        let currentFilePath = null;
+        const lastOpenedFilePathKey = 'lumina:last-opened-file-path';
         const releaseApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/releases/latest';
         const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
         const currentVersion = document.getElementById('app-version-badge').textContent.trim().replace(/^v/i, '');
@@ -279,7 +302,34 @@ function helloWorld() {
 }
 \`\`\`
 
-## 3. Features
+## 3. Mermaid Diagrams
+Flowcharts render directly in the preview:
+
+\`\`\`mermaid
+flowchart TD
+  source([Markdown Source]) --> parser[Smart Markdown Parser]
+
+  parser --> math[LaTeX Math]
+  parser --> code[Syntax Highlighting]
+  parser --> diagrams[Mermaid Diagrams]
+
+  math --> preview{Live Preview}
+  code --> preview
+  diagrams --> preview
+  preview --> export[Copy HTML or Save .md]
+
+  classDef source fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:2px
+  classDef engine fill:#e0f2fe,stroke:#0284c7,color:#075985,stroke-width:2px
+  classDef feature fill:#f0fdf4,stroke:#16a34a,color:#166534,stroke-width:2px
+  classDef output fill:#fff7ed,stroke:#f97316,color:#9a3412,stroke-width:2px
+
+  class source source
+  class parser engine
+  class math,code,diagrams feature
+  class preview,export output
+\`\`\`
+
+## 4. Features
 * **Real-time Rendering**: See changes as you type.
 * **File Support**: Open local .md files directly.
 * **GFM Support**: GitHub Flavored Markdown tables and lists.
@@ -309,6 +359,64 @@ Enjoy writing!
             schedulePreviewUpdate();
         }
 
+        function dirname(path) {
+            const cleanPath = String(path || '').replace(/\/+$/, '');
+            const index = cleanPath.lastIndexOf('/');
+            if (index <= 0) return index === 0 ? '/' : null;
+            return cleanPath.slice(0, index);
+        }
+
+        function rememberOpenedPath(path) {
+            currentFilePath = path;
+            localStorage.setItem(lastOpenedFilePathKey, path);
+
+            const directory = dirname(path);
+            if (directory) {
+                invoke('terminal_set_cwd', { path: directory }).catch(() => {});
+            }
+        }
+
+        function forgetOpenedPath(path) {
+            if (localStorage.getItem(lastOpenedFilePathKey) === path) {
+                localStorage.removeItem(lastOpenedFilePathKey);
+            }
+            if (currentFilePath === path) {
+                currentFilePath = null;
+            }
+        }
+
+        function currentFileDirectory() {
+            return dirname(currentFilePath);
+        }
+
+        async function openFileWithDialog() {
+            try {
+                const selectedPath = await openDialog({
+                    multiple: false,
+                    filters: [
+                        {
+                            name: 'Markdown Documents',
+                            extensions: ['md', 'markdown', 'txt']
+                        }
+                    ]
+                });
+                if (!selectedPath || Array.isArray(selectedPath)) return;
+
+                filenameDisplay.textContent = `Opening: ${selectedPath}`;
+                filenameDisplay.title = selectedPath;
+                const file = await invoke('open_file_path', { path: selectedPath });
+                setEditorContent(file.content, `Editing: ${file.path}`);
+                filenameDisplay.title = file.path;
+                rememberOpenedPath(file.path);
+                editor.focus();
+            } catch (error) {
+                filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
+                filenameDisplay.title = '';
+                setUpdateStatus(`Open failed: ${error?.message || error}`);
+                fileInput.click();
+            }
+        }
+
         function highlightCodeBlocks() {
             const blocks = preview.querySelectorAll('pre code:not(.language-mermaid)');
             blocks.forEach((block) => hljs.highlightElement(block));
@@ -322,9 +430,32 @@ Enjoy writing!
                 mermaid.initialize({
                     startOnLoad: false,
                     securityLevel: 'loose',
-                    theme: 'default'
+                    theme: 'base',
+                    flowchart: {
+                        curve: 'basis',
+                        htmlLabels: true,
+                        padding: 24,
+                        nodeSpacing: 56,
+                        rankSpacing: 64
+                    },
+                    themeVariables: {
+                        fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
+                        primaryColor: '#eef2ff',
+                        primaryTextColor: '#1e293b',
+                        primaryBorderColor: '#6366f1',
+                        lineColor: '#64748b',
+                        secondaryColor: '#e0f2fe',
+                        tertiaryColor: '#f8fafc',
+                        clusterBkg: '#f8fafc',
+                        clusterBorder: '#cbd5e1',
+                        edgeLabelBackground: '#ffffff'
+                    }
                 });
                 mermaidInitialized = true;
+            }
+
+            if (document.fonts?.ready) {
+                await document.fonts.ready;
             }
 
             for (const block of blocks) {
@@ -473,7 +604,7 @@ Enjoy writing!
             URL.revokeObjectURL(url);
         }
 
-        async function copyToClipboard(button) {
+        async function copyToClipboard(button = null) {
             try {
                 await navigator.clipboard.writeText(preview.innerHTML);
             } catch (_) {
@@ -484,6 +615,8 @@ Enjoy writing!
                 document.execCommand('copy');
                 document.body.removeChild(fallback);
             }
+
+            if (!button) return;
 
             const originalText = button.textContent;
             button.textContent = 'Copied!';
@@ -539,8 +672,8 @@ Enjoy writing!
         }
 
         async function checkForUpdate() {
-            checkUpdateBtn.disabled = true;
-            installUpdateBtn.classList.add('hidden');
+            if (updateCheckInProgress) return;
+            updateCheckInProgress = true;
             latestReleaseTag = null;
             setUpdateStatus('Checking GitHub releases...');
 
@@ -570,7 +703,6 @@ Enjoy writing!
 
                 if (compareVersions(tagName, currentVersion) > 0) {
                     latestReleaseTag = tagName;
-                    installUpdateBtn.classList.remove('hidden');
                     setUpdateStatus(`Update available: ${tagName}`);
                 } else {
                     setUpdateStatus(`Up to date: v${currentVersion}`);
@@ -578,7 +710,7 @@ Enjoy writing!
             } catch (error) {
                 setUpdateStatus(`Update check failed: ${error?.message || error}`);
             } finally {
-                checkUpdateBtn.disabled = false;
+                updateCheckInProgress = false;
             }
         }
 
@@ -593,13 +725,11 @@ Enjoy writing!
             );
             if (!confirmed) return;
 
-            installUpdateBtn.disabled = true;
             setUpdateStatus(`Installing ${latestReleaseTag}; see terminal.`);
             await runCommandInTerminal(
                 releaseInstallCommand(latestReleaseTag),
                 `Installing Lumina ${latestReleaseTag} from GitHub releases...`
             );
-            installUpdateBtn.disabled = false;
         }
 
         async function loadCurrentCheckoutInstaller() {
@@ -608,27 +738,26 @@ Enjoy writing!
                 if (!info.available || !info.command) return;
 
                 currentCheckoutInstallCommand = info.command;
-                installCheckoutBtn.title = info.label;
-                installCheckoutBtn.classList.remove('hidden');
             } catch (_) {
-                installCheckoutBtn.classList.add('hidden');
+                currentCheckoutInstallCommand = null;
             }
         }
 
         async function installCurrentCheckout() {
-            if (!currentCheckoutInstallCommand) return;
+            if (!currentCheckoutInstallCommand) {
+                setUpdateStatus('Local checkout install is only available in development builds.');
+                return;
+            }
 
             const confirmed = window.confirm(
                 'Install the current local checkout into /Applications?\n\nUse this only for development and local testing, not normal user updates.'
             );
             if (!confirmed) return;
 
-            installCheckoutBtn.disabled = true;
             await runCommandInTerminal(
                 currentCheckoutInstallCommand,
                 'Installing the current local checkout...'
             );
-            installCheckoutBtn.disabled = false;
         }
 
         function cleanTerminalPath(path) {
@@ -676,6 +805,7 @@ Enjoy writing!
                 const file = await invoke('open_file_path', { path: cleanPath });
                 setEditorContent(file.content, `Editing: ${file.path}`);
                 filenameDisplay.title = file.path;
+                rememberOpenedPath(file.path);
                 editor.focus();
             } catch (error) {
                 filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
@@ -736,6 +866,49 @@ Enjoy writing!
             });
         }
 
+        function resizeClaude() {
+            if (!claudeVisible || !claudeTerminal || !claudeFitAddon) return;
+
+            cancelAnimationFrame(claudeResizeFrame);
+            claudeResizeFrame = requestAnimationFrame(() => {
+                claudeFitAddon.fit();
+                invoke('claude_resize', {
+                    cols: claudeTerminal.cols,
+                    rows: claudeTerminal.rows
+                }).catch(() => {});
+            });
+        }
+
+        function resizeTerminals() {
+            resizeTerminal();
+            resizeClaude();
+        }
+
+        function terminalTheme() {
+            return {
+                background: '#070b16',
+                foreground: '#d9e2ef',
+                cursor: '#38bdf8',
+                selectionBackground: '#1e3a8a',
+                black: '#020617',
+                red: '#fb7185',
+                green: '#34d399',
+                yellow: '#facc15',
+                blue: '#60a5fa',
+                magenta: '#c084fc',
+                cyan: '#22d3ee',
+                white: '#e2e8f0',
+                brightBlack: '#475569',
+                brightRed: '#fda4af',
+                brightGreen: '#86efac',
+                brightYellow: '#fde047',
+                brightBlue: '#93c5fd',
+                brightMagenta: '#d8b4fe',
+                brightCyan: '#67e8f9',
+                brightWhite: '#f8fafc'
+            };
+        }
+
         async function ensureTerminal() {
             if (terminalStarted) return;
 
@@ -744,28 +917,7 @@ Enjoy writing!
                 convertEol: true,
                 fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
                 fontSize: 13,
-                theme: {
-                    background: '#070b16',
-                    foreground: '#d9e2ef',
-                    cursor: '#38bdf8',
-                    selectionBackground: '#1e3a8a',
-                    black: '#020617',
-                    red: '#fb7185',
-                    green: '#34d399',
-                    yellow: '#facc15',
-                    blue: '#60a5fa',
-                    magenta: '#c084fc',
-                    cyan: '#22d3ee',
-                    white: '#e2e8f0',
-                    brightBlack: '#475569',
-                    brightRed: '#fda4af',
-                    brightGreen: '#86efac',
-                    brightYellow: '#fde047',
-                    brightBlue: '#93c5fd',
-                    brightMagenta: '#d8b4fe',
-                    brightCyan: '#67e8f9',
-                    brightWhite: '#f8fafc'
-                }
+                theme: terminalTheme()
             });
             fitAddon = new FitAddon();
             terminal.loadAddon(fitAddon);
@@ -795,10 +947,65 @@ Enjoy writing!
             setTimeout(resizeTerminal, 80);
         }
 
+        async function ensureClaude() {
+            if (claudeStarted) return;
+
+            claudeTerminal = new Terminal({
+                cursorBlink: true,
+                convertEol: true,
+                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: 13,
+                theme: terminalTheme()
+            });
+            claudeFitAddon = new FitAddon();
+            claudeTerminal.loadAddon(claudeFitAddon);
+            claudeTerminal.open(claudeElement);
+            claudeTerminal.onData((data) => {
+                invoke('claude_write', { data }).catch((error) => {
+                    claudeTerminal.write(`\r\nClaude write failed: ${error}\r\n`);
+                });
+            });
+
+            claudeStatus.textContent = 'Starting';
+            claudeTerminal.write('Starting Claude...\r\n');
+            claudeOutputUnlisten = await listen('claude-output', (event) => {
+                claudeTerminal.write(event.payload);
+            });
+
+            claudeFitAddon.fit();
+            await invoke('claude_spawn', {
+                cols: claudeTerminal.cols,
+                rows: claudeTerminal.rows,
+                cwd: currentFileDirectory()
+            });
+            claudeStarted = true;
+            claudeStatus.textContent = 'Running';
+            resizeClaude();
+            setTimeout(resizeClaude, 80);
+        }
+
+        function setPaneToggleState(button, active, activeClasses) {
+            button.setAttribute('aria-pressed', String(active));
+            button.classList.toggle('bg-slate-800', active);
+            button.classList.toggle('text-white', active);
+            for (const className of activeClasses) {
+                button.classList.toggle(className, active);
+            }
+        }
+
+        function syncPaneToggleButtons() {
+            setPaneToggleState(toggleSourceBtn, !sourceCollapsed, ['ring-1', 'ring-sky-500/40']);
+            setPaneToggleState(toggleTerminalBtn, terminalVisible, ['ring-1', 'ring-sky-500/40']);
+            setPaneToggleState(toggleClaudeBtn, claudeVisible, ['bg-violet-700', 'ring-1', 'ring-violet-400/50']);
+            toggleSourceBtn.title = sourceCollapsed ? 'Show source pane' : 'Hide source pane';
+            toggleTerminalBtn.title = terminalVisible ? 'Hide terminal' : 'Show terminal';
+            toggleClaudeBtn.title = claudeVisible ? 'Hide Claude' : 'Show Claude';
+        }
+
         async function toggleTerminal(forceVisible) {
             terminalVisible = typeof forceVisible === 'boolean' ? forceVisible : !terminalVisible;
             terminalPane.classList.toggle('hidden', !terminalVisible);
-            toggleTerminalBtn.textContent = terminalVisible ? 'Hide Terminal' : 'Show Terminal';
+            syncPaneToggleButtons();
 
             if (terminalVisible) {
                 try {
@@ -812,20 +1019,78 @@ Enjoy writing!
             }
         }
 
-        openFileBtn.addEventListener('click', () => fileInput.click());
-        downloadBtn.addEventListener('click', downloadContent);
-        copyHtmlBtn.addEventListener('click', () => copyToClipboard(copyHtmlBtn));
-        checkUpdateBtn.addEventListener('click', checkForUpdate);
-        installUpdateBtn.addEventListener('click', installDetectedUpdate);
-        installCheckoutBtn.addEventListener('click', installCurrentCheckout);
-        toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
-        closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
-        toggleSourceBtn.addEventListener('click', () => {
+        async function toggleClaude(forceVisible) {
+            claudeVisible = typeof forceVisible === 'boolean' ? forceVisible : !claudeVisible;
+            claudePane.classList.toggle('hidden', !claudeVisible);
+            syncPaneToggleButtons();
+
+            if (claudeVisible) {
+                try {
+                    await ensureClaude();
+                    resizeClaude();
+                    claudeTerminal.focus();
+                } catch (error) {
+                    claudeStatus.textContent = 'Error';
+                    claudeTerminal?.write(`\r\nClaude failed to start: ${error}\r\n`);
+                }
+            }
+        }
+
+        function toggleSource() {
             sourceCollapsed = !sourceCollapsed;
             editorContainer.classList.toggle('editor-collapsed', sourceCollapsed);
-            toggleSourceBtn.textContent = sourceCollapsed ? 'Show Source' : 'Hide Source';
-            resizeTerminal();
+            resizeTerminals();
+            syncPaneToggleButtons();
+        }
+
+        function openGithub() {
+            window.open('https://github.com/DoctorKhan/Lumina', '_blank', 'noopener,noreferrer');
+        }
+
+        function handleMenuCommand(command) {
+            switch (command) {
+                case 'lumina_open_file':
+                    openFileWithDialog();
+                    break;
+                case 'lumina_download_markdown':
+                    downloadContent();
+                    break;
+                case 'lumina_copy_html':
+                    copyToClipboard();
+                    break;
+                case 'lumina_check_updates':
+                    checkForUpdate();
+                    break;
+                case 'lumina_install_update':
+                    installDetectedUpdate();
+                    break;
+                case 'lumina_install_checkout':
+                    installCurrentCheckout();
+                    break;
+                case 'lumina_toggle_source':
+                    toggleSource();
+                    break;
+                case 'lumina_toggle_terminal':
+                    toggleTerminal();
+                    break;
+                case 'lumina_toggle_claude':
+                    toggleClaude();
+                    break;
+                case 'lumina_open_github':
+                    openGithub();
+                    break;
+            }
+        }
+
+        listen('lumina-menu', (event) => handleMenuCommand(event.payload)).catch((error) => {
+            setUpdateStatus(`Menu unavailable: ${error?.message || error}`);
         });
+        toggleSourceBtn.addEventListener('click', toggleSource);
+        toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
+        toggleClaudeBtn.addEventListener('click', () => toggleClaude());
+        closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
+        closeClaudeBtn.addEventListener('click', () => toggleClaude(false));
+        syncPaneToggleButtons();
 
         paneResizer.addEventListener('mousedown', () => {
             if (sourceCollapsed) return;
@@ -849,7 +1114,7 @@ Enjoy writing!
             const previewPercent = 100 - editorPercent;
             editorPane.style.flex = `0 0 ${editorPercent}%`;
             previewPane.style.flex = `0 0 ${previewPercent}%`;
-            resizeTerminal();
+            resizeTerminals();
         });
 
         fileInput.addEventListener('change', (e) => {
@@ -858,8 +1123,10 @@ Enjoy writing!
 
             const reader = new FileReader();
             reader.onload = (event) => {
+                currentFilePath = null;
                 editor.value = event.target.result;
                 filenameDisplay.textContent = `Editing: ${file.name}`;
+                filenameDisplay.title = '';
                 updatePreview();
             };
             reader.readAsText(file);
@@ -877,24 +1144,28 @@ Enjoy writing!
 
             if (event.key.toLowerCase() === 'o') {
                 event.preventDefault();
-                fileInput.click();
+                openFileWithDialog();
             } else if (event.key.toLowerCase() === 's') {
                 event.preventDefault();
                 downloadContent();
             } else if (event.shiftKey && event.key.toLowerCase() === 'c') {
                 event.preventDefault();
-                copyToClipboard(copyHtmlBtn);
+                copyToClipboard();
             } else if (event.key === '`') {
                 event.preventDefault();
                 toggleTerminal();
             }
         });
 
-        window.addEventListener('resize', resizeTerminal);
+        window.addEventListener('resize', resizeTerminals);
         window.addEventListener('beforeunload', () => {
             terminalOutputUnlisten?.();
             if (terminalStarted) {
                 invoke('terminal_kill').catch(() => {});
+            }
+            claudeOutputUnlisten?.();
+            if (claudeStarted) {
+                invoke('claude_kill').catch(() => {});
             }
         });
 
@@ -909,6 +1180,22 @@ Enjoy writing!
             const fileDisplayName = params.get('name');
 
             if (!fileParam) {
+                const lastOpenedPath = localStorage.getItem(lastOpenedFilePathKey);
+                if (lastOpenedPath) {
+                    try {
+                        filenameDisplay.textContent = `Opening: ${lastOpenedPath}`;
+                        filenameDisplay.title = lastOpenedPath;
+                        await new Promise((resolve) => setTimeout(resolve, 0));
+                        const file = await invoke('open_file_path', { path: lastOpenedPath });
+                        setEditorContent(file.content, `Editing: ${file.path}`);
+                        filenameDisplay.title = file.path;
+                        rememberOpenedPath(file.path);
+                        return;
+                    } catch (_) {
+                        forgetOpenedPath(lastOpenedPath);
+                    }
+                }
+
                 updatePreview();
                 return;
             }
@@ -922,6 +1209,8 @@ Enjoy writing!
                 const text = await response.text();
                 const displayName = fileDisplayName || fileParam;
                 setEditorContent(text, `Editing: ${displayName}`);
+                currentFilePath = null;
+                filenameDisplay.title = displayName;
             } catch (_) {
                 updatePreview();
             }
@@ -929,7 +1218,6 @@ Enjoy writing!
 
         loadInitialContent();
         loadCurrentCheckoutInstaller();
-        toggleTerminal(true);
     </script>
 </body>
 </html>
