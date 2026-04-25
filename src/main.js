@@ -60,6 +60,7 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let terminalStarted = false;
         let terminalOutputUnlisten = null;
         let terminalResizeFrame = null;
+        let terminalScrollBottomRaf = null;
         let terminalLastFitCols = 0;
         let terminalLastFitRows = 0;
         let terminalInputBuffer = '';
@@ -75,6 +76,7 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let claudeStarted = false;
         let claudeOutputUnlisten = null;
         let claudeResizeFrame = null;
+        let claudeScrollBottomRaf = null;
         let claudeLastFitCols = 0;
         let claudeLastFitRows = 0;
 let claudeWorkspaceFilePath = null;
@@ -855,10 +857,12 @@ function hideInstallUpdateBadge() {
                     terminal.write(
                         '\r\n\x1b[33m[Shell restarted: previous process ended or the PTY closed (common after Ctrl+C or EIO).]\x1b[0m\r\n'
                     );
+                    scheduleTerminalScrollToBottom();
                 } catch (e) {
                     terminalStarted = false;
                     const msg = e?.message || String(e);
                     terminal?.write(`\r\n\x1b[31mFailed to start shell: ${msg}\x1b[0m\r\n`);
+                    scheduleTerminalScrollToBottom();
                     terminalStatus.textContent = 'Error';
                 } finally {
                     terminalShellRespawnPromise = null;
@@ -901,7 +905,7 @@ function hideInstallUpdateBadge() {
             terminalInputBuffer = '';
             terminal?.write(`\r\n\x1b[1m${label}\x1b[0m\r\n`);
             terminal?.write(`\x1b[2m${command}\x1b[0m\r\n`);
-            terminal?.scrollToBottom();
+            scheduleTerminalScrollToBottom();
 
             const settleMs = shellReadyBefore && terminalStarted ? 180 : 600;
             await waitForTerminalToSettle(settleMs);
@@ -914,6 +918,7 @@ function hideInstallUpdateBadge() {
                 }
                 setUpdateStatus(`Terminal: ${e?.message || e}`);
                 terminal?.write(`\r\n\x1b[31m${e?.message || e}\x1b[0m\r\n`);
+                scheduleTerminalScrollToBottom();
             }
             terminal?.focus();
         }
@@ -1083,6 +1088,7 @@ async function checkForUpdate({ background = false } = {}) {
                 filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
                 filenameDisplay.title = '';
                 terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
+                scheduleTerminalScrollToBottom();
             }
         }
 
@@ -1092,6 +1098,7 @@ async function checkForUpdate({ background = false } = {}) {
             setTimeout(() => {
                 openClickedTerminalFile(path).catch((error) => {
                     terminal?.write(`\r\nUnable to open ${path}: ${error}\r\n`);
+                    scheduleTerminalScrollToBottom();
                 });
             }, 0);
         }
@@ -1125,9 +1132,35 @@ async function checkForUpdate({ background = false } = {}) {
             callback(links.length > 0 ? links : undefined);
         }
 
+        function scheduleTerminalScrollToBottom() {
+            if (!terminal) return;
+            if (terminalScrollBottomRaf != null) return;
+            terminalScrollBottomRaf = requestAnimationFrame(() => {
+                terminalScrollBottomRaf = null;
+                terminal.scrollToBottom();
+                // Second frame: xterm viewport height can settle after FitAddon / flex layout.
+                requestAnimationFrame(() => {
+                    terminal.scrollToBottom();
+                });
+            });
+        }
+
+        function scheduleClaudeScrollToBottom() {
+            if (!claudeTerminal) return;
+            if (claudeScrollBottomRaf != null) return;
+            claudeScrollBottomRaf = requestAnimationFrame(() => {
+                claudeScrollBottomRaf = null;
+                claudeTerminal.scrollToBottom();
+                requestAnimationFrame(() => {
+                    claudeTerminal.scrollToBottom();
+                });
+            });
+        }
+
         function applyTerminalFit() {
             if (!terminalVisible || !fitAddon || !terminal) return;
             fitAddon.fit();
+            scheduleTerminalScrollToBottom();
             if (!terminal.cols || !terminal.rows) return;
             if (terminal.cols === terminalLastFitCols && terminal.rows === terminalLastFitRows) return;
             terminalLastFitCols = terminal.cols;
@@ -1141,6 +1174,7 @@ async function checkForUpdate({ background = false } = {}) {
         function applyClaudeFit() {
             if (!claudeVisible || !claudeFitAddon || !claudeTerminal) return;
             claudeFitAddon.fit();
+            scheduleClaudeScrollToBottom();
             if (!claudeTerminal.cols || !claudeTerminal.rows) return;
             if (claudeTerminal.cols === claudeLastFitCols && claudeTerminal.rows === claudeLastFitRows) return;
             claudeLastFitCols = claudeTerminal.cols;
@@ -1182,6 +1216,7 @@ async function writeClaudePrompt(prompt) {
     if (!claudeStarted) return;
 
     claudeTerminal?.write(`\r\nSending prompt to Claude...\r\n`);
+    scheduleClaudeScrollToBottom();
     await invoke('claude_write', { data: `\x1b[200~${prompt}\x1b[201~\r` });
     claudeTerminal?.focus();
 }
@@ -1294,6 +1329,7 @@ async function replaceSelectionFromClipboard() {
                 handleTerminalCommandInput(data);
                 void writeToTerminalPtyWithRetry(data).catch((error) => {
                     terminal.write(`\r\nTerminal write failed: ${error?.message || error}\r\n`);
+                    scheduleTerminalScrollToBottom();
                 });
             });
 
@@ -1305,10 +1341,12 @@ async function replaceSelectionFromClipboard() {
 
             terminalStatus.textContent = 'Starting';
             terminal.write('Starting shell...\r\n');
+            scheduleTerminalScrollToBottom();
             terminalOutputUnlisten = await listen('terminal-output', (event) => {
                 const payload = event.payload;
                 feedInstallProgressFromTerminal(payload);
                 terminal.write(payload);
+                scheduleTerminalScrollToBottom();
             });
 
             fitAddon.fit();
@@ -1338,16 +1376,20 @@ async function replaceSelectionFromClipboard() {
             claudeTerminal.onData((data) => {
                 invoke('claude_write', { data }).catch((error) => {
                     claudeTerminal.write(`\r\nClaude write failed: ${error}\r\n`);
+                    scheduleClaudeScrollToBottom();
                 });
             });
 
             claudeStatus.textContent = 'Starting';
             claudeTerminal.write('Starting Claude...\r\n');
+            scheduleClaudeScrollToBottom();
             claudeOutputUnlisten = await listen('claude-output', (event) => {
                 claudeTerminal.write(event.payload);
+                scheduleClaudeScrollToBottom();
             });
 
             claudeFitAddon.fit();
+            scheduleClaudeScrollToBottom();
             if (currentFilePath) {
                 const directory = currentFileDirectory();
                 const accessMessage = `Claude will open this file's folder so it can read and edit the current document:\r\n${directory}\r\nIf macOS asks for folder access, it is for this Claude editing session.\r\n`;
@@ -1361,6 +1403,7 @@ async function replaceSelectionFromClipboard() {
             } else {
                 claudeTerminal.write('No saved file path is open; starting Claude in the current terminal directory.\r\n');
             }
+            scheduleClaudeScrollToBottom();
             const workspaceInfo = await invoke('claude_spawn', {
                 cols: claudeTerminal.cols,
                 rows: claudeTerminal.rows,
@@ -1424,6 +1467,7 @@ async function replaceSelectionFromClipboard() {
                 } catch (error) {
                     terminalStatus.textContent = 'Error';
                     terminal?.write(`\r\nTerminal failed to start: ${error}\r\n`);
+                    scheduleTerminalScrollToBottom();
                 }
             }
         }
@@ -1442,6 +1486,7 @@ async function replaceSelectionFromClipboard() {
                 } catch (error) {
                     claudeStatus.textContent = 'Error';
                     claudeTerminal?.write(`\r\nClaude failed to start: ${error}\r\n`);
+                    scheduleClaudeScrollToBottom();
                 }
             }
         }
