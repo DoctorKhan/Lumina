@@ -1,3 +1,4 @@
+        import exampleMarkdown from './example.md?raw';
         import { invoke } from '@tauri-apps/api/core';
         import { listen } from '@tauri-apps/api/event';
         import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -83,85 +84,7 @@ const maxRecentFilePaths = 10;
         };
         marked.use({ renderer });
 
-        const initialValue = `# Welcome to Lumina
-
-Lumina is a high-performance Markdown editor with built-in support for **LaTeX** mathematics.
-
-## 1. Mathematical Notation
-You can write inline math using single dollar signs, like $E = mc^2$, or block math using double dollar signs:
-
-$$\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
-
-Complex calculus works perfectly too:
-
-$$\\oint_{\\partial \\Sigma} \\mathbf{E} \\cdot d\\boldsymbol{\\ell} = -\\frac{d}{dt} \\iint_{\\Sigma} \\mathbf{B} \\cdot d\\mathbf{S}$$
-
-## 2. Code Blocks
-Syntax highlighting is automatically applied:
-
-\`\`\`javascript
-function helloWorld() {
-  console.log("Hello, Lumina!");
-}
-\`\`\`
-
-## 3. Mermaid Diagrams
-Flowcharts render directly in the preview:
-
-\`\`\`mermaid
-flowchart TD
-  source([Markdown Source]) --> parser[Smart Markdown Parser]
-
-  parser --> math[LaTeX Math]
-  parser --> code[Syntax Highlighting]
-  parser --> diagrams[Mermaid Diagrams]
-
-  math --> preview{Live Preview}
-  code --> preview
-  diagrams --> preview
-  preview --> export[Copy HTML or Save .md]
-
-  classDef source fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:2px
-  classDef engine fill:#e0f2fe,stroke:#0284c7,color:#075985,stroke-width:2px
-  classDef feature fill:#f0fdf4,stroke:#16a34a,color:#166534,stroke-width:2px
-  classDef output fill:#fff7ed,stroke:#f97316,color:#9a3412,stroke-width:2px
-
-  class source source
-  class parser engine
-  class math,code,diagrams feature
-  class preview,export output
-\`\`\`
-
-## 4. Features
-* **Real-time Rendering**: See changes as you type.
-* **File Support**: Open local .md files directly.
-* **GFM Support**: GitHub Flavored Markdown tables and lists.
-
-Task lists render as clean checklists:
-
-- [x] Draft the Markdown
-- [x] Preview math and diagrams
-- [ ] Share the finished document
-
-Nested outlines can mix numbered hierarchy with bullets:
-
-1. Plan
-   1. Define the thesis
-   2. Gather evidence
-      - Primary sources
-      - Supporting notes
-2. Draft
-   1. Write the opening
-   2. Refine the argument
-
-| Feature | Support |
-| :--- | :--- |
-| LaTeX | Full |
-| Tables | Yes |
-| Task Lists | Yes |
-
-Enjoy writing!
-`;
+        const initialValue = exampleMarkdown;
 
         editor.value = initialValue;
 
@@ -250,6 +173,14 @@ Enjoy writing!
             charCount.textContent = `${content.length} chars`;
             resetEditorHistory();
             schedulePreviewUpdate();
+        }
+
+        function loadExampleGuide() {
+            currentFilePath = null;
+            setEditorContent(exampleMarkdown, 'Example Guide (Lumina Help)');
+            filenameDisplay.title = 'Bundled Lumina example guide';
+            setUpdateStatus('Loaded the Lumina example guide.');
+            editor.focus();
         }
 
         function dirname(path) {
@@ -1233,6 +1164,9 @@ async function replaceSelectionFromClipboard() {
             case 'lumina_claude_apply_clipboard':
                 replaceSelectionFromClipboard();
                 break;
+                case 'lumina_open_example_guide':
+                    loadExampleGuide();
+                    break;
                 case 'lumina_open_github':
                     openGithub();
                     break;
