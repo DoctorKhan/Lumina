@@ -137,8 +137,9 @@ export function processInstallProgressLine(state, line) {
 
 /**
  * @param {InstallProgressState} state
+ * @param {{ displayPercent?: number | null, countdownSeconds?: number | null } | null} live
  */
-export function formatInstallProgressTitle(state) {
+export function formatInstallProgressTitle(state, live = null) {
     const bit = [];
     if (state.label) {
         bit.push(state.label);
@@ -146,17 +147,69 @@ export function formatInstallProgressTitle(state) {
     if (state.currentStep && state.totalSteps) {
         bit.push(`Step ${state.currentStep} of ${state.totalSteps}`);
     }
-    if (state.percent != null) {
-        bit.push(`${state.percent}%`);
+    const pct =
+        live != null && live.displayPercent != null
+            ? live.displayPercent
+            : state.percent;
+    if (pct != null) {
+        bit.push(`${pct}%`);
     }
-    if (state.timeRemaining) {
-        bit.push(`~${state.timeRemaining} left`);
+    const timeLeft =
+        live != null && live.countdownSeconds != null
+            ? formatDurationRough(live.countdownSeconds)
+            : state.timeRemaining;
+    if (timeLeft) {
+        bit.push(`~${timeLeft} left`);
     }
     return bit.length ? bit.join(' · ') : 'Installing…';
 }
 
+/**
+ * Parse human ETA strings from install.sh ("7m 17s", "1h 2m", "0s").
+ * @param {string | null | undefined} text
+ * @returns {number | null} total seconds, or null if unparseable
+ */
+export function parseTimeRemainingToSeconds(text) {
+    if (text == null || String(text).trim() === '') {
+        return null;
+    }
+    const t = String(text).trim().toLowerCase();
+    let h = 0;
+    let m = 0;
+    let s = 0;
+    const hM = t.match(/(\d+)\s*h(?:our)?s?/);
+    const mM = t.match(/(\d+)\s*m(?:in)?s?/);
+    const sM = t.match(/(\d+)\s*s(?:ec)?s?/);
+    if (hM) h = parseInt(hM[1], 10);
+    if (mM) m = parseInt(mM[1], 10);
+    if (sM) s = parseInt(sM[1], 10);
+    if (!hM && !mM && !sM) {
+        return null;
+    }
+    return h * 3600 + m * 60 + s;
+}
+
+/** Compact duration for progress copy (e.g. 437 -> "7m 17s"). */
+export function formatDurationRough(totalSeconds) {
+    if (!Number.isFinite(totalSeconds) || totalSeconds < 0) {
+        return '0s';
+    }
+    const sec = Math.max(0, Math.round(totalSeconds));
+    if (sec < 60) {
+        return `${sec}s`;
+    }
+    const m = Math.floor(sec / 60);
+    const rs = sec % 60;
+    if (m < 60) {
+        return rs ? `${m}m ${rs}s` : `${m}m`;
+    }
+    const h = Math.floor(m / 60);
+    const rm = m % 60;
+    return rm ? `${h}h ${rm}m` : `${h}h`;
+}
+
 /** Shorter line for UI where percent is shown separately. */
-export function formatInstallProgressSubtitle(state) {
+export function formatInstallProgressSubtitle(state, live = null) {
     const bit = [];
     if (state.label) {
         bit.push(state.label);
@@ -164,8 +217,12 @@ export function formatInstallProgressSubtitle(state) {
     if (state.currentStep && state.totalSteps) {
         bit.push(`Step ${state.currentStep} of ${state.totalSteps}`);
     }
-    if (state.timeRemaining) {
-        bit.push(`~${state.timeRemaining} left`);
+    const timeLeft =
+        live != null && live.countdownSeconds != null
+            ? formatDurationRough(live.countdownSeconds)
+            : state.timeRemaining;
+    if (timeLeft) {
+        bit.push(`~${timeLeft} left`);
     }
     return bit.length ? bit.join(' · ') : 'Preparing…';
 }

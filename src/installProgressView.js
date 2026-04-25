@@ -3,6 +3,8 @@ import {
     formatInstallProgressTitle
 } from './installProgressParse.js';
 
+/** @typedef {{ interpolatedPercent?: number | null, countdownSeconds?: number | null } | null} InstallProgressLiveOptions */
+
 function clampPercent(value) {
     if (!Number.isFinite(value)) {
         return null;
@@ -32,14 +34,29 @@ export function displayPercentFromInstallProgress(state) {
     return Math.max(rawPercent, stepFloor);
 }
 
-export function createInstallProgressViewModel(state) {
-    const percent = displayPercentFromInstallProgress(state);
+/**
+ * @param {import('./installProgressParse.js').InstallProgressState} state
+ * @param {InstallProgressLiveOptions} [live]
+ */
+export function createInstallProgressViewModel(state, live = null) {
+    const basePercent = displayPercentFromInstallProgress(state);
+    const percent =
+        live != null && live.interpolatedPercent != null
+            ? clampPercent(live.interpolatedPercent)
+            : basePercent;
+
+    const useLive =
+        live != null &&
+        (live.interpolatedPercent != null || live.countdownSeconds != null);
+    const liveFmt = useLive
+        ? { displayPercent: percent, countdownSeconds: live.countdownSeconds }
+        : null;
 
     return {
         percent,
         percentText: percent == null ? '—' : `${percent}%`,
         width: percent == null ? 0 : percent,
-        subtitle: formatInstallProgressSubtitle(state),
-        title: formatInstallProgressTitle(state)
+        subtitle: formatInstallProgressSubtitle(state, liveFmt),
+        title: formatInstallProgressTitle(state, liveFmt)
     };
 }

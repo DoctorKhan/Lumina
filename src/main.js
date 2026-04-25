@@ -7,7 +7,13 @@ import { compareVersions, parseVersion, selectLatestUpdateTag } from './update.j
             createInstallProgressState,
             processInstallProgressLine
         } from './installProgressParse.js';
-import { createInstallProgressViewModel } from './installProgressView.js';
+import { createInstallProgressViewModel, displayPercentFromInstallProgress } from './installProgressView.js';
+import {
+    createInstallProgressAnchorState,
+    refreshInstallProgressAnchor,
+    getInterpolatedInstallPercent,
+    getCountdownSecondsRemaining
+} from './installProgressAnimate.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import '@xterm/xterm/css/xterm.css';
@@ -70,6 +76,9 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let installProgressState = null;
         let installProgressLineBuffer = '';
         let installProgressEndTimer = null;
+        let installProgressAnchor = createInstallProgressAnchorState();
+        let installProgressTickTimer = null;
+        const installProgressTickMs = 400;
         let claudeTerminal = null;
         let claudeFitAddon = null;
         let claudeVisible = false;
@@ -744,9 +753,12 @@ function hideInstallUpdateBadge() {
         function beginInstallProgressSession() {
             clearTimeout(installProgressEndTimer);
             installProgressEndTimer = null;
+            clearInterval(installProgressTickTimer);
+            installProgressTickTimer = null;
             installProgressTracking = true;
             installProgressState = createInstallProgressState();
             installProgressLineBuffer = '';
+            installProgressAnchor = createInstallProgressAnchorState();
             updateStatus.classList.add('hidden');
             installProgressRoot.classList.remove('hidden');
             installProgressFill.style.width = '0%';
@@ -755,11 +767,19 @@ function hideInstallUpdateBadge() {
             }
             installProgressDetail.textContent = 'Waiting for the installer in the terminal…';
             installProgressDetail.title = '';
+            installProgressTickTimer = setInterval(() => {
+                if (!installProgressTracking || !installProgressState) {
+                    return;
+                }
+                syncInstallProgressView();
+            }, installProgressTickMs);
         }
 
         function endInstallProgressSession() {
             clearTimeout(installProgressEndTimer);
             installProgressEndTimer = null;
+            clearInterval(installProgressTickTimer);
+            installProgressTickTimer = null;
             installProgressTracking = false;
             installProgressState = null;
             installProgressLineBuffer = '';
@@ -784,7 +804,22 @@ function hideInstallUpdateBadge() {
             if (!installProgressState) {
                 return;
             }
-            const view = createInstallProgressViewModel(installProgressState);
+            const now = performance.now();
+            const terminalP = displayPercentFromInstallProgress(installProgressState);
+            const interp = getInterpolatedInstallPercent(
+                installProgressAnchor,
+                installProgressState,
+                now
+            );
+            const countdown = getCountdownSecondsRemaining(installProgressAnchor, now);
+            const live =
+                installProgressTracking && terminalP != null && terminalP < 100
+                    ? {
+                          interpolatedPercent: interp,
+                          countdownSeconds: countdown
+                      }
+                    : null;
+            const view = createInstallProgressViewModel(installProgressState, live);
             installProgressFill.style.width = `${view.width}%`;
             if (installProgressPercent) {
                 installProgressPercent.textContent = view.percentText;
@@ -803,6 +838,7 @@ function hideInstallUpdateBadge() {
             for (const part of parts) {
                 const { changed, done } = processInstallProgressLine(installProgressState, part);
                 if (changed || done) {
+                    refreshInstallProgressAnchor(installProgressAnchor, installProgressState);
                     syncInstallProgressView();
                 }
                 if (done) {
