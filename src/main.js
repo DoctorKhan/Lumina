@@ -14,6 +14,10 @@
         const toggleSourceBtn = document.getElementById('toggle-source-btn');
         const toggleTerminalBtn = document.getElementById('toggle-terminal-btn');
         const toggleClaudeBtn = document.getElementById('toggle-claude-btn');
+const claudeSendContextBtn = document.getElementById('claude-send-context-btn');
+const claudePresetsBtn = document.getElementById('claude-presets-btn');
+const claudePullFileBtn = document.getElementById('claude-pull-file-btn');
+const claudeReplaceSelectionBtn = document.getElementById('claude-replace-selection-btn');
         const closeTerminalBtn = document.getElementById('close-terminal-btn');
         const closeClaudeBtn = document.getElementById('close-claude-btn');
         const terminalPane = document.getElementById('terminal-pane');
@@ -22,6 +26,7 @@
         const claudePane = document.getElementById('claude-pane');
         const claudeElement = document.getElementById('claude-terminal');
         const claudeStatus = document.getElementById('claude-status');
+const claudeWorkspaceStatus = document.getElementById('claude-workspace-status');
         const editorContainer = document.querySelector('.editor-container');
         const editorPane = document.querySelector('.editor-pane');
         const previewPane = document.querySelector('.preview-pane');
@@ -42,11 +47,14 @@
         let claudeStarted = false;
         let claudeOutputUnlisten = null;
         let claudeResizeFrame = null;
+let claudeWorkspaceFilePath = null;
         let latestReleaseTag = null;
         let updateCheckInProgress = false;
         let currentCheckoutInstallCommand = null;
         let currentFilePath = null;
         const lastOpenedFilePathKey = 'lumina:last-opened-file-path';
+const recentFilePathsKey = 'lumina:recent-file-paths';
+const maxRecentFilePaths = 10;
         const releaseApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/releases/latest';
         const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
         const currentVersion = document.getElementById('app-version-badge').textContent.trim().replace(/^v/i, '');
@@ -249,9 +257,40 @@ Enjoy writing!
             return cleanPath.slice(0, index);
         }
 
+function basename(path) {
+    const cleanPath = String(path || '').replace(/\/+$/, '');
+    const index = cleanPath.lastIndexOf('/');
+    return index === -1 ? cleanPath : cleanPath.slice(index + 1);
+}
+
+function readRecentFilePaths() {
+    try {
+        const value = JSON.parse(localStorage.getItem(recentFilePathsKey) || '[]');
+        return Array.isArray(value) ? value.filter(Boolean) : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function syncRecentFilesMenu(paths = readRecentFilePaths()) {
+    invoke('sync_recent_files_menu', { paths }).catch((error) => {
+        setUpdateStatus(`Unable to update recents menu: ${error?.message || error}`);
+    });
+}
+
+function writeRecentFilePaths(paths) {
+    const recentPaths = [...new Set(paths)].slice(0, maxRecentFilePaths);
+    localStorage.setItem(recentFilePathsKey, JSON.stringify(recentPaths));
+    syncRecentFilesMenu(recentPaths);
+}
+
         function rememberOpenedPath(path) {
             currentFilePath = path;
             localStorage.setItem(lastOpenedFilePathKey, path);
+    writeRecentFilePaths([
+        path,
+        ...readRecentFilePaths().filter((recentPath) => recentPath !== path)
+    ]);
 
             const directory = dirname(path);
             if (directory) {
@@ -263,6 +302,7 @@ Enjoy writing!
             if (localStorage.getItem(lastOpenedFilePathKey) === path) {
                 localStorage.removeItem(lastOpenedFilePathKey);
             }
+    writeRecentFilePaths(readRecentFilePaths().filter((recentPath) => recentPath !== path));
             if (currentFilePath === path) {
                 currentFilePath = null;
             }
@@ -271,6 +311,103 @@ Enjoy writing!
         function currentFileDirectory() {
             return dirname(currentFilePath);
         }
+
+function currentSelectionText() {
+    return editor.value.slice(editor.selectionStart, editor.selectionEnd);
+}
+
+function currentCursorContext() {
+    const value = editor.value;
+    const beforeCursor = value.slice(0, editor.selectionStart);
+    const lineNumber = beforeCursor.split('\n').length;
+    const headingMatch = [...beforeCursor.matchAll(/^#{1,6}\s+(.+)$/gm)].pop();
+    return {
+        lineNumber,
+        heading: headingMatch?.[1] || 'Document start',
+        hasSelection: editor.selectionStart !== editor.selectionEnd,
+        selection: currentSelectionText()
+    };
+}
+
+function claudeBaseContext() {
+    const context = currentCursorContext();
+    const sourceLabel = currentFilePath || 'Unsaved Lumina document';
+    const selectionBlock = context.hasSelection
+        ? `\n\nCurrent selection:\n\`\`\`markdown\n${context.selection}\n\`\`\``
+        : '';
+
+    return `You are helping edit a Markdown document in Lumina.
+
+Source: ${sourceLabel}
+Claude file: ${claudeWorkspaceFilePath || sourceLabel}
+Cursor line: ${context.lineNumber}
+Nearest heading: ${context.heading}
+
+Use the Claude file for full-document edits. If you propose replacement text, keep it concise and valid Markdown.${selectionBlock}`;
+}
+
+async function openFilePath(path) {
+    filenameDisplay.textContent = `Opening: ${path}`;
+    filenameDisplay.title = path;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const file = await invoke('open_file_path', { path });
+    setEditorContent(file.content, `Editing: ${file.path}`);
+    filenameDisplay.title = file.path;
+    rememberOpenedPath(file.path);
+    editor.focus();
+}
+
+async function openLastOpenedFile() {
+    const path = localStorage.getItem(lastOpenedFilePathKey) || readRecentFilePaths()[0];
+    if (!path) {
+        setUpdateStatus('No recent file to reopen.');
+        return false;
+    }
+
+    try {
+        await openFilePath(path);
+        return true;
+    } catch (error) {
+        forgetOpenedPath(path);
+        filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
+        filenameDisplay.title = '';
+        setUpdateStatus(`Unable to reopen ${basename(path)}: ${error?.message || error}`);
+        return false;
+    }
+}
+
+async function openRecentFile(recentIndex = null) {
+    const recentPaths = readRecentFilePaths();
+    if (recentPaths.length === 0) {
+        setUpdateStatus('No recent files yet.');
+        return;
+    }
+
+    let index = Number(recentIndex);
+    if (!Number.isInteger(index)) {
+        const options = recentPaths
+            .map((path, optionIndex) => `${optionIndex + 1}. ${basename(path)}\n   ${path}`)
+            .join('\n');
+        const choice = window.prompt(`Open recent file:\n\n${options}\n\nEnter a number:`);
+        if (!choice) return;
+        index = Number(choice.trim()) - 1;
+    }
+
+    const path = recentPaths[index];
+    if (!path) {
+        setUpdateStatus('Recent file selection was not recognized.');
+        return;
+    }
+
+    try {
+        await openFilePath(path);
+    } catch (error) {
+        forgetOpenedPath(path);
+        filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
+        filenameDisplay.title = '';
+        setUpdateStatus(`Unable to open ${basename(path)}: ${error?.message || error}`);
+    }
+}
 
         async function openFileWithDialog() {
             try {
@@ -285,13 +422,7 @@ Enjoy writing!
                 });
                 if (!selectedPath || Array.isArray(selectedPath)) return;
 
-                filenameDisplay.textContent = `Opening: ${selectedPath}`;
-                filenameDisplay.title = selectedPath;
-                const file = await invoke('open_file_path', { path: selectedPath });
-                setEditorContent(file.content, `Editing: ${file.path}`);
-                filenameDisplay.title = file.path;
-                rememberOpenedPath(file.path);
-                editor.focus();
+        await openFilePath(selectedPath);
             } catch (error) {
                 filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
                 filenameDisplay.title = '';
@@ -786,6 +917,76 @@ Enjoy writing!
             resizeClaude();
         }
 
+async function writeClaudePrompt(prompt) {
+    await toggleClaude(true);
+    if (!claudeStarted) return;
+
+    claudeTerminal?.write(`\r\nSending prompt to Claude...\r\n`);
+    await invoke('claude_write', { data: `\x1b[200~${prompt}\x1b[201~\r` });
+    claudeTerminal?.focus();
+}
+
+async function sendClaudeContext(extraInstruction = '') {
+    const prompt = `${claudeBaseContext()}${extraInstruction ? `\n\nTask: ${extraInstruction}` : ''}`;
+    await writeClaudePrompt(prompt);
+}
+
+async function sendClaudePreset() {
+    const presets = [
+        ['Improve writing', 'Improve the clarity, flow, and tone of this Markdown. Preserve meaning and structure.'],
+        ['Summarize', 'Summarize this document into concise bullet points.'],
+        ['Fix Markdown', 'Fix Markdown formatting, list hierarchy, task lists, tables, Mermaid, and LaTeX issues.'],
+        ['Explain math', 'Explain any LaTeX/math content in plain language and flag notation problems.'],
+        ['Create outline', 'Create a clean hierarchical outline for this document.']
+    ];
+    const choice = window.prompt(
+        `Send Claude prompt:\n\n${presets.map(([label], index) => `${index + 1}. ${label}`).join('\n')}\n\nEnter a number:`
+    );
+    if (!choice) return;
+
+    const preset = presets[Number(choice.trim()) - 1];
+    if (!preset) {
+        setUpdateStatus('Claude prompt selection was not recognized.');
+        return;
+    }
+
+    await sendClaudeContext(preset[1]);
+}
+
+async function pullClaudeWorkspaceFile() {
+    if (!claudeWorkspaceFilePath) {
+        setUpdateStatus('Claude workspace file is not available yet.');
+        return;
+    }
+
+    try {
+        const file = await invoke('open_file_path', { path: claudeWorkspaceFilePath });
+        pushEditorHistory();
+        editor.value = file.content;
+        resetEditorHistory();
+        schedulePreviewUpdate();
+        editor.focus();
+        setUpdateStatus('Pulled Claude workspace file into the editor.');
+    } catch (error) {
+        setUpdateStatus(`Unable to pull Claude file: ${error?.message || error}`);
+    }
+}
+
+async function replaceSelectionFromClipboard() {
+    try {
+        const text = await navigator.clipboard.readText();
+        if (!text) {
+            setUpdateStatus('Clipboard is empty.');
+            return;
+        }
+        replaceEditorRange(editor.selectionStart, editor.selectionEnd, text, editor.selectionStart + text.length);
+        editor.focus();
+        setUpdateStatus('Applied clipboard text to the editor.');
+    } catch (error) {
+        setUpdateStatus(`Unable to read clipboard: ${error?.message || error}`);
+    }
+}
+
         function terminalTheme() {
             return {
                 background: '#070b16',
@@ -875,11 +1076,25 @@ Enjoy writing!
             });
 
             claudeFitAddon.fit();
-            await invoke('claude_spawn', {
+            if (currentFilePath) {
+                claudeTerminal.write(`Saving and opening Claude in the file directory:\r\n${currentFilePath}\r\n`);
+                await invoke('save_file_path', {
+                    path: currentFilePath,
+                    content: editor.value
+                });
+            } else {
+                claudeTerminal.write('No saved file path is open; starting Claude in the current terminal directory.\r\n');
+            }
+            const workspaceInfo = await invoke('claude_spawn', {
                 cols: claudeTerminal.cols,
                 rows: claudeTerminal.rows,
+                filePath: currentFilePath,
                 cwd: currentFileDirectory()
             });
+            claudeWorkspaceFilePath = workspaceInfo?.filePath || currentFilePath;
+            claudeWorkspaceStatus.textContent = claudeWorkspaceFilePath
+                ? `Claude file: ${claudeWorkspaceFilePath}`
+                : 'Claude workspace: current terminal directory';
             claudeStarted = true;
             claudeStatus.textContent = 'Running';
             resizeClaude();
@@ -950,10 +1165,21 @@ Enjoy writing!
         }
 
         function handleMenuCommand(command) {
+            if (command.startsWith('lumina_open_recent_file:')) {
+                openRecentFile(Number(command.slice('lumina_open_recent_file:'.length)));
+                return;
+            }
+
             switch (command) {
                 case 'lumina_open_file':
                     openFileWithDialog();
                     break;
+            case 'lumina_open_last_file':
+                openLastOpenedFile();
+                break;
+            case 'lumina_open_recent_file':
+                openRecentFile();
+                break;
                 case 'lumina_download_markdown':
                     downloadContent();
                     break;
@@ -984,6 +1210,18 @@ Enjoy writing!
                 case 'lumina_toggle_claude':
                     toggleClaude();
                     break;
+            case 'lumina_claude_context':
+                sendClaudeContext();
+                break;
+            case 'lumina_claude_prompts':
+                sendClaudePreset();
+                break;
+            case 'lumina_claude_pull_file':
+                pullClaudeWorkspaceFile();
+                break;
+            case 'lumina_claude_apply_clipboard':
+                replaceSelectionFromClipboard();
+                break;
                 case 'lumina_open_github':
                     openGithub();
                     break;
@@ -993,9 +1231,14 @@ Enjoy writing!
         listen('lumina-menu', (event) => handleMenuCommand(event.payload)).catch((error) => {
             setUpdateStatus(`Menu unavailable: ${error?.message || error}`);
         });
+        syncRecentFilesMenu();
         toggleSourceBtn.addEventListener('click', toggleSource);
         toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
         toggleClaudeBtn.addEventListener('click', () => toggleClaude());
+claudeSendContextBtn.addEventListener('click', () => sendClaudeContext());
+claudePresetsBtn.addEventListener('click', sendClaudePreset);
+claudePullFileBtn.addEventListener('click', pullClaudeWorkspaceFile);
+claudeReplaceSelectionBtn.addEventListener('click', replaceSelectionFromClipboard);
         closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
         closeClaudeBtn.addEventListener('click', () => toggleClaude(false));
         syncPaneToggleButtons();
@@ -1247,20 +1490,8 @@ Enjoy writing!
             const fileDisplayName = params.get('name');
 
             if (!fileParam) {
-                const lastOpenedPath = localStorage.getItem(lastOpenedFilePathKey);
-                if (lastOpenedPath) {
-                    try {
-                        filenameDisplay.textContent = `Opening: ${lastOpenedPath}`;
-                        filenameDisplay.title = lastOpenedPath;
-                        await new Promise((resolve) => setTimeout(resolve, 0));
-                        const file = await invoke('open_file_path', { path: lastOpenedPath });
-                        setEditorContent(file.content, `Editing: ${file.path}`);
-                        filenameDisplay.title = file.path;
-                        rememberOpenedPath(file.path);
-                        return;
-                    } catch (_) {
-                        forgetOpenedPath(lastOpenedPath);
-                    }
+        if (await openLastOpenedFile()) {
+            return;
                 }
 
                 updatePreview();

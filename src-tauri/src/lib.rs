@@ -4,16 +4,19 @@ use std::{
     collections::HashSet,
     env, fs,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Mutex,
     thread,
 };
 use tauri::{
     menu::{AboutMetadata, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    AppHandle, Emitter, State, Wry,
+    AppHandle, Emitter, Manager, Runtime, State, Wry,
 };
 
 const MENU_OPEN_FILE: &str = "lumina_open_file";
+const MENU_OPEN_LAST_FILE: &str = "lumina_open_last_file";
+const MENU_OPEN_RECENT_FILE_PREFIX: &str = "lumina_open_recent_file:";
+const MENU_NO_RECENT_FILES: &str = "lumina_no_recent_files";
 const MENU_DOWNLOAD_MARKDOWN: &str = "lumina_download_markdown";
 const MENU_UNDO: &str = "lumina_undo";
 const MENU_REDO: &str = "lumina_redo";
@@ -24,6 +27,10 @@ const MENU_INSTALL_CHECKOUT: &str = "lumina_install_checkout";
 const MENU_TOGGLE_SOURCE: &str = "lumina_toggle_source";
 const MENU_TOGGLE_TERMINAL: &str = "lumina_toggle_terminal";
 const MENU_TOGGLE_CLAUDE: &str = "lumina_toggle_claude";
+const MENU_CLAUDE_CONTEXT: &str = "lumina_claude_context";
+const MENU_CLAUDE_PROMPTS: &str = "lumina_claude_prompts";
+const MENU_CLAUDE_PULL_FILE: &str = "lumina_claude_pull_file";
+const MENU_CLAUDE_APPLY_CLIPBOARD: &str = "lumina_claude_apply_clipboard";
 const MENU_OPEN_GITHUB: &str = "lumina_open_github";
 
 #[derive(Default)]
@@ -54,49 +61,114 @@ struct CheckoutInstallInfo {
     label: String,
 }
 
-fn menu_item(
-    app: &tauri::App<Wry>,
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeWorkspaceInfo {
+    workspace_path: String,
+    file_path: String,
+}
+
+fn menu_item<R: Runtime, M: Manager<R>>(
+    manager: &M,
     id: &'static str,
     text: &str,
     accelerator: Option<&str>,
-) -> tauri::Result<tauri::menu::MenuItem<Wry>> {
+) -> tauri::Result<tauri::menu::MenuItem<R>> {
     let mut item = MenuItemBuilder::with_id(id, text);
     if let Some(accelerator) = accelerator {
         item = item.accelerator(accelerator);
     }
-    item.build(app)
+    item.build(manager)
 }
 
-fn build_app_menu(app: &tauri::App<Wry>) -> tauri::Result<Menu<Wry>> {
-    let open_file = menu_item(app, MENU_OPEN_FILE, "Open...", Some("CmdOrCtrl+O"))?;
+fn recent_file_label(path: &str) -> String {
+    Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+        .to_string()
+}
+
+fn build_recent_files_menu<R: Runtime, M: Manager<R>>(
+    manager: &M,
+    recent_file_paths: &[String],
+) -> tauri::Result<tauri::menu::Submenu<R>> {
+    let mut recent_files_menu = SubmenuBuilder::new(manager, "Open Recent");
+
+    if recent_file_paths.is_empty() {
+        let no_recent_files = MenuItemBuilder::with_id(MENU_NO_RECENT_FILES, "No Recent Files")
+            .enabled(false)
+            .build(manager)?;
+        recent_files_menu = recent_files_menu.item(&no_recent_files);
+    } else {
+        for (index, path) in recent_file_paths.iter().enumerate() {
+            let recent_file = MenuItemBuilder::with_id(
+                format!("{MENU_OPEN_RECENT_FILE_PREFIX}{index}"),
+                recent_file_label(path),
+            )
+            .build(manager)?;
+            recent_files_menu = recent_files_menu.item(&recent_file);
+        }
+    }
+
+    recent_files_menu.build()
+}
+
+fn build_app_menu<R: Runtime, M: Manager<R>>(
+    manager: &M,
+    recent_file_paths: &[String],
+) -> tauri::Result<Menu<R>> {
+    let open_file = menu_item(manager, MENU_OPEN_FILE, "Open...", Some("CmdOrCtrl+O"))?;
+    let open_last_file = menu_item(manager, MENU_OPEN_LAST_FILE, "Open Last File", None)?;
+    let recent_files_menu = build_recent_files_menu(manager, recent_file_paths)?;
     let download_markdown = menu_item(
-        app,
+        manager,
         MENU_DOWNLOAD_MARKDOWN,
         "Download Markdown",
         Some("CmdOrCtrl+S"),
     )?;
-    let undo = menu_item(app, MENU_UNDO, "Undo", Some("CmdOrCtrl+Z"))?;
-    let redo = menu_item(app, MENU_REDO, "Redo", Some("CmdOrCtrl+Shift+Z"))?;
+    let undo = menu_item(manager, MENU_UNDO, "Undo", Some("CmdOrCtrl+Z"))?;
+    let redo = menu_item(manager, MENU_REDO, "Redo", Some("CmdOrCtrl+Shift+Z"))?;
     let copy_html = menu_item(
-        app,
+        manager,
         MENU_COPY_HTML,
         "Copy Preview HTML",
         Some("CmdOrCtrl+Shift+C"),
     )?;
-    let check_updates = menu_item(app, MENU_CHECK_UPDATES, "Check Updates", None)?;
-    let install_update = menu_item(app, MENU_INSTALL_UPDATE, "Install Update", None)?;
-    let install_checkout = menu_item(app, MENU_INSTALL_CHECKOUT, "Install Current Checkout", None)?;
-    let toggle_source = menu_item(app, MENU_TOGGLE_SOURCE, "Show/Hide Source", None)?;
+    let check_updates = menu_item(manager, MENU_CHECK_UPDATES, "Check Updates", None)?;
+    let install_update = menu_item(manager, MENU_INSTALL_UPDATE, "Install Update", None)?;
+    let install_checkout = menu_item(
+        manager,
+        MENU_INSTALL_CHECKOUT,
+        "Install Current Checkout",
+        None,
+    )?;
+    let toggle_source = menu_item(manager, MENU_TOGGLE_SOURCE, "Show/Hide Source", None)?;
     let toggle_terminal = menu_item(
-        app,
+        manager,
         MENU_TOGGLE_TERMINAL,
         "Show/Hide Terminal",
         Some("CmdOrCtrl+`"),
     )?;
-    let toggle_claude = menu_item(app, MENU_TOGGLE_CLAUDE, "Show/Hide Claude", None)?;
-    let open_github = menu_item(app, MENU_OPEN_GITHUB, "Contribute on GitHub", None)?;
+    let toggle_claude = menu_item(manager, MENU_TOGGLE_CLAUDE, "Show/Hide Claude", None)?;
+    let claude_context = menu_item(manager, MENU_CLAUDE_CONTEXT, "Send Context to Claude", None)?;
+    let claude_prompts = menu_item(
+        manager,
+        MENU_CLAUDE_PROMPTS,
+        "Claude Prompt Presets...",
+        None,
+    )?;
+    let claude_pull_file = menu_item(manager, MENU_CLAUDE_PULL_FILE, "Pull Claude File", None)?;
+    let claude_apply_clipboard = menu_item(
+        manager,
+        MENU_CLAUDE_APPLY_CLIPBOARD,
+        "Apply Clipboard to Selection",
+        None,
+    )?;
+    let open_github = menu_item(manager, MENU_OPEN_GITHUB, "Contribute on GitHub", None)?;
 
-    let app_menu = SubmenuBuilder::new(app, "Lumina")
+    let app_menu = SubmenuBuilder::new(manager, "Lumina")
         .about(Some(AboutMetadata {
             name: Some("Lumina".to_string()),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
@@ -113,12 +185,15 @@ fn build_app_menu(app: &tauri::App<Wry>) -> tauri::Result<Menu<Wry>> {
         .quit()
         .build()?;
 
-    let file_menu = SubmenuBuilder::new(app, "File")
+    let file_menu = SubmenuBuilder::new(manager, "File")
         .item(&open_file)
+        .item(&open_last_file)
+        .item(&recent_files_menu)
+        .separator()
         .item(&download_markdown)
         .build()?;
 
-    let edit_menu = SubmenuBuilder::new(app, "Edit")
+    let edit_menu = SubmenuBuilder::new(manager, "Edit")
         .item(&undo)
         .item(&redo)
         .separator()
@@ -130,41 +205,56 @@ fn build_app_menu(app: &tauri::App<Wry>) -> tauri::Result<Menu<Wry>> {
         .select_all()
         .build()?;
 
-    let view_menu = SubmenuBuilder::new(app, "View")
+    let view_menu = SubmenuBuilder::new(manager, "View")
         .item(&toggle_source)
         .item(&toggle_terminal)
         .item(&toggle_claude)
         .build()?;
 
-    let help_menu = SubmenuBuilder::new(app, "Help")
+    let claude_menu = SubmenuBuilder::new(manager, "Claude")
+        .item(&claude_context)
+        .item(&claude_prompts)
+        .separator()
+        .item(&claude_pull_file)
+        .item(&claude_apply_clipboard)
+        .build()?;
+
+    let help_menu = SubmenuBuilder::new(manager, "Help")
         .item(&open_github)
         .build()?;
 
-    MenuBuilder::new(app)
+    MenuBuilder::new(manager)
         .item(&app_menu)
         .item(&file_menu)
         .item(&edit_menu)
         .item(&view_menu)
+        .item(&claude_menu)
         .item(&help_menu)
         .build()
 }
 
 fn is_lumina_menu_id(id: &str) -> bool {
-    matches!(
-        id,
-        MENU_OPEN_FILE
-            | MENU_DOWNLOAD_MARKDOWN
-            | MENU_UNDO
-            | MENU_REDO
-            | MENU_COPY_HTML
-            | MENU_CHECK_UPDATES
-            | MENU_INSTALL_UPDATE
-            | MENU_INSTALL_CHECKOUT
-            | MENU_TOGGLE_SOURCE
-            | MENU_TOGGLE_TERMINAL
-            | MENU_TOGGLE_CLAUDE
-            | MENU_OPEN_GITHUB
-    )
+    id.starts_with(MENU_OPEN_RECENT_FILE_PREFIX)
+        || matches!(
+            id,
+            MENU_OPEN_FILE
+                | MENU_OPEN_LAST_FILE
+                | MENU_DOWNLOAD_MARKDOWN
+                | MENU_UNDO
+                | MENU_REDO
+                | MENU_COPY_HTML
+                | MENU_CHECK_UPDATES
+                | MENU_INSTALL_UPDATE
+                | MENU_INSTALL_CHECKOUT
+                | MENU_TOGGLE_SOURCE
+                | MENU_TOGGLE_TERMINAL
+                | MENU_TOGGLE_CLAUDE
+                | MENU_CLAUDE_CONTEXT
+                | MENU_CLAUDE_PROMPTS
+                | MENU_CLAUDE_PULL_FILE
+                | MENU_CLAUDE_APPLY_CLIPBOARD
+                | MENU_OPEN_GITHUB
+        )
 }
 
 fn shell_quote(value: &str) -> String {
@@ -422,10 +512,29 @@ fn claude_spawn(
     state: State<'_, TerminalState>,
     rows: u16,
     cols: u16,
+    file_path: Option<String>,
     cwd: Option<String>,
-) -> Result<(), String> {
+) -> Result<Option<ClaudeWorkspaceInfo>, String> {
     let command = CommandBuilder::new("claude");
-    let cwd = if let Some(cwd) = cwd {
+    let mut workspace_info = None;
+    let cwd = if let Some(file_path) = file_path {
+        let file_path = fs::canonicalize(expand_user_path(file_path.trim(), None))
+            .map_err(|error| error.to_string())?;
+        let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
+        if !metadata.is_file() {
+            return Err("Claude can only open a single file path.".to_string());
+        }
+        let cwd = file_path
+            .parent()
+            .ok_or_else(|| "Unable to resolve file directory.".to_string())?
+            .to_path_buf();
+        let info = ClaudeWorkspaceInfo {
+            workspace_path: cwd.to_string_lossy().to_string(),
+            file_path: file_path.to_string_lossy().to_string(),
+        };
+        workspace_info = Some(info);
+        cwd
+    } else if let Some(cwd) = cwd {
         let cwd = expand_user_path(cwd.trim(), None);
         let cwd = fs::canonicalize(&cwd).map_err(|error| error.to_string())?;
         if !cwd.is_dir() {
@@ -449,7 +558,9 @@ fn claude_spawn(
         cwd,
         rows,
         cols,
-    )
+    )?;
+
+    Ok(workspace_info)
 }
 
 #[tauri::command]
@@ -536,6 +647,32 @@ fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<Opene
 }
 
 #[tauri::command]
+fn save_file_path(path: String, content: String) -> Result<OpenedFile, String> {
+    let path = expand_user_path(path.trim(), None);
+    let path = fs::canonicalize(&path).map_err(|error| error.to_string())?;
+    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+
+    if !metadata.is_file() {
+        return Err("Save target is not a file.".to_string());
+    }
+
+    fs::write(&path, content).map_err(|error| error.to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    let content =
+        fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
+
+    Ok(OpenedFile {
+        path: path.to_string_lossy().to_string(),
+        name,
+        content,
+    })
+}
+
+#[tauri::command]
 fn current_checkout_install_info() -> CheckoutInstallInfo {
     if !cfg!(debug_assertions) {
         return CheckoutInstallInfo {
@@ -574,13 +711,21 @@ fn current_checkout_install_info() -> CheckoutInstallInfo {
     }
 }
 
+#[tauri::command]
+fn sync_recent_files_menu(app: AppHandle<Wry>, paths: Vec<String>) -> Result<(), String> {
+    let menu = build_app_menu(&app, &paths).map_err(|error| error.to_string())?;
+    app.set_menu(menu)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(TerminalState::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let menu = build_app_menu(app)?;
+            let menu = build_app_menu(app, &[])?;
             app.set_menu(menu)?;
             Ok(())
         })
@@ -601,6 +746,8 @@ pub fn run() {
             claude_resize,
             claude_kill,
             open_file_path,
+            save_file_path,
+            sync_recent_files_menu,
             current_checkout_install_info
         ])
         .run(tauri::generate_context!())
