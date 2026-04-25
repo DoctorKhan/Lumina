@@ -2,6 +2,7 @@
         import { invoke } from '@tauri-apps/api/core';
         import { listen } from '@tauri-apps/api/event';
         import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { compareVersions, parseVersion, selectLatestUpdateTag } from './update.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import '@xterm/xterm/css/xterm.css';
@@ -600,31 +601,6 @@ async function openRecentFile(recentIndex = null) {
         function setUpdateStatus(message) {
             updateStatus.textContent = message;
             updateStatus.title = message;
-        }
-
-        function parseVersion(value) {
-            const match = String(value || '').match(/v?(\d+)\.(\d+)\.(\d+)/i);
-            if (!match) return null;
-            return match.slice(1).map((part) => Number(part));
-        }
-
-        function compareVersions(left, right) {
-            const a = parseVersion(left);
-            const b = parseVersion(right);
-            if (!a || !b) return 0;
-
-            for (let i = 0; i < 3; i += 1) {
-                if (a[i] !== b[i]) return a[i] - b[i];
-            }
-
-            return 0;
-        }
-
-        function newestSemverTag(tags) {
-            return tags
-                .map((tag) => tag?.name || tag?.tag_name || '')
-                .filter((tag) => parseVersion(tag))
-                .sort((left, right) => compareVersions(right, left))[0] || null;
         }
 
         function shellQuote(value) {

@@ -105,6 +105,7 @@ try {
   ensureCommand("git", "Install git: https://git-scm.com/");
   ensureCommand("node", "Install Node.js: https://nodejs.org/");
   ensureCommand("cargo", "Install Rust toolchain: https://rustup.rs/");
+  ensureCommand("gh", "Install GitHub CLI: https://cli.github.com/");
 
   const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { capture: true }).trim();
   if (branch === "HEAD") {
@@ -147,8 +148,19 @@ try {
   run("git", ["tag", "-a", tag, "-m", `Release ${tag}`]);
   run("git", ["push", "origin", branch]);
   run("git", ["push", "origin", tag]);
+  run("gh", [
+    "release",
+    "create",
+    tag,
+    "--verify-tag",
+    "--latest",
+    "--title",
+    `Lumina ${tag}`,
+    "--notes",
+    `Release ${tag}`,
+  ]);
 
-  console.log(`Release version ${tag} committed, tagged, and pushed.`);
+  console.log(`Release version ${tag} committed, tagged, pushed, and published on GitHub.`);
 } catch (error) {
   console.error(error.message);
   process.exit(1);
