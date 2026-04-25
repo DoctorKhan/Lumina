@@ -1,0 +1,13 @@
+# step_key	observations	mean_seconds
+# Aggregated seed model for install progress estimates.
+# Keep this file free of machine names, paths, timestamps, and raw user logs.
+checkout_clone	2	60
+checkout_update	2	20
+fetch_refs	2	10
+reset_checkout	2	5
+js_deps	2	90
+tauri_icons	2	15
+tauri_build	2	420
+copy_app	2	10
+cli_launcher	2	2
+file_associations	2	5

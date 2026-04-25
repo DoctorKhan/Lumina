@@ -47,7 +47,7 @@ flowchart TD
   math --> preview{Live Preview}
   code --> preview
   diagrams --> preview
-  preview --> export[Copy HTML or Save .md]
+  preview --> export[Copy HTML or Save]
 
   classDef source fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:2px
   classDef engine fill:#e0f2fe,stroke:#0284c7,color:#075985,stroke-width:2px
@@ -96,7 +96,7 @@ Task lists render as clean checklists:
 
 ## 7. Claude Pane
 
-Open the Claude pane with the `C` button or **View > Show/Hide Claude**.
+Open the Claude pane with the `C` button or **View > Claude** (checkmark when the pane is open).
 
 Claude opens against the current file's folder. Before Claude starts, Lumina saves the current editor buffer to the real file so Claude sees the latest text.
 
@@ -105,16 +105,16 @@ Useful Claude controls:
 - **Send Context** sends the current file, cursor location, nearest heading, and selected text.
 - **Prompt...** offers common prompts like improve writing, summarize, fix Markdown, explain math, and create outline.
 - **Apply > Pull edited file** loads Claude's edited file back into Lumina.
-- **Apply > Replace selection from clipboard** replaces the current selection with copied text.
+- **Apply > Replace selection from clipboard** replaces the selection (same as **Claude > Replace Selection with Clipboard**).
 
 ## 8. Useful Menus
 
 | Menu | What It Does |
 | :--- | :--- |
-| File | Open files, reopen recent files, download Markdown |
-| Edit | Undo, redo, copy preview HTML |
-| View | Toggle source, terminal, and Claude panes |
-| Claude | Send context, use prompt presets, apply Claude edits |
-| Help | Reopen this guide or contribute on GitHub |
+| File | Open, reopen last file, **Open Recent**, **Save**, and **Save As** |
+| Edit | Undo, redo, and copy rendered HTML for the preview |
+| View | **Source**, **Terminal**, and **Claude** (checkmarks when each pane is shown) |
+| Claude | Send context, prompt presets, import Claude’s file, replace selection from clipboard |
+| Help | **Lumina Help** (this guide) |
 
 Enjoy writing!

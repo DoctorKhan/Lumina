@@ -1,5 +1,5 @@
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     env, fs,
@@ -10,7 +10,7 @@ use std::{
     thread,
 };
 use tauri::{
-    menu::{AboutMetadata, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
+    menu::{AboutMetadata, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
     AppHandle, Emitter, Manager, Runtime, State, Wry,
 };
 
@@ -18,7 +18,8 @@ const MENU_OPEN_FILE: &str = "lumina_open_file";
 const MENU_OPEN_LAST_FILE: &str = "lumina_open_last_file";
 const MENU_OPEN_RECENT_FILE_PREFIX: &str = "lumina_open_recent_file:";
 const MENU_NO_RECENT_FILES: &str = "lumina_no_recent_files";
-const MENU_DOWNLOAD_MARKDOWN: &str = "lumina_download_markdown";
+const MENU_SAVE: &str = "lumina_save";
+const MENU_SAVE_AS: &str = "lumina_save_as";
 const MENU_UNDO: &str = "lumina_undo";
 const MENU_REDO: &str = "lumina_redo";
 const MENU_COPY_HTML: &str = "lumina_copy_html";
@@ -119,6 +120,15 @@ struct OpenedFile {
     content: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppMenuParams {
+    paths: Vec<String>,
+    source_shown: bool,
+    terminal_shown: bool,
+    claude_shown: bool,
+}
+
 #[derive(Serialize)]
 struct CheckoutInstallInfo {
     available: bool,
@@ -140,6 +150,20 @@ fn menu_item<R: Runtime, M: Manager<R>>(
     accelerator: Option<&str>,
 ) -> tauri::Result<tauri::menu::MenuItem<R>> {
     let mut item = MenuItemBuilder::with_id(id, text);
+    if let Some(accelerator) = accelerator {
+        item = item.accelerator(accelerator);
+    }
+    item.build(manager)
+}
+
+fn check_menu_item<R: Runtime, M: Manager<R>>(
+    manager: &M,
+    id: &'static str,
+    text: &str,
+    checked: bool,
+    accelerator: Option<&str>,
+) -> tauri::Result<tauri::menu::CheckMenuItem<R>> {
+    let mut item = CheckMenuItemBuilder::with_id(id, text).checked(checked);
     if let Some(accelerator) = accelerator {
         item = item.accelerator(accelerator);
     }
@@ -183,57 +207,71 @@ fn build_recent_files_menu<R: Runtime, M: Manager<R>>(
 fn build_app_menu<R: Runtime, M: Manager<R>>(
     manager: &M,
     recent_file_paths: &[String],
+    source_shown: bool,
+    terminal_shown: bool,
+    claude_shown: bool,
 ) -> tauri::Result<Menu<R>> {
-    let open_file = menu_item(manager, MENU_OPEN_FILE, "Open...", Some("CmdOrCtrl+O"))?;
-    let open_last_file = menu_item(manager, MENU_OPEN_LAST_FILE, "Open Last File", None)?;
-    let recent_files_menu = build_recent_files_menu(manager, recent_file_paths)?;
-    let download_markdown = menu_item(
+    let open_file = menu_item(manager, MENU_OPEN_FILE, "Open…", Some("CmdOrCtrl+O"))?;
+    let open_last_file = menu_item(
         manager,
-        MENU_DOWNLOAD_MARKDOWN,
-        "Download Markdown",
-        Some("CmdOrCtrl+S"),
+        MENU_OPEN_LAST_FILE,
+        "Reopen Last File",
+        None,
+    )?;
+    let recent_files_menu = build_recent_files_menu(manager, recent_file_paths)?;
+    let save = menu_item(manager, MENU_SAVE, "Save", Some("CmdOrCtrl+S"))?;
+    let save_as = menu_item(
+        manager,
+        MENU_SAVE_AS,
+        "Save As…",
+        Some("CmdOrCtrl+Shift+S"),
     )?;
     let undo = menu_item(manager, MENU_UNDO, "Undo", Some("CmdOrCtrl+Z"))?;
     let redo = menu_item(manager, MENU_REDO, "Redo", Some("CmdOrCtrl+Shift+Z"))?;
     let copy_html = menu_item(
         manager,
         MENU_COPY_HTML,
-        "Copy Preview HTML",
+        "Copy HTML",
         Some("CmdOrCtrl+Shift+C"),
     )?;
-    let check_updates = menu_item(manager, MENU_CHECK_UPDATES, "Check Updates", None)?;
+    let check_updates = menu_item(manager, MENU_CHECK_UPDATES, "Check for Updates", None)?;
     let install_update = menu_item(manager, MENU_INSTALL_UPDATE, "Install Update", None)?;
     let install_checkout = menu_item(
         manager,
         MENU_INSTALL_CHECKOUT,
-        "Install Current Checkout",
+        "Install from Local Build…",
         None,
     )?;
-    let toggle_source = menu_item(manager, MENU_TOGGLE_SOURCE, "Show/Hide Source", None)?;
-    let toggle_terminal = menu_item(
+    let toggle_source = check_menu_item(manager, MENU_TOGGLE_SOURCE, "Source", source_shown, None)?;
+    let toggle_terminal = check_menu_item(
         manager,
         MENU_TOGGLE_TERMINAL,
-        "Show/Hide Terminal",
+        "Terminal",
+        terminal_shown,
         Some("CmdOrCtrl+`"),
     )?;
-    let toggle_claude = menu_item(manager, MENU_TOGGLE_CLAUDE, "Show/Hide Claude", None)?;
+    let toggle_claude = check_menu_item(manager, MENU_TOGGLE_CLAUDE, "Claude", claude_shown, None)?;
     let claude_context = menu_item(manager, MENU_CLAUDE_CONTEXT, "Send Context to Claude", None)?;
     let claude_prompts = menu_item(
         manager,
         MENU_CLAUDE_PROMPTS,
-        "Claude Prompt Presets...",
+        "Prompt Presets…",
         None,
     )?;
-    let claude_pull_file = menu_item(manager, MENU_CLAUDE_PULL_FILE, "Pull Claude File", None)?;
+    let claude_pull_file = menu_item(
+        manager,
+        MENU_CLAUDE_PULL_FILE,
+        "Open Claude-Edited File",
+        None,
+    )?;
     let claude_apply_clipboard = menu_item(
         manager,
         MENU_CLAUDE_APPLY_CLIPBOARD,
-        "Apply Clipboard to Selection",
+        "Replace Selection with Clipboard",
         None,
     )?;
-    let open_github = menu_item(manager, MENU_OPEN_GITHUB, "Contribute on GitHub", None)?;
-    let open_example_guide =
-        menu_item(manager, MENU_OPEN_EXAMPLE_GUIDE, "Open Example Guide", None)?;
+    let open_github = menu_item(manager, MENU_OPEN_GITHUB, "Lumina on GitHub", None)?;
+    let open_example_guide = menu_item(manager, MENU_OPEN_EXAMPLE_GUIDE, "Lumina Help", None)?;
 
     let app_menu = SubmenuBuilder::new(manager, "Lumina")
         .about(Some(AboutMetadata {
@@ -244,6 +282,8 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
             website_label: Some("GitHub".to_string()),
             ..Default::default()
         }))
+        .separator()
+        .item(&open_github)
         .separator()
         .item(&check_updates)
         .item(&install_update)
@@ -257,7 +297,8 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .item(&open_last_file)
         .item(&recent_files_menu)
         .separator()
-        .item(&download_markdown)
+        .item(&save)
+        .item(&save_as)
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(manager, "Edit")
@@ -288,8 +329,6 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
 
     let help_menu = SubmenuBuilder::new(manager, "Help")
         .item(&open_example_guide)
-        .separator()
-        .item(&open_github)
         .build()?;
 
     MenuBuilder::new(manager)
@@ -308,7 +347,8 @@ fn is_lumina_menu_id(id: &str) -> bool {
             id,
             MENU_OPEN_FILE
                 | MENU_OPEN_LAST_FILE
-                | MENU_DOWNLOAD_MARKDOWN
+                | MENU_SAVE
+                | MENU_SAVE_AS
                 | MENU_UNDO
                 | MENU_REDO
                 | MENU_COPY_HTML
@@ -707,15 +747,56 @@ fn claude_kill(state: State<'_, TerminalState>) -> Result<(), String> {
     kill_pty_session(&state.claude)
 }
 
+/// Strips a trailing `:line` or `:line:col` (compiler / ripgrep style) only when it
+/// appears immediately after a known text extension. Do **not** use `split` on
+/// the first `:` in the string — that breaks paths that accidentally include
+/// time fragments (e.g. `23:15...`) and turns `...TOUR...` into nonsense.
+fn strip_editor_line_column_suffix(s: &str) -> &str {
+    for ext in [".markdown", ".md", ".txt"] {
+        if let Some(i) = s.rfind(ext) {
+            if i + ext.len() > s.len() {
+                continue;
+            }
+            if s.get(i..i + ext.len()) != Some(ext) {
+                continue;
+            }
+            let after = &s[i + ext.len()..];
+            if after.is_empty() {
+                return s;
+            }
+            if !after.starts_with(':') {
+                continue;
+            }
+            // Remaining must be :digits or :digits:digits
+            let after_colon = &after[1..];
+            if after_colon.is_empty() {
+                return s;
+            }
+            if let Some((line, col_or_tail)) = after_colon.split_once(':') {
+                if !line.chars().all(|c: char| c.is_ascii_digit()) {
+                    return s;
+                }
+                if col_or_tail.is_empty() {
+                    return s;
+                }
+                if col_or_tail.chars().all(|c: char| c.is_ascii_digit()) {
+                    return s.get(..i + ext.len()).unwrap_or(s);
+                }
+            } else if after_colon.chars().all(|c: char| c.is_ascii_digit()) {
+                return s.get(..i + ext.len()).unwrap_or(s);
+            }
+        }
+    }
+    s
+}
+
 #[tauri::command]
 fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<OpenedFile, String> {
     let path = path
         .trim()
         .trim_matches(|character| matches!(character, '"' | '\'' | '`' | '<' | '>' | ')' | '('));
-    let path = path
-        .trim_end_matches(|character: char| matches!(character, ',' | ';' | '.'))
-        .split_once(':')
-        .map_or(path, |(candidate, _)| candidate);
+    let path = path.trim_end_matches(|character: char| matches!(character, ',' | ';' | '.'));
+    let path = strip_editor_line_column_suffix(path);
     let cwd = state
         .cwd
         .lock()
@@ -754,6 +835,30 @@ fn save_file_path(path: String, content: String) -> Result<OpenedFile, String> {
     }
 
     fs::write(&path, content).map_err(|error| error.to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    let content =
+        fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
+
+    Ok(OpenedFile {
+        path: path.to_string_lossy().to_string(),
+        name,
+        content,
+    })
+}
+
+/// Writes the document to the given path, creating the file and parent directories if needed.
+#[tauri::command]
+fn write_document(path: String, content: String) -> Result<OpenedFile, String> {
+    let path = expand_user_path(path.trim(), None);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    fs::write(&path, &content).map_err(|error| error.to_string())?;
+    let path = fs::canonicalize(&path).map_err(|error| error.to_string())?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -809,8 +914,15 @@ fn current_checkout_install_info() -> CheckoutInstallInfo {
 }
 
 #[tauri::command]
-fn sync_recent_files_menu(app: AppHandle<Wry>, paths: Vec<String>) -> Result<(), String> {
-    let menu = build_app_menu(&app, &paths).map_err(|error| error.to_string())?;
+fn sync_app_menu(app: AppHandle<Wry>, params: AppMenuParams) -> Result<(), String> {
+    let menu = build_app_menu(
+        &app,
+        &params.paths,
+        params.source_shown,
+        params.terminal_shown,
+        params.claude_shown,
+    )
+    .map_err(|error| error.to_string())?;
     app.set_menu(menu)
         .map(|_| ())
         .map_err(|error| error.to_string())
@@ -849,7 +961,7 @@ pub fn run() {
         .manage(PendingOpenPaths::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let menu = build_app_menu(app, &[])?;
+            let menu = build_app_menu(app, &[], true, false, false)?;
             app.set_menu(menu)?;
             notify_open_paths_pending(app.handle(), collect_cli_document_paths());
             Ok(())
@@ -872,7 +984,8 @@ pub fn run() {
             claude_kill,
             open_file_path,
             save_file_path,
-            sync_recent_files_menu,
+            write_document,
+            sync_app_menu,
             drain_pending_open_paths,
             open_external_url,
             current_checkout_install_info
