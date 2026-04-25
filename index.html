@@ -295,10 +295,18 @@ Enjoy writing!
 
         editor.value = initialValue;
 
+        function schedulePreviewUpdate() {
+            preview.innerHTML = '<p class="text-slate-500">Rendering preview...</p>';
+            requestAnimationFrame(() => {
+                updatePreview();
+            });
+        }
+
         function setEditorContent(content, label) {
             editor.value = content;
             filenameDisplay.textContent = label;
-            updatePreview();
+            charCount.textContent = `${content.length} chars`;
+            schedulePreviewUpdate();
         }
 
         function highlightCodeBlocks() {
@@ -654,10 +662,14 @@ Enjoy writing!
             if (!cleanPath) return;
 
             try {
+                filenameDisplay.textContent = `Opening: ${cleanPath}`;
+                filenameDisplay.title = cleanPath;
                 const file = await invoke('open_file_path', { path: cleanPath });
                 setEditorContent(file.content, `Editing: ${file.path}`);
                 filenameDisplay.title = file.path;
             } catch (error) {
+                filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
+                filenameDisplay.title = '';
                 terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
             }
         }
