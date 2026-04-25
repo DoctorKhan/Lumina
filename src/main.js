@@ -16,6 +16,12 @@ import {
     getInterpolatedInstallPercent,
     getCountdownSecondsRemaining
 } from './installProgressAnimate.js';
+import {
+    extractMathForMarkdown,
+    normalizeEscapedLatexDelimiters,
+    normalizeMathBlocks,
+    restoreMathFromMarkdownHtml
+} from './previewMath.js';
         import {
             applyKatexToPreview,
             highlightCodeBlocksIn,
@@ -440,102 +446,6 @@ async function openRecentFile(recentIndex = null) {
             }
         }
 
-        function looksLikeLatexBlock(lines) {
-            const body = lines.join('\n').trim();
-            if (!body) return false;
-
-            // Heuristic signals for math/LaTeX content.
-            return /\\[a-zA-Z]+/.test(body) ||          // \frac, \begin, \sum, ...
-                /[_^]/.test(body) ||                    // x_i, x^2
-                /\{.*\}/.test(body) ||                  // grouped LaTeX terms
-                /\\begin\{.*\}|\\end\{.*\}/.test(body) ||
-                /\\\\/.test(body) ||                    // line breaks in cases/aligned
-                /\b(min|max|sin|cos|log)\b/.test(body); // common math tokens
-        }
-
-        function normalizeMathBlocks(input) {
-            // Detect standalone bracket blocks that are likely LaTeX and
-            // convert only those to $$...$$. Leaves non-math brackets unchanged.
-            const lines = input.split('\n');
-            const output = [];
-            let inCodeFence = false;
-            let bracketStart = -1;
-            let bracketBody = [];
-
-            for (const line of lines) {
-                const trimmed = line.trim();
-
-                if (trimmed.startsWith('```')) {
-                    if (bracketStart !== -1) {
-                        output.push('[');
-                        output.push(...bracketBody);
-                        bracketStart = -1;
-                        bracketBody = [];
-                    }
-                    inCodeFence = !inCodeFence;
-                    output.push(line);
-                    continue;
-                }
-
-                if (inCodeFence) {
-                    output.push(line);
-                    continue;
-                }
-
-                if (bracketStart === -1 && trimmed === '[') {
-                    bracketStart = output.length;
-                    bracketBody = [];
-                    continue;
-                }
-
-                if (bracketStart !== -1 && trimmed === ']') {
-                    if (looksLikeLatexBlock(bracketBody)) {
-                        output.push('$$');
-                        output.push(...bracketBody);
-                        output.push('$$');
-                    } else {
-                        output.push('[');
-                        output.push(...bracketBody);
-                        output.push(']');
-                    }
-                    bracketStart = -1;
-                    bracketBody = [];
-                    continue;
-                }
-
-                if (bracketStart !== -1) {
-                    bracketBody.push(line);
-                    continue;
-                }
-
-                output.push(line);
-            }
-
-            // Unclosed bracket block: keep original text verbatim.
-            if (bracketStart !== -1) {
-                output.push('[');
-                output.push(...bracketBody);
-            }
-
-            return output.join('\n');
-        }
-
-        function normalizeEscapedLatexDelimiters(input) {
-            // Convert escaped LaTeX delimiters into dollar delimiters before
-            // Markdown parsing, so marked does not swallow the backslashes.
-            // Display math: \[ ... \] -> $$ ... $$
-            let output = input.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_, expr) => {
-                return `$$\n${expr.trim()}\n$$`;
-            });
-
-            // Inline math: \( ... \) -> $ ... $
-            output = output.replace(/\\\((.*?)\\\)/g, (_, expr) => {
-                return `$${expr.trim()}$`;
-            });
-
-            return output;
-        }
-
         function applySmartOutlineStyles() {
             const orderedLists = Array.from(preview.querySelectorAll('ol'));
             orderedLists.forEach((list) => list.classList.remove('outline-list'));
@@ -560,7 +470,11 @@ async function openRecentFile(recentIndex = null) {
             const normalizedValue = normalizeEscapedLatexDelimiters(
                 normalizeMathBlocks(rawValue)
             );
-            preview.innerHTML = marked.parse(normalizedValue);
+            const protectedValue = extractMathForMarkdown(normalizedValue);
+            preview.innerHTML = restoreMathFromMarkdownHtml(
+                marked.parse(protectedValue.markdown),
+                protectedValue.math
+            );
             applySmartOutlineStyles();
             await highlightCodeBlocksIn(preview);
             await renderMermaidInPreview(preview);
