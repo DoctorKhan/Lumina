@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>LSRequiresCarbon</key>
+  <false/>
   <key>NSDesktopFolderUsageDescription</key>
   <string>Lumina needs access when you open or save Markdown files on your Desktop, or when the Claude pane edits the current file's folder.</string>
   <key>NSDocumentsFolderUsageDescription</key>

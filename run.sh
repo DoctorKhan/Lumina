@@ -21,25 +21,30 @@ ensure_just() {
   echo "'just' was not found on PATH." >&2
   echo "Install docs: https://github.com/casey/just" >&2
 
-  if [[ ! -t 0 ]]; then
-    echo "Run this script from an interactive shell to install it automatically." >&2
-    exit 127
-  fi
-
-  read -r -p "Install 'just' now? [y/N] " install_just
-  case "$install_just" in
-    [yY] | [yY][eE][sS]) ;;
-    *)
-      echo "Install skipped. See https://github.com/casey/just for installation options." >&2
-      exit 127
-      ;;
-  esac
-
   JUST_BIN_DIR="${JUST_INSTALL_DIR:-$HOME/.local/bin}"
   mkdir -p "$JUST_BIN_DIR"
 
+  # Piped invocations (e.g. curl install.sh | bash) have a non-tty stdin; still
+  # need just for ./run.sh, so auto-install in that case.
+  if [[ -t 0 ]]; then
+    read -r -p "Install 'just' now? [y/N] " install_just
+    case "$install_just" in
+      [yY] | [yY][eE][sS]) ;;
+      *)
+        echo "Install skipped. See https://github.com/casey/just for installation options." >&2
+        exit 127
+        ;;
+    esac
+  else
+    echo "Non-interactive shell: installing 'just' to $JUST_BIN_DIR" >&2
+  fi
+
   curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh |
     bash -s -- --to "$JUST_BIN_DIR"
+
+  if [[ ":$PATH:" != *":$JUST_BIN_DIR:"* ]]; then
+    export PATH="$JUST_BIN_DIR:$PATH"
+  fi
 
   if ! command -v just >/dev/null 2>&1; then
     echo "'just' was installed to $JUST_BIN_DIR, but it is still not available on PATH." >&2
