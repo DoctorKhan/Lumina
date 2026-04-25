@@ -964,6 +964,7 @@ pub fn run() {
         .manage(TerminalState::default())
         .manage(PendingOpenPaths::default())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let menu = build_app_menu(app, &[], true, false, false)?;
             app.set_menu(menu)?;
