@@ -118,8 +118,55 @@
         .prose blockquote { border-left: 4px solid #cbd5e1; padding-left: 1rem; font-style: italic; color: #64748b; margin: 1rem 0; background: #f8fafc; border-radius: 0 8px 8px 0; }
         .prose ul, .prose ol { margin-left: 1.5rem; margin-bottom: 1rem; }
         .prose li { margin: 0.28rem 0; }
-        .prose li:has(input[type="checkbox"]) { list-style: none; margin-left: -1.5rem; }
-        .prose input[type="checkbox"] { accent-color: #4f46e5; margin-right: 0.45rem; transform: translateY(1px); }
+        .prose ul:has(input[type="checkbox"]) {
+            margin: 1rem 0 1.25rem;
+            padding: 0.8rem 0.95rem;
+            border: 1px solid #dbe4ff;
+            border-radius: 14px;
+            background: linear-gradient(180deg, #f8fbff 0%, #f1f5ff 100%);
+            box-shadow: 0 10px 22px rgba(99, 102, 241, 0.08);
+        }
+        .prose li:has(input[type="checkbox"]) {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.65rem;
+            list-style: none;
+            margin: 0;
+            padding: 0.45rem 0.2rem;
+            color: #334155;
+        }
+        .prose li:has(input[type="checkbox"]):not(:last-child) {
+            border-bottom: 1px solid rgba(148, 163, 184, 0.22);
+        }
+        .prose li:has(input[type="checkbox"]:checked) {
+            color: #64748b;
+        }
+        .prose input[type="checkbox"] {
+            position: relative;
+            flex: 0 0 auto;
+            width: 1.05rem;
+            height: 1.05rem;
+            margin: 0.22rem 0 0;
+            appearance: none;
+            border: 1.5px solid #94a3b8;
+            border-radius: 5px;
+            background: #ffffff;
+        }
+        .prose input[type="checkbox"]:checked {
+            border-color: #4f46e5;
+            background: linear-gradient(135deg, #4f46e5, #0ea5e9);
+        }
+        .prose input[type="checkbox"]:checked::after {
+            content: "";
+            position: absolute;
+            left: 0.32rem;
+            top: 0.13rem;
+            width: 0.32rem;
+            height: 0.58rem;
+            border: solid #ffffff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+        }
         .prose img { max-width: 100%; border-radius: 10px; margin: 1rem auto; display: block; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12); }
         .prose table { width: 100%; border-collapse: collapse; margin: 1rem 0; overflow: hidden; border-radius: 10px; }
         .prose th, .prose td { border: 1px solid #e2e8f0; padding: 0.55rem; text-align: left; }
@@ -336,10 +383,10 @@ flowchart TD
 * **File Support**: Open local .md files directly.
 * **GFM Support**: GitHub Flavored Markdown tables and lists.
 
-Task lists work too:
+Task lists render as clean checklists:
 
-- [x] Write Markdown
-- [x] Preview LaTeX and diagrams
+- [x] Draft the Markdown
+- [x] Preview math and diagrams
 - [ ] Share the finished document
 
 | Feature | Support |
