@@ -136,6 +136,16 @@ run_release() {
     exit 1
   fi
 
+  local tag="v${next_version}"
+  if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+    echo "Tag already exists locally: ${tag}"
+    exit 1
+  fi
+  if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+    echo "Tag already exists on origin: ${tag}"
+    exit 1
+  fi
+
   echo "Releasing version $next_version from $current_version on branch $branch"
 
   RELEASE_VERSION="$next_version" node -e '
@@ -175,9 +185,11 @@ fs.writeFileSync(indexPath, indexUpdated);
 
   git add -A
   git commit -m "chore(release): v${next_version}"
+  git tag -a "$tag" -m "Release ${tag}"
   git push origin "$branch"
+  git push origin "$tag"
 
-  echo "Release version v${next_version} committed and pushed."
+  echo "Release version ${tag} committed, tagged, and pushed."
 }
 
 usage() {
@@ -193,7 +205,7 @@ Commands:
   tauri:build:app Build macOS .app bundle only
   install:app   Build and install /Applications/Lumina.app from this checkout
   release [patch|minor|major|x.y.z]
-               Bump versions, commit, and push current branch
+               Bump versions, commit, tag, and push current branch
 EOF
 }
 
