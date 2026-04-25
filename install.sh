@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Piped invocations (e.g. `curl | bash`) often have stderr non-TTY; still show build progress.
+if ! [[ -t 2 ]]; then
+  export CARGO_TERM_PROGRESS="${CARGO_TERM_PROGRESS:-always}"
+fi
+
 REPO_URL="${REPO_URL:-https://github.com/DoctorKhan/Lumina.git}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.lumina}"
 GIT_REF="${GIT_REF:-origin/main}"
@@ -175,19 +180,54 @@ progress_percent() {
   echo $(((elapsed * 100) / predicted_total))
 }
 
-progress_label() {
+# ASCII bar (overall install); percentage uses elapsed + estimated time for steps not done yet.
+format_progress_bar() {
+  local percent="$1"
+  local width=24
+  local filled
+  if ((percent < 0)); then
+    percent=0
+  elif ((percent > 100)); then
+    percent=100
+  fi
+  filled=$(( (percent * width) / 100 ))
+  if ((percent > 0 && filled < 1)); then
+    filled=1
+  fi
+  if ((percent < 100 && filled >= width)); then
+    filled=$((width - 1))
+  elif ((percent == 100)); then
+    filled=$width
+  fi
+
+  local out="["
+  local i
+  for ((i = 0; i < width; i++)); do
+    if ((i < filled)); then
+      out+="#"
+    else
+      out+="-"
+    fi
+  done
+  out+="]"
+  printf "%s %3d%%" "$out" "$percent"
+}
+
+# One line: bar, estimated time left, and elapsed (for TTY and log).
+install_progress_line() {
   local remaining_from_index="$1"
   local elapsed="$2"
   local remaining
   local percent
   remaining="$(estimated_remaining "$remaining_from_index")"
   percent="$(progress_percent "$elapsed" "$remaining")"
-
   if ((percent > 99 && remaining > 0)); then
     percent=99
   fi
-
-  printf "elapsed %s, ETA %s, %s%%" "$(format_duration "$elapsed")" "$(format_duration "$remaining")" "$percent"
+  printf "%s  |  about %s left  |  %s elapsed" \
+    "$(format_progress_bar "$percent")" \
+    "$(format_duration "$remaining")" \
+    "$(format_duration "$elapsed")"
 }
 
 start_step() {
@@ -199,7 +239,8 @@ start_step() {
   CURRENT_STEP_STARTED_AT="$(date +%s)"
   elapsed="$(elapsed_seconds)"
   echo
-  printf "[%d/%d] %s (%s)\n" "$INSTALL_STEP" "$INSTALL_TOTAL_STEPS" "$label" "$(progress_label $((INSTALL_STEP - 1)) "$elapsed")"
+  printf "%s\n" "$(install_progress_line $((INSTALL_STEP - 1)) "$elapsed")"
+  printf "[%d/%d] %s\n" "$INSTALL_STEP" "$INSTALL_TOTAL_STEPS" "$label"
 }
 
 finish_step() {
@@ -211,7 +252,8 @@ finish_step() {
   duration=$((now - CURRENT_STEP_STARTED_AT))
   record_step_duration "$CURRENT_STEP_KEY" "$label" "$duration"
   elapsed="$(elapsed_seconds)"
-  printf "Done: %s in %s (%s)\n" "$label" "$(format_duration "$duration")" "$(progress_label "$INSTALL_STEP" "$elapsed")"
+  printf "Done: %s in %s\n" "$label" "$(format_duration "$duration")"
+  printf "%s\n" "$(install_progress_line "$INSTALL_STEP" "$elapsed")"
 }
 
 json_escape() {
@@ -303,13 +345,15 @@ install_cli_launcher() {
 set -euo pipefail
 
 if [[ "\${1:-}" == "update" ]]; then
-  curl -fsSL https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
+  echo "Downloading the Lumina installer from GitHub (this may take a while on slow networks)..." >&2
+  curl -fL --connect-timeout 30 --retry 2 https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
   open -a "$launcher_target"
   exit 0
 fi
 
 if [[ "\${1:-}" == "--update" ]]; then
-  curl -fsSL https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
+  echo "Downloading the Lumina installer from GitHub (this may take a while on slow networks)..." >&2
+  curl -fL --connect-timeout 30 --retry 2 https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
   exit 0
 fi
 
@@ -417,7 +461,7 @@ git_ref_resolves() {
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   start_step "checkout_update" "Updating existing checkout in $INSTALL_DIR"
-  git -C "$INSTALL_DIR" fetch --all --tags
+  git -C "$INSTALL_DIR" fetch --all --tags --progress
   if ! git_ref_resolves "$INSTALL_DIR"; then
     echo "error: $GIT_REF is not a valid git ref in $INSTALL_DIR after fetch."
     echo "If you are installing a release, ensure the tag exists on the remote (e.g. push the tag to GitHub)."
@@ -430,7 +474,7 @@ if [[ -d "$INSTALL_DIR/.git" ]]; then
   finish_step "Updated existing checkout"
 else
   start_step "checkout_clone" "Cloning repository to $INSTALL_DIR"
-  git clone "$REPO_URL" "$INSTALL_DIR"
+  git clone --progress "$REPO_URL" "$INSTALL_DIR"
   finish_step "Cloned repository"
 fi
 
@@ -442,7 +486,7 @@ fi
 
 echo "Installing Lumina from $GIT_REF"
 start_step "fetch_refs" "Fetching refs"
-git fetch --all --tags
+git fetch --all --tags --progress
 finish_step "Fetched refs"
 if ! git rev-parse -q --verify "$GIT_REF^{commit}" >/dev/null 2>&1; then
   echo "error: $GIT_REF is not a valid git ref after fetch."
