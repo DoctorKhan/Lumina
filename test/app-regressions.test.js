@@ -29,6 +29,8 @@ test("startup update check is quiet and exposes an install badge", () => {
   assert.match(html, /id="install-update-badge"/);
   assert.match(main, /checkForUpdate\(\{ background = false \} = \{\}\)/);
   assert.match(main, /checkForUpdate\(\{ background: true \}\)/);
+  assert.match(main, /requestIdleCallback/);
+  assert.doesNotMatch(main, /setTimeout\(\(\) => \{\s*checkForUpdate\(\{ background: true \}\)/);
   assert.match(main, /installUpdateBadge\.addEventListener\('click', installDetectedUpdate\)/);
   assert.match(main, /showInstallUpdateBadge\(latestTag\)/);
 });

@@ -1493,6 +1493,12 @@ document.addEventListener('click', (event) => {
 
         loadInitialContent();
         loadCurrentCheckoutInstaller();
-setTimeout(() => {
-    checkForUpdate({ background: true });
-}, 1500);
+if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(() => {
+        checkForUpdate({ background: true });
+    }, { timeout: 10000 });
+} else {
+    queueMicrotask(() => {
+        checkForUpdate({ background: true });
+    });
+}
