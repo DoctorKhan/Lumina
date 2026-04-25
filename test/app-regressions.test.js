@@ -54,6 +54,9 @@ test("startup update check is quiet and exposes an install badge", () => {
   assert.match(html, /id="install-update-badge"/);
   assert.match(main, /checkForUpdate\(\{ background = false \} = \{\}\)/);
   assert.match(main, /checkForUpdate\(\{ background: true \}\)/);
+  assert.match(main, /getVersion/);
+  assert.match(main, /refreshAppVersionBadge/);
+  assert.match(main, /void bootstrap\(\)/);
   assert.match(main, /requestIdleCallback/);
   assert.doesNotMatch(main, /setTimeout\(\(\) => \{\s*checkForUpdate\(\{ background: true \}\)/);
   assert.match(main, /installUpdateBadge\.addEventListener\('click', installDetectedUpdate\)/);
@@ -86,6 +89,18 @@ test("macOS bundle plist does not request legacy Carbon launch mode", () => {
 
   assert.match(plist, /<key>LSRequiresCarbon<\/key>\s*<false\/>/);
   assert.doesNotMatch(plist, /<key>LSRequiresCarbon<\/key>\s*<true\/>/);
+});
+
+test("app top chrome and pane layout are locked in app CSS, not only Tailwind", () => {
+  const css = fs.readFileSync("src/styles.css", "utf8");
+
+  assert.match(css, /html\s*\{[^}]*overflow:\s*hidden/);
+  assert.match(css, /body > header/);
+  assert.match(css, /body > header[^}]*flex:\s*0 0 auto/);
+  assert.match(css, /body > header[^}]*min-height:\s*4rem/);
+  assert.match(css, /max-height:\s*100dvh/);
+  assert.match(css, /\.editor-container[^}]*overflow:\s*hidden/);
+  assert.match(css, /\.workspace-panes[^}]*min-height:\s*0/);
 });
 
 test("editor metadata bar truncates long filenames without wrapping", () => {

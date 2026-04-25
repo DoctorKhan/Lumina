@@ -1,5 +1,11 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Fira+Code:wght@400;500&display=swap');
 
+/* Lock the page to the webview: no document-level scroll. Pane scroll lives in #editor / #preview. */
+html {
+    height: 100%;
+    overflow: hidden;
+}
+
 body {
     font-family: 'Inter', sans-serif;
     background:
@@ -10,19 +16,32 @@ body {
     overflow: hidden;
     display: flex;
     flex-direction: column;
+    height: 100%;
     min-height: 100vh;
     min-height: 100dvh;
+    max-height: 100dvh;
+    min-width: 0;
+}
+
+/* App chrome must not depend on Tailwind alone: without shrink-0 the column flex can collapse this row. */
+body > header {
+    flex: 0 0 auto;
+    min-height: 4rem;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .editor-container {
     flex: 1 1 auto;
     min-height: 0;
     min-width: 0;
+    overflow: hidden;
 }
 
 .workspace-panes {
     flex: 1 1 auto;
     min-width: 0;
+    min-height: 0;
 }
 
 .editor-collapsed .editor-pane {

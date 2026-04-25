@@ -1,4 +1,5 @@
         import exampleMarkdown from './example.md?raw';
+        import { getVersion } from '@tauri-apps/api/app';
         import { invoke } from '@tauri-apps/api/core';
         import { listen } from '@tauri-apps/api/event';
         import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
@@ -99,7 +100,7 @@ const maxRecentFilePaths = 10;
         const releaseApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/releases/latest';
         const tagsApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/tags?per_page=100';
         const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
-const currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
+let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
 
         marked.setOptions({
             // Keep default markdown line-break behavior so multiline KaTeX
@@ -794,8 +795,11 @@ function hideInstallUpdateBadge() {
             installProgressEndTimer = setTimeout(() => {
                 installProgressEndTimer = null;
                 endInstallProgressSession();
+                const target = latestReleaseTag
+                    ? String(latestReleaseTag).trim()
+                    : 'the new build';
                 setUpdateStatus(
-                    'Update install finished. Check the terminal, then relaunch the app if a new /Applications build was created.'
+                    `Install finished (${target}). This window is still v${currentVersion} until you quit Lumina completely and open it again (e.g. from /Applications). The title bar only updates after relaunch.`
                 );
             }, 4500);
         }
@@ -1931,6 +1935,19 @@ document.addEventListener('click', (event) => {
             { passive: true }
         );
 
+        async function refreshAppVersionBadge() {
+            try {
+                const raw = await getVersion();
+                if (!raw || !String(raw).trim()) {
+                    return;
+                }
+                currentVersion = String(raw).trim().replace(/^v/i, '');
+                appVersionBadge.textContent = `v${currentVersion}`;
+            } catch (_) {
+                /* Vite dev / non-Tauri: keep index.html placeholder for currentVersion */
+            }
+        }
+
         async function loadInitialContent() {
             const params = new URLSearchParams(window.location.search);
             const fileParam = params.get('file');
@@ -1961,14 +1978,22 @@ document.addEventListener('click', (event) => {
             }
         }
 
-        loadInitialContent();
-        loadCurrentCheckoutInstaller();
-if ('requestIdleCallback' in window) {
-    window.requestIdleCallback(() => {
-        checkForUpdate({ background: true });
-    }, { timeout: 10000 });
-} else {
-    queueMicrotask(() => {
-        checkForUpdate({ background: true });
-    });
-}
+        async function bootstrap() {
+            await refreshAppVersionBadge();
+            await loadInitialContent();
+            await loadCurrentCheckoutInstaller();
+            if ('requestIdleCallback' in window) {
+                window.requestIdleCallback(
+                    () => {
+                        checkForUpdate({ background: true });
+                    },
+                    { timeout: 10000 }
+                );
+            } else {
+                queueMicrotask(() => {
+                    checkForUpdate({ background: true });
+                });
+            }
+        }
+
+        void bootstrap();
