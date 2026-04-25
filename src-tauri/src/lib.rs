@@ -169,7 +169,8 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         None,
     )?;
     let open_github = menu_item(manager, MENU_OPEN_GITHUB, "Contribute on GitHub", None)?;
-    let open_example_guide = menu_item(manager, MENU_OPEN_EXAMPLE_GUIDE, "Open Example Guide", None)?;
+    let open_example_guide =
+        menu_item(manager, MENU_OPEN_EXAMPLE_GUIDE, "Open Example Guide", None)?;
 
     let app_menu = SubmenuBuilder::new(manager, "Lumina")
         .about(Some(AboutMetadata {
