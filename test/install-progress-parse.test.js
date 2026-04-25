@@ -81,6 +81,13 @@ test("RE_BAR matches Unicode block bar from terminal", () => {
     assert.equal(s.timeRemaining, "1m");
 });
 
+test("LUMINA_INSTALL_COMPLETE marker is done (install.sh fallthrough / non-100% last bar)", () => {
+    const s = createInstallProgressState();
+    const r = processInstallProgressLine(s, "LUMINA_INSTALL_COMPLETE");
+    assert.equal(r.done, true);
+    assert.equal(r.changed, true);
+});
+
 test("bar at 100% is done", () => {
     const s = createInstallProgressState();
     const r = processInstallProgressLine(

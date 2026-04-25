@@ -809,7 +809,7 @@ function hideInstallUpdateBadge() {
                         );
                     }
                 })();
-            }, 4500);
+            }, 2000);
         }
 
         function syncInstallProgressView() {

@@ -589,6 +589,11 @@ associate_markdown_files() {
   echo "Associated .md/.markdown/.txt with $APP_NAME"
 }
 
+# Must stay in sync with processInstallProgressLine in src/installProgressParse.js
+emit_lumina_install_done_marker() {
+  printf '%s\n' 'LUMINA_INSTALL_COMPLETE'
+}
+
 require_command() {
   local cmd="$1"
   local help="$2"
@@ -688,9 +693,11 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     start_step "file_associations" "Configuring file associations"
     associate_markdown_files
     finish_step "Configured file associations"
+    emit_lumina_install_done_marker
     exit 0
   fi
 fi
 
 echo "Build complete."
 echo "Install artifact is in: $INSTALL_DIR/src-tauri/target/release/bundle"
+emit_lumina_install_done_marker
