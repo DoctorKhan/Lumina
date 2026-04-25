@@ -14,24 +14,21 @@ function clampPercent(value) {
 
 export function displayPercentFromInstallProgress(state) {
     const rawPercent = clampPercent(state.percent);
-    let stepFloor = null;
-
+    // A bar line is authoritative (install.sh already blends elapsed, remaining, and step
+    // floor). Do not Math.max with a step "floor" here — that overrode the real ~40% with
+    // ~55% and made the card disagree with the terminal.
+    if (rawPercent != null) {
+        return rawPercent;
+    }
     if (
         Number.isFinite(state.currentStep) &&
         Number.isFinite(state.totalSteps) &&
         state.currentStep > 0 &&
         state.totalSteps > 0
     ) {
-        stepFloor = clampPercent(((state.currentStep - 1) / state.totalSteps) * 100);
+        return clampPercent(((state.currentStep - 1) / state.totalSteps) * 100);
     }
-
-    if (rawPercent == null) {
-        return stepFloor;
-    }
-    if (stepFloor == null) {
-        return rawPercent;
-    }
-    return Math.max(rawPercent, stepFloor);
+    return null;
 }
 
 /**

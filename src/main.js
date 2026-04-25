@@ -733,17 +733,25 @@ function hideInstallUpdateBadge() {
             }
             const now = performance.now();
             const terminalP = displayPercentFromInstallProgress(installProgressState);
-            const interp = getInterpolatedInstallPercent(
-                installProgressAnchor,
-                installProgressState,
-                now
-            );
-            const countdown = getCountdownSecondsRemaining(installProgressAnchor, now);
+            // When the shell printed a real progress bar, use that percent and `about … left`
+            // as-is. Interpolation + scaled countdown were for the old step-floor mismatch and
+            // disagree with install.sh (and the terminal).
+            const hasBarLine = Number.isFinite(installProgressState.percent);
             const live =
-                installProgressTracking && terminalP != null && terminalP < 100
+                installProgressTracking &&
+                !hasBarLine &&
+                terminalP != null &&
+                terminalP < 100
                     ? {
-                          interpolatedPercent: interp,
-                          countdownSeconds: countdown
+                          interpolatedPercent: getInterpolatedInstallPercent(
+                              installProgressAnchor,
+                              installProgressState,
+                              now
+                          ),
+                          countdownSeconds: getCountdownSecondsRemaining(
+                              installProgressAnchor,
+                              now
+                          )
                       }
                     : null;
             const view = createInstallProgressViewModel(installProgressState, live);

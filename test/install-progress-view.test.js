@@ -9,13 +9,13 @@ import {
     displayPercentFromInstallProgress
 } from "../src/installProgressView.js";
 
-test("display percent uses step floor when raw ETA percent is still zero", () => {
+test("display percent uses raw bar from install.sh when a bar line is present (no step override)", () => {
     const s = createInstallProgressState();
     processInstallProgressLine(s, "[----------------------]   0%  |  about 7m 17s left  |  4s elapsed");
     processInstallProgressLine(s, "[6/9]  Building macOS app bundle");
 
     assert.equal(s.percent, 0);
-    assert.equal(displayPercentFromInstallProgress(s), 56);
+    assert.equal(displayPercentFromInstallProgress(s), 0);
 });
 
 test("display percent keeps raw bar percent when it is ahead of step floor", () => {
