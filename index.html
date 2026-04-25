@@ -530,9 +530,11 @@ Enjoy writing!
 
         async function runCommandInTerminal(command, label) {
             await toggleTerminal(true);
-            terminal?.write(`\r\n${label}\r\n$ ${command}\r\n`);
+            terminalInputBuffer = '';
+            terminal?.write(`\r\n${label}\r\nRunning: ${command}\r\n`);
             terminal?.scrollToBottom();
-            await invoke('terminal_write', { data: `${command}\r` });
+            // Cancel any partially typed prompt input before injecting the command.
+            await invoke('terminal_write', { data: `\u0003${command}\r` });
             terminal?.focus();
         }
 
