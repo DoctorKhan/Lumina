@@ -672,14 +672,26 @@ Enjoy writing!
             try {
                 filenameDisplay.textContent = `Opening: ${cleanPath}`;
                 filenameDisplay.title = cleanPath;
+                await new Promise((resolve) => setTimeout(resolve, 0));
                 const file = await invoke('open_file_path', { path: cleanPath });
                 setEditorContent(file.content, `Editing: ${file.path}`);
                 filenameDisplay.title = file.path;
+                editor.focus();
             } catch (error) {
                 filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
                 filenameDisplay.title = '';
                 terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
             }
+        }
+
+        function activateTerminalFileLink(event, path) {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            setTimeout(() => {
+                openClickedTerminalFile(path).catch((error) => {
+                    terminal?.write(`\r\nUnable to open ${path}: ${error}\r\n`);
+                });
+            }, 0);
         }
 
         function provideTerminalFileLinks(bufferLineNumber, callback) {
@@ -704,7 +716,7 @@ Enjoy writing!
                         start: { x: match.index + 1, y: bufferLineNumber },
                         end: { x: match.index + match[0].length, y: bufferLineNumber }
                     },
-                    activate: () => openClickedTerminalFile(rawPath)
+                    activate: (event) => activateTerminalFileLink(event, rawPath)
                 });
             }
 

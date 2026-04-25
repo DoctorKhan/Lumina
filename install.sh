@@ -53,7 +53,13 @@ install_cli_launcher() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "\${1:-}" == "update" || "\${1:-}" == "--update" ]]; then
+if [[ "\${1:-}" == "update" ]]; then
+  curl -fsSL https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
+  open -a "$launcher_target"
+  exit 0
+fi
+
+if [[ "\${1:-}" == "--update" ]]; then
   curl -fsSL https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
   exit 0
 fi
