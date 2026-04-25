@@ -35,6 +35,32 @@ function fallbackEtaSeconds(state, terminalPercent) {
 }
 
 /**
+ * install.sh "remaining" is time to ~100% done; we only interpolate to targetCap (end of
+ * current step or 99%). Scale so countdown matches that segment instead of full install.
+ * @param {number} remainingSeconds — parsed shell ETA (total install remaining)
+ * @param {number} anchorPercent
+ * @param {number} targetCap
+ */
+function scaleEtaToProgressSegment(remainingSeconds, anchorPercent, targetCap) {
+    const R = remainingSeconds;
+    const p = anchorPercent;
+    const c = targetCap;
+    if (!Number.isFinite(R) || R <= 0 || !Number.isFinite(p) || !Number.isFinite(c)) {
+        return Math.max(1, R);
+    }
+    const span = c - p;
+    if (span <= 0.25) {
+        return Math.max(1, Math.min(30, Math.round(R * 0.1)));
+    }
+    const denom = 100 - p;
+    if (denom <= 0.25) {
+        return Math.max(1, Math.round(R));
+    }
+    const scaled = (R * span) / denom;
+    return Math.max(5, Math.round(scaled));
+}
+
+/**
  * Call when install.sh emits a new progress line so ETA / percent anchors stay fresh.
  * @param {import('./installProgressParse.js').InstallProgressState} state
  */
@@ -50,10 +76,11 @@ export function refreshInstallProgressAnchor(anchor, state) {
     if (eta == null || eta <= 0) {
         eta = fallbackEtaSeconds(state, p);
     }
-    anchor.etaSeconds = Math.max(1, eta);
+    eta = Math.max(1, eta);
 
     const hi = stepHighPercent(state);
     anchor.targetCap = Math.max(p, Math.min(99, hi));
+    anchor.etaSeconds = scaleEtaToProgressSegment(eta, p, anchor.targetCap);
 }
 
 /**
