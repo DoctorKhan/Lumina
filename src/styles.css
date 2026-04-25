@@ -24,7 +24,7 @@ body {
     display: none;
 }
 
-.editor-collapsed .pane-resizer {
+.editor-collapsed #pane-resizer {
     display: none;
 }
 
