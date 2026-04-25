@@ -15,6 +15,8 @@ use tauri::{
 
 const MENU_OPEN_FILE: &str = "lumina_open_file";
 const MENU_DOWNLOAD_MARKDOWN: &str = "lumina_download_markdown";
+const MENU_UNDO: &str = "lumina_undo";
+const MENU_REDO: &str = "lumina_redo";
 const MENU_COPY_HTML: &str = "lumina_copy_html";
 const MENU_CHECK_UPDATES: &str = "lumina_check_updates";
 const MENU_INSTALL_UPDATE: &str = "lumina_install_update";
@@ -73,6 +75,8 @@ fn build_app_menu(app: &tauri::App<Wry>) -> tauri::Result<Menu<Wry>> {
         "Download Markdown",
         Some("CmdOrCtrl+S"),
     )?;
+    let undo = menu_item(app, MENU_UNDO, "Undo", Some("CmdOrCtrl+Z"))?;
+    let redo = menu_item(app, MENU_REDO, "Redo", Some("CmdOrCtrl+Shift+Z"))?;
     let copy_html = menu_item(
         app,
         MENU_COPY_HTML,
@@ -115,6 +119,9 @@ fn build_app_menu(app: &tauri::App<Wry>) -> tauri::Result<Menu<Wry>> {
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(app, "Edit")
+        .item(&undo)
+        .item(&redo)
+        .separator()
         .cut()
         .copy()
         .paste()
@@ -147,6 +154,8 @@ fn is_lumina_menu_id(id: &str) -> bool {
         id,
         MENU_OPEN_FILE
             | MENU_DOWNLOAD_MARKDOWN
+            | MENU_UNDO
+            | MENU_REDO
             | MENU_COPY_HTML
             | MENU_CHECK_UPDATES
             | MENU_INSTALL_UPDATE

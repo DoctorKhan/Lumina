@@ -1,0 +1,1287 @@
+        import { invoke } from '@tauri-apps/api/core';
+        import { listen } from '@tauri-apps/api/event';
+        import { open as openDialog } from '@tauri-apps/plugin-dialog';
+        import { Terminal } from '@xterm/xterm';
+        import { FitAddon } from '@xterm/addon-fit';
+        import '@xterm/xterm/css/xterm.css';
+
+        const editor = document.getElementById('editor');
+        const preview = document.getElementById('preview');
+        const charCount = document.getElementById('char-count');
+        const fileInput = document.getElementById('file-input');
+        const filenameDisplay = document.getElementById('filename-display');
+        const updateStatus = document.getElementById('update-status');
+        const toggleSourceBtn = document.getElementById('toggle-source-btn');
+        const toggleTerminalBtn = document.getElementById('toggle-terminal-btn');
+        const toggleClaudeBtn = document.getElementById('toggle-claude-btn');
+        const closeTerminalBtn = document.getElementById('close-terminal-btn');
+        const closeClaudeBtn = document.getElementById('close-claude-btn');
+        const terminalPane = document.getElementById('terminal-pane');
+        const terminalElement = document.getElementById('terminal');
+        const terminalStatus = document.getElementById('terminal-status');
+        const claudePane = document.getElementById('claude-pane');
+        const claudeElement = document.getElementById('claude-terminal');
+        const claudeStatus = document.getElementById('claude-status');
+        const editorContainer = document.querySelector('.editor-container');
+        const editorPane = document.querySelector('.editor-pane');
+        const previewPane = document.querySelector('.preview-pane');
+        const paneResizer = document.getElementById('pane-resizer');
+        let mermaidInitialized = false;
+        let sourceCollapsed = false;
+        let isResizing = false;
+        let terminal = null;
+        let fitAddon = null;
+        let terminalVisible = false;
+        let terminalStarted = false;
+        let terminalOutputUnlisten = null;
+        let terminalResizeFrame = null;
+        let terminalInputBuffer = '';
+        let claudeTerminal = null;
+        let claudeFitAddon = null;
+        let claudeVisible = false;
+        let claudeStarted = false;
+        let claudeOutputUnlisten = null;
+        let claudeResizeFrame = null;
+        let latestReleaseTag = null;
+        let updateCheckInProgress = false;
+        let currentCheckoutInstallCommand = null;
+        let currentFilePath = null;
+        const lastOpenedFilePathKey = 'lumina:last-opened-file-path';
+        const releaseApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/releases/latest';
+        const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
+        const currentVersion = document.getElementById('app-version-badge').textContent.trim().replace(/^v/i, '');
+
+        marked.setOptions({
+            // Keep default markdown line-break behavior so multiline KaTeX
+            // blocks are not split by injected <br> nodes.
+            breaks: false,
+            gfm: true
+        });
+
+        const renderer = new marked.Renderer();
+        renderer.code = (code, infostring) => {
+            const language = (infostring || '').trim().toLowerCase();
+            if (language === 'mermaid') {
+                return `<pre class="mermaid">${code}</pre>`;
+            }
+            const escapedCode = code
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;');
+            const className = language ? `language-${language}` : '';
+            return `<pre><code class="${className}">${escapedCode}</code></pre>`;
+        };
+        marked.use({ renderer });
+
+        const initialValue = `# Welcome to Lumina
+
+Lumina is a high-performance Markdown editor with built-in support for **LaTeX** mathematics.
+
+## 1. Mathematical Notation
+You can write inline math using single dollar signs, like $E = mc^2$, or block math using double dollar signs:
+
+$$\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}$$
+
+Complex calculus works perfectly too:
+
+$$\\oint_{\\partial \\Sigma} \\mathbf{E} \\cdot d\\boldsymbol{\\ell} = -\\frac{d}{dt} \\iint_{\\Sigma} \\mathbf{B} \\cdot d\\mathbf{S}$$
+
+## 2. Code Blocks
+Syntax highlighting is automatically applied:
+
+\`\`\`javascript
+function helloWorld() {
+  console.log("Hello, Lumina!");
+}
+\`\`\`
+
+## 3. Mermaid Diagrams
+Flowcharts render directly in the preview:
+
+\`\`\`mermaid
+flowchart TD
+  source([Markdown Source]) --> parser[Smart Markdown Parser]
+
+  parser --> math[LaTeX Math]
+  parser --> code[Syntax Highlighting]
+  parser --> diagrams[Mermaid Diagrams]
+
+  math --> preview{Live Preview}
+  code --> preview
+  diagrams --> preview
+  preview --> export[Copy HTML or Save .md]
+
+  classDef source fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:2px
+  classDef engine fill:#e0f2fe,stroke:#0284c7,color:#075985,stroke-width:2px
+  classDef feature fill:#f0fdf4,stroke:#16a34a,color:#166534,stroke-width:2px
+  classDef output fill:#fff7ed,stroke:#f97316,color:#9a3412,stroke-width:2px
+
+  class source source
+  class parser engine
+  class math,code,diagrams feature
+  class preview,export output
+\`\`\`
+
+## 4. Features
+* **Real-time Rendering**: See changes as you type.
+* **File Support**: Open local .md files directly.
+* **GFM Support**: GitHub Flavored Markdown tables and lists.
+
+Task lists render as clean checklists:
+
+- [x] Draft the Markdown
+- [x] Preview math and diagrams
+- [ ] Share the finished document
+
+Nested outlines can mix numbered hierarchy with bullets:
+
+1. Plan
+   1. Define the thesis
+   2. Gather evidence
+      - Primary sources
+      - Supporting notes
+2. Draft
+   1. Write the opening
+   2. Refine the argument
+
+| Feature | Support |
+| :--- | :--- |
+| LaTeX | Full |
+| Tables | Yes |
+| Task Lists | Yes |
+
+Enjoy writing!
+`;
+
+        editor.value = initialValue;
+
+        const editorHistoryLimit = 200;
+        let editorHistory = [];
+        let editorHistoryIndex = -1;
+        let restoringEditorHistory = false;
+        let editorHistoryTimeout = null;
+
+        function editorSnapshot() {
+            return {
+                value: editor.value,
+                selectionStart: editor.selectionStart,
+                selectionEnd: editor.selectionEnd
+            };
+        }
+
+        function resetEditorHistory() {
+            editorHistory = [editorSnapshot()];
+            editorHistoryIndex = 0;
+            clearTimeout(editorHistoryTimeout);
+        }
+
+        function pushEditorHistory() {
+            if (restoringEditorHistory) return;
+
+            const snapshot = editorSnapshot();
+            const current = editorHistory[editorHistoryIndex];
+            if (current?.value === snapshot.value &&
+                current.selectionStart === snapshot.selectionStart &&
+                current.selectionEnd === snapshot.selectionEnd) {
+                return;
+            }
+
+            editorHistory = editorHistory.slice(0, editorHistoryIndex + 1);
+            editorHistory.push(snapshot);
+
+            if (editorHistory.length > editorHistoryLimit) {
+                editorHistory.shift();
+            }
+
+            editorHistoryIndex = editorHistory.length - 1;
+        }
+
+        function scheduleEditorHistory() {
+            clearTimeout(editorHistoryTimeout);
+            editorHistoryTimeout = setTimeout(pushEditorHistory, 250);
+        }
+
+        function restoreEditorHistory(index) {
+            const snapshot = editorHistory[index];
+            if (!snapshot) return false;
+
+            restoringEditorHistory = true;
+            editor.value = snapshot.value;
+            editor.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+            editorHistoryIndex = index;
+            restoringEditorHistory = false;
+            schedulePreviewUpdate();
+            return true;
+        }
+
+        function undoEditor() {
+            clearTimeout(editorHistoryTimeout);
+            pushEditorHistory();
+            return restoreEditorHistory(editorHistoryIndex - 1);
+        }
+
+        function redoEditor() {
+            clearTimeout(editorHistoryTimeout);
+            return restoreEditorHistory(editorHistoryIndex + 1);
+        }
+
+        resetEditorHistory();
+
+        function schedulePreviewUpdate() {
+            preview.innerHTML = '<p class="text-slate-500">Rendering preview...</p>';
+            requestAnimationFrame(() => {
+                updatePreview();
+            });
+        }
+
+        function setEditorContent(content, label) {
+            editor.value = content;
+            filenameDisplay.textContent = label;
+            charCount.textContent = `${content.length} chars`;
+            resetEditorHistory();
+            schedulePreviewUpdate();
+        }
+
+        function dirname(path) {
+            const cleanPath = String(path || '').replace(/\/+$/, '');
+            const index = cleanPath.lastIndexOf('/');
+            if (index <= 0) return index === 0 ? '/' : null;
+            return cleanPath.slice(0, index);
+        }
+
+        function rememberOpenedPath(path) {
+            currentFilePath = path;
+            localStorage.setItem(lastOpenedFilePathKey, path);
+
+            const directory = dirname(path);
+            if (directory) {
+                invoke('terminal_set_cwd', { path: directory }).catch(() => {});
+            }
+        }
+
+        function forgetOpenedPath(path) {
+            if (localStorage.getItem(lastOpenedFilePathKey) === path) {
+                localStorage.removeItem(lastOpenedFilePathKey);
+            }
+            if (currentFilePath === path) {
+                currentFilePath = null;
+            }
+        }
+
+        function currentFileDirectory() {
+            return dirname(currentFilePath);
+        }
+
+        async function openFileWithDialog() {
+            try {
+                const selectedPath = await openDialog({
+                    multiple: false,
+                    filters: [
+                        {
+                            name: 'Markdown Documents',
+                            extensions: ['md', 'markdown', 'txt']
+                        }
+                    ]
+                });
+                if (!selectedPath || Array.isArray(selectedPath)) return;
+
+                filenameDisplay.textContent = `Opening: ${selectedPath}`;
+                filenameDisplay.title = selectedPath;
+                const file = await invoke('open_file_path', { path: selectedPath });
+                setEditorContent(file.content, `Editing: ${file.path}`);
+                filenameDisplay.title = file.path;
+                rememberOpenedPath(file.path);
+                editor.focus();
+            } catch (error) {
+                filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
+                filenameDisplay.title = '';
+                setUpdateStatus(`Open failed: ${error?.message || error}`);
+                fileInput.click();
+            }
+        }
+
+        function highlightCodeBlocks() {
+            const blocks = preview.querySelectorAll('pre code:not(.language-mermaid)');
+            blocks.forEach((block) => hljs.highlightElement(block));
+        }
+
+        async function renderMermaidBlocks() {
+            const blocks = preview.querySelectorAll('pre.mermaid');
+            if (blocks.length === 0) return;
+
+            if (!mermaidInitialized) {
+                mermaid.initialize({
+                    startOnLoad: false,
+                    securityLevel: 'loose',
+                    theme: 'base',
+                    flowchart: {
+                        curve: 'basis',
+                        htmlLabels: true,
+                        padding: 24,
+                        nodeSpacing: 56,
+                        rankSpacing: 64
+                    },
+                    themeVariables: {
+                        fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
+                        primaryColor: '#eef2ff',
+                        primaryTextColor: '#1e293b',
+                        primaryBorderColor: '#6366f1',
+                        lineColor: '#64748b',
+                        secondaryColor: '#e0f2fe',
+                        tertiaryColor: '#f8fafc',
+                        clusterBkg: '#f8fafc',
+                        clusterBorder: '#cbd5e1',
+                        edgeLabelBackground: '#ffffff'
+                    }
+                });
+                mermaidInitialized = true;
+            }
+
+            if (document.fonts?.ready) {
+                await document.fonts.ready;
+            }
+
+            for (const block of blocks) {
+                const source = block.textContent || '';
+                const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                try {
+                    const { svg } = await mermaid.render(id, source);
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'mermaid';
+                    wrapper.innerHTML = svg;
+                    block.replaceWith(wrapper);
+                } catch (error) {
+                    const fallback = document.createElement('pre');
+                    fallback.className = 'bg-rose-50 text-rose-700 p-3 rounded';
+                    fallback.textContent = `Mermaid render error:\n${error?.message || String(error)}`;
+                    block.replaceWith(fallback);
+                }
+            }
+        }
+
+        function looksLikeLatexBlock(lines) {
+            const body = lines.join('\n').trim();
+            if (!body) return false;
+
+            // Heuristic signals for math/LaTeX content.
+            return /\\[a-zA-Z]+/.test(body) ||          // \frac, \begin, \sum, ...
+                /[_^]/.test(body) ||                    // x_i, x^2
+                /\{.*\}/.test(body) ||                  // grouped LaTeX terms
+                /\\begin\{.*\}|\\end\{.*\}/.test(body) ||
+                /\\\\/.test(body) ||                    // line breaks in cases/aligned
+                /\b(min|max|sin|cos|log)\b/.test(body); // common math tokens
+        }
+
+        function normalizeMathBlocks(input) {
+            // Detect standalone bracket blocks that are likely LaTeX and
+            // convert only those to $$...$$. Leaves non-math brackets unchanged.
+            const lines = input.split('\n');
+            const output = [];
+            let inCodeFence = false;
+            let bracketStart = -1;
+            let bracketBody = [];
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+
+                if (trimmed.startsWith('```')) {
+                    if (bracketStart !== -1) {
+                        output.push('[');
+                        output.push(...bracketBody);
+                        bracketStart = -1;
+                        bracketBody = [];
+                    }
+                    inCodeFence = !inCodeFence;
+                    output.push(line);
+                    continue;
+                }
+
+                if (inCodeFence) {
+                    output.push(line);
+                    continue;
+                }
+
+                if (bracketStart === -1 && trimmed === '[') {
+                    bracketStart = output.length;
+                    bracketBody = [];
+                    continue;
+                }
+
+                if (bracketStart !== -1 && trimmed === ']') {
+                    if (looksLikeLatexBlock(bracketBody)) {
+                        output.push('$$');
+                        output.push(...bracketBody);
+                        output.push('$$');
+                    } else {
+                        output.push('[');
+                        output.push(...bracketBody);
+                        output.push(']');
+                    }
+                    bracketStart = -1;
+                    bracketBody = [];
+                    continue;
+                }
+
+                if (bracketStart !== -1) {
+                    bracketBody.push(line);
+                    continue;
+                }
+
+                output.push(line);
+            }
+
+            // Unclosed bracket block: keep original text verbatim.
+            if (bracketStart !== -1) {
+                output.push('[');
+                output.push(...bracketBody);
+            }
+
+            return output.join('\n');
+        }
+
+        function normalizeEscapedLatexDelimiters(input) {
+            // Convert escaped LaTeX delimiters into dollar delimiters before
+            // Markdown parsing, so marked does not swallow the backslashes.
+            // Display math: \[ ... \] -> $$ ... $$
+            let output = input.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, (_, expr) => {
+                return `$$\n${expr.trim()}\n$$`;
+            });
+
+            // Inline math: \( ... \) -> $ ... $
+            output = output.replace(/\\\((.*?)\\\)/g, (_, expr) => {
+                return `$${expr.trim()}$`;
+            });
+
+            return output;
+        }
+
+        function applySmartOutlineStyles() {
+            const orderedLists = Array.from(preview.querySelectorAll('ol'));
+            orderedLists.forEach((list) => list.classList.remove('outline-list'));
+
+            for (const list of orderedLists) {
+                if (!list.querySelector('ol')) continue;
+
+                let root = list;
+                let parentList = root.parentElement?.closest('ol');
+                while (parentList) {
+                    root = parentList;
+                    parentList = root.parentElement?.closest('ol');
+                }
+
+                root.classList.add('outline-list');
+            }
+        }
+
+        async function updatePreview() {
+            const rawValue = editor.value;
+            const wordCount = rawValue.trim() ? rawValue.trim().split(/\s+/).length : 0;
+            charCount.textContent = `${rawValue.length} chars • ${wordCount} words`;
+            const normalizedValue = normalizeEscapedLatexDelimiters(
+                normalizeMathBlocks(rawValue)
+            );
+            preview.innerHTML = marked.parse(normalizedValue);
+            applySmartOutlineStyles();
+            highlightCodeBlocks();
+            await renderMermaidBlocks();
+
+            renderMathInElement(preview, {
+                delimiters: [
+                    { left: '$$', right: '$$', display: true },
+                    { left: '$', right: '$', display: false },
+                    { left: '\\(', right: '\\)', display: false },
+                    { left: '\\[', right: '\\]', display: true }
+                ],
+                throwOnError: false
+            });
+        }
+
+        function downloadContent() {
+            const blob = new Blob([editor.value], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `lumina-document-${Date.now()}.md`;
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        async function copyToClipboard(button = null) {
+            try {
+                await navigator.clipboard.writeText(preview.innerHTML);
+            } catch (_) {
+                const fallback = document.createElement('textarea');
+                fallback.value = preview.innerHTML;
+                document.body.appendChild(fallback);
+                fallback.select();
+                document.execCommand('copy');
+                document.body.removeChild(fallback);
+            }
+
+            if (!button) return;
+
+            const originalText = button.textContent;
+            button.textContent = 'Copied!';
+            button.classList.add('bg-green-600');
+            button.classList.remove('bg-indigo-600');
+
+            setTimeout(() => {
+                button.textContent = originalText;
+                button.classList.add('bg-indigo-600');
+                button.classList.remove('bg-green-600');
+            }, 2000);
+        }
+
+        function setUpdateStatus(message) {
+            updateStatus.textContent = message;
+            updateStatus.title = message;
+        }
+
+        function parseVersion(value) {
+            const match = String(value || '').match(/v?(\d+)\.(\d+)\.(\d+)/i);
+            if (!match) return null;
+            return match.slice(1).map((part) => Number(part));
+        }
+
+        function compareVersions(left, right) {
+            const a = parseVersion(left);
+            const b = parseVersion(right);
+            if (!a || !b) return 0;
+
+            for (let i = 0; i < 3; i += 1) {
+                if (a[i] !== b[i]) return a[i] - b[i];
+            }
+
+            return 0;
+        }
+
+        function shellQuote(value) {
+            return `'${String(value).replaceAll("'", "'\\''")}'`;
+        }
+
+        function releaseInstallCommand(tagName) {
+            return `curl -fsSL ${publicInstallerUrl} | GIT_REF=${shellQuote(tagName)} bash`;
+        }
+
+        async function runCommandInTerminal(command, label) {
+            await toggleTerminal(true);
+            terminalInputBuffer = '';
+            terminal?.write(`\r\n${label}\r\nRunning: ${command}\r\n`);
+            terminal?.scrollToBottom();
+            // Cancel any partially typed prompt input before injecting the command.
+            await invoke('terminal_write', { data: `\u0003${command}\r` });
+            terminal?.focus();
+        }
+
+        async function checkForUpdate() {
+            if (updateCheckInProgress) return;
+            updateCheckInProgress = true;
+            latestReleaseTag = null;
+            setUpdateStatus('Checking GitHub releases...');
+
+            try {
+                const response = await fetch(releaseApiUrl, {
+                    headers: { Accept: 'application/vnd.github+json' },
+                    cache: 'no-store'
+                });
+
+                if (response.status === 404) {
+                    setUpdateStatus('No GitHub releases published yet.');
+                    return;
+                }
+
+                if (!response.ok) {
+                    throw new Error(`GitHub returned ${response.status}`);
+                }
+
+                const release = await response.json();
+                const tagName = release.tag_name || '';
+                const latestVersion = parseVersion(tagName);
+
+                if (!latestVersion) {
+                    setUpdateStatus(`Latest release has an unexpected tag: ${tagName || 'unknown'}`);
+                    return;
+                }
+
+                if (compareVersions(tagName, currentVersion) > 0) {
+                    latestReleaseTag = tagName;
+                    setUpdateStatus(`Update available: ${tagName}`);
+                } else {
+                    setUpdateStatus(`Up to date: v${currentVersion}`);
+                }
+            } catch (error) {
+                setUpdateStatus(`Update check failed: ${error?.message || error}`);
+            } finally {
+                updateCheckInProgress = false;
+            }
+        }
+
+        async function installDetectedUpdate() {
+            if (!latestReleaseTag) {
+                setUpdateStatus('Check for updates first.');
+                return;
+            }
+
+            const confirmed = window.confirm(
+                `Install Lumina ${latestReleaseTag} from GitHub?\n\nThis runs the public install.sh script and rebuilds the app locally.`
+            );
+            if (!confirmed) return;
+
+            setUpdateStatus(`Installing ${latestReleaseTag}; see terminal.`);
+            await runCommandInTerminal(
+                releaseInstallCommand(latestReleaseTag),
+                `Installing Lumina ${latestReleaseTag} from GitHub releases...`
+            );
+        }
+
+        async function loadCurrentCheckoutInstaller() {
+            try {
+                const info = await invoke('current_checkout_install_info');
+                if (!info.available || !info.command) return;
+
+                currentCheckoutInstallCommand = info.command;
+            } catch (_) {
+                currentCheckoutInstallCommand = null;
+            }
+        }
+
+        async function installCurrentCheckout() {
+            if (!currentCheckoutInstallCommand) {
+                setUpdateStatus('Local checkout install is only available in development builds.');
+                return;
+            }
+
+            const confirmed = window.confirm(
+                'Install the current local checkout into /Applications?\n\nUse this only for development and local testing, not normal user updates.'
+            );
+            if (!confirmed) return;
+
+            await runCommandInTerminal(
+                currentCheckoutInstallCommand,
+                'Installing the current local checkout...'
+            );
+        }
+
+        function cleanTerminalPath(path) {
+            return path
+                .trim()
+                .replace(/^[<("'`]+/, '')
+                .replace(/[>)"'`,;.]+$/, '');
+        }
+
+        function handleTerminalCommandInput(data) {
+            if (data === '\u0003') {
+                terminalInputBuffer = '';
+                return;
+            }
+
+            if (data === '\u007f') {
+                terminalInputBuffer = terminalInputBuffer.slice(0, -1);
+                return;
+            }
+
+            if (data === '\r') {
+                const command = terminalInputBuffer.trim();
+                terminalInputBuffer = '';
+                const cdMatch = command.match(/^cd(?:\s+(.+))?$/);
+                if (cdMatch) {
+                    const target = cdMatch[1]?.trim() || '~';
+                    invoke('terminal_set_cwd', { path: target }).catch(() => {});
+                }
+                return;
+            }
+
+            if (/^[\x20-\x7e]+$/.test(data)) {
+                terminalInputBuffer += data;
+            }
+        }
+
+        async function openClickedTerminalFile(path) {
+            const cleanPath = cleanTerminalPath(path);
+            if (!cleanPath) return;
+
+            try {
+                filenameDisplay.textContent = `Opening: ${cleanPath}`;
+                filenameDisplay.title = cleanPath;
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                const file = await invoke('open_file_path', { path: cleanPath });
+                setEditorContent(file.content, `Editing: ${file.path}`);
+                filenameDisplay.title = file.path;
+                rememberOpenedPath(file.path);
+                editor.focus();
+            } catch (error) {
+                filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
+                filenameDisplay.title = '';
+                terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
+            }
+        }
+
+        function activateTerminalFileLink(event, path) {
+            event?.preventDefault?.();
+            event?.stopPropagation?.();
+            setTimeout(() => {
+                openClickedTerminalFile(path).catch((error) => {
+                    terminal?.write(`\r\nUnable to open ${path}: ${error}\r\n`);
+                });
+            }, 0);
+        }
+
+        function provideTerminalFileLinks(bufferLineNumber, callback) {
+            const line = terminal?.buffer.active.getLine(bufferLineNumber - 1);
+            if (!line) {
+                callback(undefined);
+                return;
+            }
+
+            const text = line.translateToString(true);
+            const filePathPattern = /(?:~|\/|\.\.?\/)?[A-Za-z0-9._@%+-][^\s"'<>]*(?:\.md|\.markdown|\.txt)(?::\d+(?::\d+)?)?/gi;
+            const links = [];
+            let match = null;
+
+            while ((match = filePathPattern.exec(text)) !== null) {
+                const rawPath = cleanTerminalPath(match[0]);
+                if (!rawPath || rawPath.endsWith('/')) continue;
+
+                links.push({
+                    text: rawPath,
+                    range: {
+                        start: { x: match.index + 1, y: bufferLineNumber },
+                        end: { x: match.index + match[0].length, y: bufferLineNumber }
+                    },
+                    activate: (event) => activateTerminalFileLink(event, rawPath)
+                });
+            }
+
+            callback(links.length > 0 ? links : undefined);
+        }
+
+        function resizeTerminal() {
+            if (!terminalVisible || !terminal || !fitAddon) return;
+
+            cancelAnimationFrame(terminalResizeFrame);
+            terminalResizeFrame = requestAnimationFrame(() => {
+                fitAddon.fit();
+                invoke('terminal_resize', {
+                    cols: terminal.cols,
+                    rows: terminal.rows
+                }).catch(() => {});
+            });
+        }
+
+        function resizeClaude() {
+            if (!claudeVisible || !claudeTerminal || !claudeFitAddon) return;
+
+            cancelAnimationFrame(claudeResizeFrame);
+            claudeResizeFrame = requestAnimationFrame(() => {
+                claudeFitAddon.fit();
+                invoke('claude_resize', {
+                    cols: claudeTerminal.cols,
+                    rows: claudeTerminal.rows
+                }).catch(() => {});
+            });
+        }
+
+        function resizeTerminals() {
+            resizeTerminal();
+            resizeClaude();
+        }
+
+        function terminalTheme() {
+            return {
+                background: '#070b16',
+                foreground: '#d9e2ef',
+                cursor: '#38bdf8',
+                selectionBackground: '#1e3a8a',
+                black: '#020617',
+                red: '#fb7185',
+                green: '#34d399',
+                yellow: '#facc15',
+                blue: '#60a5fa',
+                magenta: '#c084fc',
+                cyan: '#22d3ee',
+                white: '#e2e8f0',
+                brightBlack: '#475569',
+                brightRed: '#fda4af',
+                brightGreen: '#86efac',
+                brightYellow: '#fde047',
+                brightBlue: '#93c5fd',
+                brightMagenta: '#d8b4fe',
+                brightCyan: '#67e8f9',
+                brightWhite: '#f8fafc'
+            };
+        }
+
+        async function ensureTerminal() {
+            if (terminalStarted) return;
+
+            terminal = new Terminal({
+                cursorBlink: true,
+                convertEol: true,
+                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: 13,
+                theme: terminalTheme()
+            });
+            fitAddon = new FitAddon();
+            terminal.loadAddon(fitAddon);
+            terminal.open(terminalElement);
+            terminal.registerLinkProvider({ provideLinks: provideTerminalFileLinks });
+            terminal.onData((data) => {
+                handleTerminalCommandInput(data);
+                invoke('terminal_write', { data }).catch((error) => {
+                    terminal.write(`\r\nTerminal write failed: ${error}\r\n`);
+                });
+            });
+
+            terminalStatus.textContent = 'Starting';
+            terminal.write('Starting shell...\r\n');
+            terminalOutputUnlisten = await listen('terminal-output', (event) => {
+                terminal.write(event.payload);
+            });
+
+            fitAddon.fit();
+            await invoke('terminal_spawn', {
+                cols: terminal.cols,
+                rows: terminal.rows
+            });
+            terminalStarted = true;
+            terminalStatus.textContent = 'Running';
+            resizeTerminal();
+            setTimeout(resizeTerminal, 80);
+        }
+
+        async function ensureClaude() {
+            if (claudeStarted) return;
+
+            claudeTerminal = new Terminal({
+                cursorBlink: true,
+                convertEol: true,
+                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                fontSize: 13,
+                theme: terminalTheme()
+            });
+            claudeFitAddon = new FitAddon();
+            claudeTerminal.loadAddon(claudeFitAddon);
+            claudeTerminal.open(claudeElement);
+            claudeTerminal.onData((data) => {
+                invoke('claude_write', { data }).catch((error) => {
+                    claudeTerminal.write(`\r\nClaude write failed: ${error}\r\n`);
+                });
+            });
+
+            claudeStatus.textContent = 'Starting';
+            claudeTerminal.write('Starting Claude...\r\n');
+            claudeOutputUnlisten = await listen('claude-output', (event) => {
+                claudeTerminal.write(event.payload);
+            });
+
+            claudeFitAddon.fit();
+            await invoke('claude_spawn', {
+                cols: claudeTerminal.cols,
+                rows: claudeTerminal.rows,
+                cwd: currentFileDirectory()
+            });
+            claudeStarted = true;
+            claudeStatus.textContent = 'Running';
+            resizeClaude();
+            setTimeout(resizeClaude, 80);
+        }
+
+        function setPaneToggleState(button, active, activeClasses) {
+            button.setAttribute('aria-pressed', String(active));
+            button.classList.toggle('bg-slate-800', active);
+            button.classList.toggle('text-white', active);
+            for (const className of activeClasses) {
+                button.classList.toggle(className, active);
+            }
+        }
+
+        function syncPaneToggleButtons() {
+            setPaneToggleState(toggleSourceBtn, !sourceCollapsed, ['ring-1', 'ring-sky-500/40']);
+            setPaneToggleState(toggleTerminalBtn, terminalVisible, ['ring-1', 'ring-sky-500/40']);
+            setPaneToggleState(toggleClaudeBtn, claudeVisible, ['bg-violet-700', 'ring-1', 'ring-violet-400/50']);
+            toggleSourceBtn.title = sourceCollapsed ? 'Show source pane' : 'Hide source pane';
+            toggleTerminalBtn.title = terminalVisible ? 'Hide terminal' : 'Show terminal';
+            toggleClaudeBtn.title = claudeVisible ? 'Hide Claude' : 'Show Claude';
+        }
+
+        async function toggleTerminal(forceVisible) {
+            terminalVisible = typeof forceVisible === 'boolean' ? forceVisible : !terminalVisible;
+            terminalPane.classList.toggle('hidden', !terminalVisible);
+            syncPaneToggleButtons();
+
+            if (terminalVisible) {
+                try {
+                    await ensureTerminal();
+                    resizeTerminal();
+                    terminal.focus();
+                } catch (error) {
+                    terminalStatus.textContent = 'Error';
+                    terminal?.write(`\r\nTerminal failed to start: ${error}\r\n`);
+                }
+            }
+        }
+
+        async function toggleClaude(forceVisible) {
+            claudeVisible = typeof forceVisible === 'boolean' ? forceVisible : !claudeVisible;
+            claudePane.classList.toggle('hidden', !claudeVisible);
+            syncPaneToggleButtons();
+
+            if (claudeVisible) {
+                try {
+                    await ensureClaude();
+                    resizeClaude();
+                    claudeTerminal.focus();
+                } catch (error) {
+                    claudeStatus.textContent = 'Error';
+                    claudeTerminal?.write(`\r\nClaude failed to start: ${error}\r\n`);
+                }
+            }
+        }
+
+        function toggleSource() {
+            sourceCollapsed = !sourceCollapsed;
+            editorContainer.classList.toggle('editor-collapsed', sourceCollapsed);
+            resizeTerminals();
+            syncPaneToggleButtons();
+        }
+
+        function openGithub() {
+            window.open('https://github.com/DoctorKhan/Lumina', '_blank', 'noopener,noreferrer');
+        }
+
+        function handleMenuCommand(command) {
+            switch (command) {
+                case 'lumina_open_file':
+                    openFileWithDialog();
+                    break;
+                case 'lumina_download_markdown':
+                    downloadContent();
+                    break;
+                case 'lumina_undo':
+                    undoEditor();
+                    break;
+                case 'lumina_redo':
+                    redoEditor();
+                    break;
+                case 'lumina_copy_html':
+                    copyToClipboard();
+                    break;
+                case 'lumina_check_updates':
+                    checkForUpdate();
+                    break;
+                case 'lumina_install_update':
+                    installDetectedUpdate();
+                    break;
+                case 'lumina_install_checkout':
+                    installCurrentCheckout();
+                    break;
+                case 'lumina_toggle_source':
+                    toggleSource();
+                    break;
+                case 'lumina_toggle_terminal':
+                    toggleTerminal();
+                    break;
+                case 'lumina_toggle_claude':
+                    toggleClaude();
+                    break;
+                case 'lumina_open_github':
+                    openGithub();
+                    break;
+            }
+        }
+
+        listen('lumina-menu', (event) => handleMenuCommand(event.payload)).catch((error) => {
+            setUpdateStatus(`Menu unavailable: ${error?.message || error}`);
+        });
+        toggleSourceBtn.addEventListener('click', toggleSource);
+        toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
+        toggleClaudeBtn.addEventListener('click', () => toggleClaude());
+        closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
+        closeClaudeBtn.addEventListener('click', () => toggleClaude(false));
+        syncPaneToggleButtons();
+
+        paneResizer.addEventListener('mousedown', () => {
+            if (sourceCollapsed) return;
+            isResizing = true;
+            paneResizer.classList.add('dragging');
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (!isResizing) return;
+            isResizing = false;
+            paneResizer.classList.remove('dragging');
+            document.body.style.userSelect = '';
+        });
+
+        document.addEventListener('mousemove', (event) => {
+            if (!isResizing || sourceCollapsed) return;
+            const rect = editorContainer.getBoundingClientRect();
+            const rawPercent = ((event.clientX - rect.left) / rect.width) * 100;
+            const editorPercent = Math.min(80, Math.max(20, rawPercent));
+            const previewPercent = 100 - editorPercent;
+            editorPane.style.flex = `0 0 ${editorPercent}%`;
+            previewPane.style.flex = `0 0 ${previewPercent}%`;
+            resizeTerminals();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                currentFilePath = null;
+                editor.value = event.target.result;
+                filenameDisplay.textContent = `Editing: ${file.name}`;
+                filenameDisplay.title = '';
+                resetEditorHistory();
+                updatePreview();
+            };
+            reader.readAsText(file);
+        });
+
+        let timeout = null;
+        editor.addEventListener('input', () => {
+            scheduleEditorHistory();
+            clearTimeout(timeout);
+            timeout = setTimeout(updatePreview, 50);
+        });
+
+        function lineBoundsAt(value, position) {
+            const start = value.lastIndexOf('\n', position - 1) + 1;
+            const nextBreak = value.indexOf('\n', position);
+            const end = nextBreak === -1 ? value.length : nextBreak;
+            return { start, end };
+        }
+
+        function listMarkerForLine(line) {
+            const match = line.match(/^(\s*)((?:[-*+])|(?:\d+|[A-Za-z]+)[.)])(\s+)(.*)$/);
+            if (!match) return null;
+            return {
+                indent: match[1],
+                marker: match[2],
+                spacing: match[3],
+                content: match[4]
+            };
+        }
+
+        function romanToNumber(value) {
+            const numerals = { i: 1, v: 5, x: 10, l: 50, c: 100, d: 500, m: 1000 };
+            const input = value.toLowerCase();
+            let total = 0;
+            for (let index = 0; index < input.length; index += 1) {
+                const current = numerals[input[index]] || 0;
+                const next = numerals[input[index + 1]] || 0;
+                total += current < next ? -current : current;
+            }
+            return total || 1;
+        }
+
+        function numberToRoman(value) {
+            const numerals = [
+                [1000, 'M'], [900, 'CM'], [500, 'D'], [400, 'CD'],
+                [100, 'C'], [90, 'XC'], [50, 'L'], [40, 'XL'],
+                [10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']
+            ];
+            let remainder = Math.max(1, value);
+            let output = '';
+            for (const [amount, numeral] of numerals) {
+                while (remainder >= amount) {
+                    output += numeral;
+                    remainder -= amount;
+                }
+            }
+            return output;
+        }
+
+        function nextListMarker(marker) {
+            if (/^[-*+]$/.test(marker)) return marker;
+
+            const delimiter = marker.endsWith(')') ? ')' : '.';
+            const body = marker.slice(0, -1);
+
+            if (/^\d+$/.test(body)) {
+                return `${Number(body) + 1}${delimiter}`;
+            }
+
+            if (/^[ivxlcdm]+$/i.test(body)) {
+                const nextRoman = numberToRoman(romanToNumber(body) + 1);
+                return `${body === body.toLowerCase() ? nextRoman.toLowerCase() : nextRoman}${delimiter}`;
+            }
+
+            if (/^[a-z]$/i.test(body)) {
+                const base = body === body.toLowerCase() ? 97 : 65;
+                const nextCode = ((body.charCodeAt(0) - base + 1) % 26) + base;
+                return `${String.fromCharCode(nextCode)}${delimiter}`;
+            }
+
+            return marker;
+        }
+
+        function replaceEditorRange(start, end, text, selectionStart, selectionEnd = selectionStart) {
+            const value = editor.value;
+            pushEditorHistory();
+            editor.value = value.slice(0, start) + text + value.slice(end);
+            editor.setSelectionRange(selectionStart, selectionEnd);
+            pushEditorHistory();
+            schedulePreviewUpdate();
+        }
+
+        function handleListEnter(event) {
+            if (editor.selectionStart !== editor.selectionEnd) return false;
+
+            const position = editor.selectionStart;
+            const { start, end } = lineBoundsAt(editor.value, position);
+            const line = editor.value.slice(start, end);
+            const marker = listMarkerForLine(line);
+            if (!marker) return false;
+
+            event.preventDefault();
+
+            if (marker.content.trim() === '') {
+                replaceEditorRange(start, end, marker.indent, start + marker.indent.length);
+                return true;
+            }
+
+            const nextMarker = nextListMarker(marker.marker);
+            const insertion = `\n${marker.indent}${nextMarker}${marker.spacing}`;
+            replaceEditorRange(position, position, insertion, position + insertion.length);
+            return true;
+        }
+
+        function handleListIndent(event) {
+            if (event.key !== 'Tab') return false;
+
+            event.preventDefault();
+
+            const indent = '   ';
+            const value = editor.value;
+            const selectionStart = editor.selectionStart;
+            const selectionEnd = editor.selectionEnd;
+            const firstLineStart = lineBoundsAt(value, selectionStart).start;
+            const lastLineEnd = lineBoundsAt(value, Math.max(selectionStart, selectionEnd - 1)).end;
+            const block = value.slice(firstLineStart, lastLineEnd);
+            const lines = block.split('\n');
+            let startDelta = 0;
+            let endDelta = 0;
+
+            const updatedLines = lines.map((line, index) => {
+                if (event.shiftKey) {
+                    const removed = line.startsWith(indent)
+                        ? indent.length
+                        : line.startsWith('  ')
+                            ? 2
+                            : line.startsWith(' ')
+                                ? 1
+                                : 0;
+                    if (index === 0) startDelta -= Math.min(removed, selectionStart - firstLineStart);
+                    endDelta -= removed;
+                    return line.slice(removed);
+                }
+
+                if (!line) return line;
+                if (index === 0 && selectionStart > firstLineStart) startDelta += indent.length;
+                endDelta += indent.length;
+                return indent + line;
+            });
+
+            const updatedBlock = updatedLines.join('\n');
+            const nextSelectionStart = Math.max(firstLineStart, selectionStart + startDelta);
+            const nextSelectionEnd = Math.max(nextSelectionStart, selectionEnd + endDelta);
+            replaceEditorRange(firstLineStart, lastLineEnd, updatedBlock, nextSelectionStart, nextSelectionEnd);
+            return true;
+        }
+
+        editor.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && handleListEnter(event)) return;
+            handleListIndent(event);
+        });
+
+        document.addEventListener('keydown', (event) => {
+            const mod = event.metaKey || event.ctrlKey;
+            if (!mod) return;
+
+            if (event.key.toLowerCase() === 'z' && document.activeElement === editor) {
+                event.preventDefault();
+                if (event.shiftKey) {
+                    redoEditor();
+                } else {
+                    undoEditor();
+                }
+            } else if (event.key.toLowerCase() === 'o') {
+                event.preventDefault();
+                openFileWithDialog();
+            } else if (event.key.toLowerCase() === 's') {
+                event.preventDefault();
+                downloadContent();
+            } else if (event.shiftKey && event.key.toLowerCase() === 'c') {
+                event.preventDefault();
+                copyToClipboard();
+            } else if (event.key === '`') {
+                event.preventDefault();
+                toggleTerminal();
+            }
+        });
+
+        window.addEventListener('resize', resizeTerminals);
+        window.addEventListener('beforeunload', () => {
+            terminalOutputUnlisten?.();
+            if (terminalStarted) {
+                invoke('terminal_kill').catch(() => {});
+            }
+            claudeOutputUnlisten?.();
+            if (claudeStarted) {
+                invoke('claude_kill').catch(() => {});
+            }
+        });
+
+        editor.onscroll = function () {
+            const scrollPercentage = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
+            preview.scrollTop = scrollPercentage * (preview.scrollHeight - preview.clientHeight);
+        };
+
+        async function loadInitialContent() {
+            const params = new URLSearchParams(window.location.search);
+            const fileParam = params.get('file');
+            const fileDisplayName = params.get('name');
+
+            if (!fileParam) {
+                const lastOpenedPath = localStorage.getItem(lastOpenedFilePathKey);
+                if (lastOpenedPath) {
+                    try {
+                        filenameDisplay.textContent = `Opening: ${lastOpenedPath}`;
+                        filenameDisplay.title = lastOpenedPath;
+                        await new Promise((resolve) => setTimeout(resolve, 0));
+                        const file = await invoke('open_file_path', { path: lastOpenedPath });
+                        setEditorContent(file.content, `Editing: ${file.path}`);
+                        filenameDisplay.title = file.path;
+                        rememberOpenedPath(file.path);
+                        return;
+                    } catch (_) {
+                        forgetOpenedPath(lastOpenedPath);
+                    }
+                }
+
+                updatePreview();
+                return;
+            }
+
+            try {
+                const response = await fetch(fileParam, { cache: 'no-store' });
+                if (!response.ok) {
+                    throw new Error(`Failed to load ${fileParam}`);
+                }
+
+                const text = await response.text();
+                const displayName = fileDisplayName || fileParam;
+                setEditorContent(text, `Editing: ${displayName}`);
+                currentFilePath = null;
+                filenameDisplay.title = displayName;
+            } catch (_) {
+                updatePreview();
+            }
+        }
+
+        loadInitialContent();
+        loadCurrentCheckoutInstaller();
