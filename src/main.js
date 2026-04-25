@@ -60,6 +60,8 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let terminalStarted = false;
         let terminalOutputUnlisten = null;
         let terminalResizeFrame = null;
+        let terminalLastFitCols = 0;
+        let terminalLastFitRows = 0;
         let terminalInputBuffer = '';
         let terminalPtyHangupUnlisten = null;
         let terminalShellRespawnPromise = null;
@@ -73,6 +75,8 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let claudeStarted = false;
         let claudeOutputUnlisten = null;
         let claudeResizeFrame = null;
+        let claudeLastFitCols = 0;
+        let claudeLastFitRows = 0;
 let claudeWorkspaceFilePath = null;
         let latestReleaseTag = null;
         let updateCheckInProgress = false;
@@ -184,11 +188,22 @@ const currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
 
         resetEditorHistory();
 
+        let previewPipelineBusy = false;
+        let previewPipelinePending = false;
+        let previewInputDebounceTimer = null;
+        const previewInputDebounceMs = 160;
+
         function schedulePreviewUpdate() {
             preview.innerHTML = '<p class="text-slate-500">Rendering preview...</p>';
             requestAnimationFrame(() => {
-                updatePreview();
+                void updatePreview();
             });
+        }
+
+        function updateEditorMetrics() {
+            const rawValue = editor.value;
+            const wordCount = rawValue.trim() ? rawValue.trim().split(/\s+/).length : 0;
+            charCount.textContent = `${rawValue.length} chars • ${wordCount} words`;
         }
 
         function setEditorContent(content, label) {
@@ -590,10 +605,9 @@ async function openRecentFile(recentIndex = null) {
             }
         }
 
-        async function updatePreview() {
+        async function executePreviewRender() {
             const rawValue = editor.value;
-            const wordCount = rawValue.trim() ? rawValue.trim().split(/\s+/).length : 0;
-            charCount.textContent = `${rawValue.length} chars • ${wordCount} words`;
+            updateEditorMetrics();
             const normalizedValue = normalizeEscapedLatexDelimiters(
                 normalizeMathBlocks(rawValue)
             );
@@ -611,6 +625,22 @@ async function openRecentFile(recentIndex = null) {
                 ],
                 throwOnError: false
             });
+        }
+
+        async function updatePreview() {
+            if (previewPipelineBusy) {
+                previewPipelinePending = true;
+                return;
+            }
+            previewPipelineBusy = true;
+            try {
+                do {
+                    previewPipelinePending = false;
+                    await executePreviewRender();
+                } while (previewPipelinePending);
+            } finally {
+                previewPipelineBusy = false;
+            }
         }
 
         async function saveDocument() {
@@ -1086,6 +1116,10 @@ async function checkForUpdate({ background = false } = {}) {
         function applyTerminalFit() {
             if (!terminalVisible || !fitAddon || !terminal) return;
             fitAddon.fit();
+            if (!terminal.cols || !terminal.rows) return;
+            if (terminal.cols === terminalLastFitCols && terminal.rows === terminalLastFitRows) return;
+            terminalLastFitCols = terminal.cols;
+            terminalLastFitRows = terminal.rows;
             invoke('terminal_resize', {
                 cols: terminal.cols,
                 rows: terminal.rows
@@ -1095,36 +1129,40 @@ async function checkForUpdate({ background = false } = {}) {
         function applyClaudeFit() {
             if (!claudeVisible || !claudeFitAddon || !claudeTerminal) return;
             claudeFitAddon.fit();
+            if (!claudeTerminal.cols || !claudeTerminal.rows) return;
+            if (claudeTerminal.cols === claudeLastFitCols && claudeTerminal.rows === claudeLastFitRows) return;
+            claudeLastFitCols = claudeTerminal.cols;
+            claudeLastFitRows = claudeTerminal.rows;
             invoke('claude_resize', {
                 cols: claudeTerminal.cols,
                 rows: claudeTerminal.rows
             }).catch(() => {});
         }
 
-        function resizeTerminal() {
+        function resizeTerminal({ settle = true } = {}) {
             if (!terminalVisible || !terminal || !fitAddon) return;
 
             cancelAnimationFrame(terminalResizeFrame);
             terminalResizeFrame = requestAnimationFrame(() => {
                 applyTerminalFit();
                 // xterm’s FitAddon reads parent size; a second pass runs after this pane’s flex layout is final.
-                requestAnimationFrame(applyTerminalFit);
+                if (settle) requestAnimationFrame(applyTerminalFit);
             });
         }
 
-        function resizeClaude() {
+        function resizeClaude({ settle = true } = {}) {
             if (!claudeVisible || !claudeTerminal || !claudeFitAddon) return;
 
             cancelAnimationFrame(claudeResizeFrame);
             claudeResizeFrame = requestAnimationFrame(() => {
                 applyClaudeFit();
-                requestAnimationFrame(applyClaudeFit);
+                if (settle) requestAnimationFrame(applyClaudeFit);
             });
         }
 
-        function resizeTerminals() {
-            resizeTerminal();
-            resizeClaude();
+        function resizeTerminals(options) {
+            resizeTerminal(options);
+            resizeClaude(options);
         }
 
 async function writeClaudePrompt(prompt) {
@@ -1349,8 +1387,12 @@ async function replaceSelectionFromClipboard() {
 
         function syncSidePaneLayout() {
             const sidePaneVisible = terminalVisible || claudeVisible;
+            if (!sidePane) {
+                resizeTerminals();
+                return;
+            }
             sidePane.classList.toggle('hidden', !sidePaneVisible);
-            sidePaneResizer.classList.toggle('hidden', !sidePaneVisible);
+            sidePaneResizer?.classList.toggle('hidden', !sidePaneVisible);
             sidePane.classList.toggle('side-pane-split', terminalVisible && claudeVisible);
             sidePane.style.flexBasis = sidePaneVisible ? `${sidePanePercent}%` : '';
             resizeTerminals();
@@ -1518,21 +1560,42 @@ document.addEventListener('click', (event) => {
         });
 
         document.addEventListener('mouseup', () => {
-            if (!isResizing) return;
-            isResizing = false;
-            paneResizer.classList.remove('dragging');
+            if (isResizing) {
+                isResizing = false;
+                paneResizer.classList.remove('dragging');
+            }
+            if (isResizingSidePane) {
+                isResizingSidePane = false;
+                sidePaneResizer?.classList.remove('dragging');
+            }
             document.body.style.userSelect = '';
         });
 
         document.addEventListener('mousemove', (event) => {
             if (!isResizing || sourceCollapsed) return;
-            const rect = editorContainer.getBoundingClientRect();
+            const rect = (workspacePanes || editorContainer).getBoundingClientRect();
             const rawPercent = ((event.clientX - rect.left) / rect.width) * 100;
             const editorPercent = Math.min(80, Math.max(20, rawPercent));
             const previewPercent = 100 - editorPercent;
-            editorPane.style.flex = `0 0 ${editorPercent}%`;
-            previewPane.style.flex = `0 0 ${previewPercent}%`;
-            resizeTerminals();
+            editorPane.style.flex = `1 1 ${editorPercent}%`;
+            previewPane.style.flex = `1 1 ${previewPercent}%`;
+            resizeTerminals({ settle: false });
+        });
+
+        sidePaneResizer?.addEventListener('mousedown', () => {
+            if (!terminalVisible && !claudeVisible) return;
+            isResizingSidePane = true;
+            sidePaneResizer.classList.add('dragging');
+            document.body.style.userSelect = 'none';
+        });
+
+        document.addEventListener('mousemove', (event) => {
+            if (!sidePane || !isResizingSidePane || (!terminalVisible && !claudeVisible)) return;
+            const rect = editorContainer.getBoundingClientRect();
+            const rawPercent = ((rect.right - event.clientX) / rect.width) * 100;
+            sidePanePercent = Math.min(65, Math.max(24, rawPercent));
+            sidePane.style.flexBasis = `${sidePanePercent}%`;
+            resizeTerminals({ settle: false });
         });
 
         fileInput.addEventListener('change', (e) => {
@@ -1546,16 +1609,19 @@ document.addEventListener('click', (event) => {
                 filenameDisplay.textContent = `Editing: ${file.name}`;
                 filenameDisplay.title = '';
                 resetEditorHistory();
-                updatePreview();
+                void updatePreview();
             };
             reader.readAsText(file);
         });
 
-        let timeout = null;
         editor.addEventListener('input', () => {
+            updateEditorMetrics();
             scheduleEditorHistory();
-            clearTimeout(timeout);
-            timeout = setTimeout(updatePreview, 50);
+            clearTimeout(previewInputDebounceTimer);
+            previewInputDebounceTimer = setTimeout(() => {
+                previewInputDebounceTimer = null;
+                void updatePreview();
+            }, previewInputDebounceMs);
         });
 
         function lineBoundsAt(value, position) {
@@ -1750,10 +1816,21 @@ document.addEventListener('click', (event) => {
             }
         });
 
-        editor.onscroll = function () {
-            const scrollPercentage = editor.scrollTop / (editor.scrollHeight - editor.clientHeight || 1);
-            preview.scrollTop = scrollPercentage * (preview.scrollHeight - preview.clientHeight);
-        };
+        let editorScrollSyncFrame = null;
+        editor.addEventListener(
+            'scroll',
+            () => {
+                if (editorScrollSyncFrame != null) return;
+                editorScrollSyncFrame = requestAnimationFrame(() => {
+                    editorScrollSyncFrame = null;
+                    const editorRange = editor.scrollHeight - editor.clientHeight;
+                    const scrollPercentage = editorRange > 0 ? editor.scrollTop / editorRange : 0;
+                    const previewRange = Math.max(0, preview.scrollHeight - preview.clientHeight);
+                    preview.scrollTop = scrollPercentage * previewRange;
+                });
+            },
+            { passive: true }
+        );
 
         async function loadInitialContent() {
             const params = new URLSearchParams(window.location.search);
@@ -1765,7 +1842,7 @@ document.addEventListener('click', (event) => {
             return;
                 }
 
-                updatePreview();
+                void updatePreview();
                 return;
             }
 
@@ -1781,7 +1858,7 @@ document.addEventListener('click', (event) => {
                 currentFilePath = null;
                 filenameDisplay.title = displayName;
             } catch (_) {
-                updatePreview();
+                void updatePreview();
             }
         }
 

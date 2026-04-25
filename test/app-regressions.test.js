@@ -97,6 +97,28 @@ test("editor metadata bar truncates long filenames without wrapping", () => {
   assert.match(css, /#char-count\s*\{[\s\S]*white-space:\s*nowrap;/);
 });
 
+test("terminal and Claude share a resizable right-side rail", () => {
+  const html = fs.readFileSync("index.html", "utf8");
+  const css = fs.readFileSync("src/styles.css", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  assert.match(html, /id="workspace-panes"/);
+  assert.match(html, /id="side-pane-resizer"/);
+  assert.match(html, /id="side-pane"[\s\S]*id="terminal-pane"[\s\S]*id="claude-pane"/);
+  assert.match(css, /\.side-pane\s*\{[\s\S]*flex:\s*0 0 34%;[\s\S]*min-width:/);
+  assert.match(css, /\.side-pane-split \.terminal-pane\s*\{[\s\S]*flex-basis:\s*50%;/);
+  assert.match(css, /\.editor-collapsed #pane-resizer/);
+  assert.match(main, /function syncSidePaneLayout\(\)/);
+  assert.match(main, /sidePane\.classList\.toggle\('side-pane-split', terminalVisible && claudeVisible\)/);
+  assert.match(main, /sidePanePercent = Math\.min\(65, Math\.max\(24, rawPercent\)\)/);
+  assert.match(main, /editorPane\.style\.flex = `1 1 \$\{editorPercent\}%`/);
+  assert.match(main, /terminalLastFitCols/);
+  assert.match(main, /terminal\.cols === terminalLastFitCols && terminal\.rows === terminalLastFitRows/);
+  assert.match(main, /resizeTerminals\(\{ settle: false \}\)/);
+  assert.match(main, /sidePaneResizer\?\.addEventListener/);
+  assert.match(main, /\(workspacePanes \|\| editorContainer\)\.getBoundingClientRect\(\)/);
+});
+
 test("example guide documents the app features that have regressed before", () => {
   const guide = fs.readFileSync("src/example.md", "utf8");
 
