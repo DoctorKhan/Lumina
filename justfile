@@ -21,6 +21,10 @@ vite-dev: _ensure-pnpm
 build: _ensure-pnpm
 	pnpm build
 
+# Run regression tests.
+test: _ensure-pnpm
+	pnpm test
+
 # Run Tauri in development mode.
 dev:
 	bash scripts/tauri.sh dev
