@@ -118,6 +118,8 @@
         .prose blockquote { border-left: 4px solid #cbd5e1; padding-left: 1rem; font-style: italic; color: #64748b; margin: 1rem 0; background: #f8fafc; border-radius: 0 8px 8px 0; }
         .prose ul, .prose ol { margin-left: 1.5rem; margin-bottom: 1rem; }
         .prose li { margin: 0.28rem 0; }
+        .prose li:has(input[type="checkbox"]) { list-style: none; margin-left: -1.5rem; }
+        .prose input[type="checkbox"] { accent-color: #4f46e5; margin-right: 0.45rem; transform: translateY(1px); }
         .prose img { max-width: 100%; border-radius: 10px; margin: 1rem auto; display: block; box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12); }
         .prose table { width: 100%; border-collapse: collapse; margin: 1rem 0; overflow: hidden; border-radius: 10px; }
         .prose th, .prose td { border: 1px solid #e2e8f0; padding: 0.55rem; text-align: left; }
@@ -334,11 +336,17 @@ flowchart TD
 * **File Support**: Open local .md files directly.
 * **GFM Support**: GitHub Flavored Markdown tables and lists.
 
+Task lists work too:
+
+- [x] Write Markdown
+- [x] Preview LaTeX and diagrams
+- [ ] Share the finished document
+
 | Feature | Support |
 | :--- | :--- |
 | LaTeX | Full |
 | Tables | Yes |
-| Task Lists | [x] |
+| Task Lists | Yes |
 
 Enjoy writing!
 `;
