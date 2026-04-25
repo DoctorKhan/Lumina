@@ -20,9 +20,10 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 else
   INSTALL_STATE_DIR="${LUMINA_INSTALL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/lumina}"
 fi
-INSTALL_MODEL_FILE="$INSTALL_STATE_DIR/install-estimates.tsv"
+INSTALL_MODEL_FILE="${LUMINA_INSTALL_MODEL_FILE:-$INSTALL_STATE_DIR/install-estimates.tsv}"
 INSTALL_LOG_FILE="$INSTALL_STATE_DIR/install-events.jsonl"
 BAYESIAN_PRIOR_WEIGHT="${LUMINA_INSTALL_PRIOR_WEIGHT:-2}"
+LOCAL_MODEL_WEIGHT="${LUMINA_INSTALL_LOCAL_WEIGHT:-8}"
 GLOBAL_MODEL_BASENAME="scripts/install-estimates-global.tsv"
 INSTALL_STEP_KEYS=()
 INSTALL_TOTAL_STEPS=0
@@ -185,8 +186,16 @@ estimate_step_duration() {
   global_mean="${global_mean:-0}"
   local_count="${local_count:-0}"
   local_mean="${local_mean:-0}"
-  numerator=$((BAYESIAN_PRIOR_WEIGHT * default_mean + global_count * global_mean + local_count * local_mean))
-  denominator=$((BAYESIAN_PRIOR_WEIGHT + global_count + local_count))
+
+  if ((local_count > 0)); then
+    # Same-machine timings are far more predictive than the bundled seed.
+    numerator=$((default_mean + local_count * LOCAL_MODEL_WEIGHT * local_mean))
+    denominator=$((1 + local_count * LOCAL_MODEL_WEIGHT))
+  else
+    numerator=$((BAYESIAN_PRIOR_WEIGHT * default_mean + global_count * global_mean))
+    denominator=$((BAYESIAN_PRIOR_WEIGHT + global_count))
+  fi
+
   estimate=$((numerator / denominator))
   if ((estimate < 1)); then
     estimate=1
@@ -432,6 +441,10 @@ record_step_duration() {
     printf "%s\t1\t%s\n" "$key" "$duration" >"$INSTALL_MODEL_FILE" || true
   fi
 }
+
+if [[ "${LUMINA_INSTALL_LIB_ONLY:-0}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 is_interactive_shell() {
   [[ -t 0 && -t 1 ]]
