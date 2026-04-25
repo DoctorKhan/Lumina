@@ -30,6 +30,25 @@ body {
     border-left: none;
 }
 
+.update-install-badge {
+    margin-left: 0.6rem;
+    border-radius: 999px;
+    padding: 0.22rem 0.6rem;
+    vertical-align: middle;
+    color: #ffffff;
+    background: linear-gradient(135deg, #059669, #0ea5e9);
+    font-size: 0.72rem;
+    font-weight: 650;
+    line-height: 1.2;
+    box-shadow: 0 8px 18px rgba(14, 165, 233, 0.24);
+    transition: transform 120ms ease, filter 120ms ease;
+}
+
+.update-install-badge:hover {
+    filter: brightness(1.08);
+    transform: translateY(-1px);
+}
+
 #editor {
     font-family: 'Fira Code', monospace;
     resize: none;

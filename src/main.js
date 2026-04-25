@@ -12,6 +12,8 @@ import { compareVersions, parseVersion, selectLatestUpdateTag } from './update.j
         const charCount = document.getElementById('char-count');
         const fileInput = document.getElementById('file-input');
         const filenameDisplay = document.getElementById('filename-display');
+const appVersionBadge = document.getElementById('app-version-badge');
+const installUpdateBadge = document.getElementById('install-update-badge');
         const updateStatus = document.getElementById('update-status');
         const toggleSourceBtn = document.getElementById('toggle-source-btn');
         const toggleTerminalBtn = document.getElementById('toggle-terminal-btn');
@@ -62,7 +64,7 @@ const maxRecentFilePaths = 10;
         const releaseApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/releases/latest';
         const tagsApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/tags?per_page=100';
         const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
-        const currentVersion = document.getElementById('app-version-badge').textContent.trim().replace(/^v/i, '');
+const currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
 
         marked.setOptions({
             // Keep default markdown line-break behavior so multiline KaTeX
@@ -603,6 +605,18 @@ async function openRecentFile(recentIndex = null) {
             updateStatus.title = message;
         }
 
+function showInstallUpdateBadge(tagName) {
+    installUpdateBadge.textContent = `Install ${tagName}`;
+    installUpdateBadge.title = `Install Lumina ${tagName}`;
+    installUpdateBadge.classList.remove('hidden');
+}
+
+function hideInstallUpdateBadge() {
+    installUpdateBadge.textContent = '';
+    installUpdateBadge.title = '';
+    installUpdateBadge.classList.add('hidden');
+}
+
         function shellQuote(value) {
             return `'${String(value).replaceAll("'", "'\\''")}'`;
         }
@@ -621,11 +635,14 @@ async function openRecentFile(recentIndex = null) {
             terminal?.focus();
         }
 
-        async function checkForUpdate() {
+async function checkForUpdate({ background = false } = {}) {
             if (updateCheckInProgress) return;
             updateCheckInProgress = true;
             latestReleaseTag = null;
-            setUpdateStatus('Checking GitHub releases and tags...');
+    hideInstallUpdateBadge();
+    if (!background) {
+        setUpdateStatus('Checking GitHub releases and tags...');
+    }
 
             try {
                 const [releaseResponse, tagsResponse] = await Promise.all([
@@ -664,12 +681,19 @@ async function openRecentFile(recentIndex = null) {
                 const { tag: latestTag, source } = latestTagInfo;
                 if (compareVersions(latestTag, currentVersion) > 0) {
                     latestReleaseTag = latestTag;
+            showInstallUpdateBadge(latestTag);
                     setUpdateStatus(`Update available: ${latestTag} (${source})`);
                 } else {
-                    setUpdateStatus(`Up to date: v${currentVersion}; latest ${source} is ${latestTag}`);
+            hideInstallUpdateBadge();
+            if (!background) {
+                setUpdateStatus(`Up to date: v${currentVersion}; latest ${source} is ${latestTag}`);
+            }
                 }
             } catch (error) {
-                setUpdateStatus(`Update check failed: ${error?.message || error}`);
+        hideInstallUpdateBadge();
+        if (!background) {
+            setUpdateStatus(`Update check failed: ${error?.message || error}`);
+        }
             } finally {
                 updateCheckInProgress = false;
             }
@@ -691,6 +715,7 @@ async function openRecentFile(recentIndex = null) {
                 releaseInstallCommand(latestReleaseTag),
                 `Installing Lumina ${latestReleaseTag} from GitHub releases...`
             );
+        hideInstallUpdateBadge();
         }
 
         async function loadCurrentCheckoutInstaller() {
@@ -1172,6 +1197,7 @@ async function replaceSelectionFromClipboard() {
             setUpdateStatus(`Menu unavailable: ${error?.message || error}`);
         });
         syncRecentFilesMenu();
+installUpdateBadge.addEventListener('click', installDetectedUpdate);
         toggleSourceBtn.addEventListener('click', toggleSource);
         toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
         toggleClaudeBtn.addEventListener('click', () => toggleClaude());
@@ -1467,3 +1493,6 @@ document.addEventListener('click', (event) => {
 
         loadInitialContent();
         loadCurrentCheckoutInstaller();
+setTimeout(() => {
+    checkForUpdate({ background: true });
+}, 1500);
