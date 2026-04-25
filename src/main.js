@@ -16,6 +16,12 @@ import {
     getInterpolatedInstallPercent,
     getCountdownSecondsRemaining
 } from './installProgressAnimate.js';
+        import {
+            applyKatexToPreview,
+            getMarked,
+            highlightCodeBlocksIn,
+            renderMermaidInPreview
+        } from './previewLoaders.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import '@xterm/xterm/css/xterm.css';
@@ -57,7 +63,6 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         const editorPane = document.querySelector('.editor-pane');
         const previewPane = document.querySelector('.preview-pane');
         const paneResizer = document.getElementById('pane-resizer');
-        let mermaidInitialized = false;
         let sourceCollapsed = false;
         let isResizing = false;
         let isResizingSidePane = false;
@@ -102,28 +107,6 @@ const maxRecentFilePaths = 10;
         const tagsApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/tags?per_page=100';
         const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
 let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
-
-        marked.setOptions({
-            // Keep default markdown line-break behavior so multiline KaTeX
-            // blocks are not split by injected <br> nodes.
-            breaks: false,
-            gfm: true
-        });
-
-        const renderer = new marked.Renderer();
-        renderer.code = (code, infostring) => {
-            const language = (infostring || '').trim().toLowerCase();
-            if (language === 'mermaid') {
-                return `<pre class="mermaid">${code}</pre>`;
-            }
-            const escapedCode = code
-                .replaceAll('&', '&amp;')
-                .replaceAll('<', '&lt;')
-                .replaceAll('>', '&gt;');
-            const className = language ? `language-${language}` : '';
-            return `<pre><code class="${className}">${escapedCode}</code></pre>`;
-        };
-        marked.use({ renderer });
 
         const initialValue = exampleMarkdown;
 
@@ -457,65 +440,6 @@ async function openRecentFile(recentIndex = null) {
             }
         }
 
-        function highlightCodeBlocks() {
-            const blocks = preview.querySelectorAll('pre code:not(.language-mermaid)');
-            blocks.forEach((block) => hljs.highlightElement(block));
-        }
-
-        async function renderMermaidBlocks() {
-            const blocks = preview.querySelectorAll('pre.mermaid');
-            if (blocks.length === 0) return;
-
-            if (!mermaidInitialized) {
-                mermaid.initialize({
-                    startOnLoad: false,
-                    securityLevel: 'loose',
-                    theme: 'base',
-                    flowchart: {
-                        curve: 'basis',
-                        htmlLabels: true,
-                        padding: 24,
-                        nodeSpacing: 56,
-                        rankSpacing: 64
-                    },
-                    themeVariables: {
-                        fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
-                        primaryColor: '#eef2ff',
-                        primaryTextColor: '#1e293b',
-                        primaryBorderColor: '#6366f1',
-                        lineColor: '#64748b',
-                        secondaryColor: '#e0f2fe',
-                        tertiaryColor: '#f8fafc',
-                        clusterBkg: '#f8fafc',
-                        clusterBorder: '#cbd5e1',
-                        edgeLabelBackground: '#ffffff'
-                    }
-                });
-                mermaidInitialized = true;
-            }
-
-            if (document.fonts?.ready) {
-                await document.fonts.ready;
-            }
-
-            for (const block of blocks) {
-                const source = block.textContent || '';
-                const id = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                try {
-                    const { svg } = await mermaid.render(id, source);
-                    const wrapper = document.createElement('div');
-                    wrapper.className = 'mermaid';
-                    wrapper.innerHTML = svg;
-                    block.replaceWith(wrapper);
-                } catch (error) {
-                    const fallback = document.createElement('pre');
-                    fallback.className = 'bg-rose-50 text-rose-700 p-3 rounded';
-                    fallback.textContent = `Mermaid render error:\n${error?.message || String(error)}`;
-                    block.replaceWith(fallback);
-                }
-            }
-        }
-
         function looksLikeLatexBlock(lines) {
             const body = lines.join('\n').trim();
             if (!body) return false;
@@ -636,20 +560,12 @@ async function openRecentFile(recentIndex = null) {
             const normalizedValue = normalizeEscapedLatexDelimiters(
                 normalizeMathBlocks(rawValue)
             );
+            const marked = await getMarked();
             preview.innerHTML = marked.parse(normalizedValue);
             applySmartOutlineStyles();
-            highlightCodeBlocks();
-            await renderMermaidBlocks();
-
-            renderMathInElement(preview, {
-                delimiters: [
-                    { left: '$$', right: '$$', display: true },
-                    { left: '$', right: '$', display: false },
-                    { left: '\\(', right: '\\)', display: false },
-                    { left: '\\[', right: '\\]', display: true }
-                ],
-                throwOnError: false
-            });
+            await highlightCodeBlocksIn(preview);
+            await renderMermaidInPreview(preview);
+            await applyKatexToPreview(preview, normalizedValue);
         }
 
         async function updatePreview() {

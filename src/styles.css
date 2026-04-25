@@ -1,5 +1,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=Fira+Code:wght@400;500&display=swap');
 
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* Lock the page to the webview: no document-level scroll. Pane scroll lives in #editor / #preview. */
 html {
     height: 100%;
