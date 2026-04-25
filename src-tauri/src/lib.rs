@@ -6,7 +6,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
-    sync::Mutex,
+    sync::{Mutex, PoisonError},
     thread,
 };
 use tauri::{
@@ -47,6 +47,69 @@ struct TerminalState {
     terminal: PtySession,
     claude: PtySession,
     cwd: Mutex<Option<PathBuf>>,
+}
+
+/// Paths passed in from the OS (`open -a Lumina.app file.md` on macOS, argv elsewhere)
+/// until the webview drains them.
+#[derive(Default)]
+struct PendingOpenPaths(Mutex<Vec<String>>);
+
+fn is_supported_document_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extension.eq_ignore_ascii_case("md")
+                || extension.eq_ignore_ascii_case("markdown")
+                || extension.eq_ignore_ascii_case("txt")
+        })
+}
+
+fn collect_cli_document_paths() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS delivers `open -a App path` via `RunEvent::Opened`, not argv.
+        return vec![];
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut paths = Vec::new();
+        for arg in env::args_os().skip(1) {
+            let path = PathBuf::from(arg);
+            if path.is_file() && is_supported_document_path(&path) {
+                if let Ok(canonical) = fs::canonicalize(&path) {
+                    paths.push(canonical.to_string_lossy().to_string());
+                }
+            }
+        }
+        paths
+    }
+}
+
+fn notify_open_paths_pending(app: &AppHandle<Wry>, mut paths: Vec<String>) {
+    paths.retain(|path| !path.trim().is_empty());
+    if paths.is_empty() {
+        return;
+    }
+
+    {
+        let pending = app.state::<PendingOpenPaths>();
+        let mut guard = pending
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        guard.append(&mut paths);
+    }
+
+    let _ = app.emit("lumina-pending-open-files", ());
+}
+
+#[tauri::command]
+fn drain_pending_open_paths(state: State<'_, PendingOpenPaths>) -> Result<Vec<String>, String> {
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "Pending open paths lock poisoned.".to_string())?;
+    Ok(std::mem::take(&mut *guard))
 }
 
 #[derive(Serialize)]
@@ -404,6 +467,8 @@ fn spawn_pty_session(
         .lock()
         .map_err(|_| "PTY state is unavailable.".to_string())? = Some(writer);
 
+    let app_hangup = app.clone();
+    let hangup_name = "terminal-pty-hangup";
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
         loop {
@@ -419,24 +484,49 @@ fn spawn_pty_session(
                 }
             }
         }
+        // Read side of the master closed (shell usually exited). Front end
+        // should call `terminal_kill` + `terminal_spawn` to attach a new shell.
+        let _ = app_hangup.emit(hangup_name, true);
     });
 
     Ok(())
 }
 
-fn write_pty_session(session: &PtySession, data: String) -> Result<(), String> {
-    let mut writer = session
-        .writer
-        .lock()
-        .map_err(|_| "PTY state is unavailable.".to_string())?;
-    let writer = writer
-        .as_mut()
-        .ok_or_else(|| "Terminal is not running.".to_string())?;
+fn should_reap_pty_on_write_error(err: &std::io::Error) -> bool {
+    if matches!(
+        err.kind(),
+        std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+    ) {
+        return true;
+    }
+    #[cfg(unix)]
+    if err.raw_os_error() == Some(5) {
+        // EIO: write to a master whose slave (shell) has gone away.
+        return true;
+    }
+    false
+}
 
-    writer
-        .write_all(data.as_bytes())
-        .map_err(|error| error.to_string())?;
-    writer.flush().map_err(|error| error.to_string())
+fn write_pty_session(session: &PtySession, data: String) -> Result<(), String> {
+    let io_result: std::io::Result<()> = (|| {
+        let mut writer = session
+            .writer
+            .lock()
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "PTY state is unavailable"))?;
+        let writer = writer.as_mut().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "Terminal is not running")
+        })?;
+        writer.write_all(data.as_bytes())?;
+        writer.flush()
+    })();
+
+    if let Err(ref e) = io_result {
+        if should_reap_pty_on_write_error(e) {
+            let _ = kill_pty_session(session);
+        }
+    }
+
+    io_result.map_err(|e| e.to_string())
 }
 
 fn resize_pty_session(session: &PtySession, rows: u16, cols: u16) -> Result<(), String> {
@@ -756,10 +846,12 @@ fn open_external_url(url: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(TerminalState::default())
+        .manage(PendingOpenPaths::default())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let menu = build_app_menu(app, &[])?;
             app.set_menu(menu)?;
+            notify_open_paths_pending(app.handle(), collect_cli_document_paths());
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -781,9 +873,23 @@ pub fn run() {
             open_file_path,
             save_file_path,
             sync_recent_files_menu,
+            drain_pending_open_paths,
             open_external_url,
             current_checkout_install_info
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| match event {
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            tauri::RunEvent::Opened { urls } => {
+                let paths = urls
+                    .iter()
+                    .filter_map(|url| url.to_file_path().ok())
+                    .filter(|path| path.is_file() && is_supported_document_path(path))
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect::<Vec<_>>();
+                notify_open_paths_pending(app, paths);
+            }
+            _ => {}
+        });
 }

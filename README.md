@@ -30,6 +30,13 @@ On macOS, the public installer clones or updates the managed checkout in
 curl -fsSL https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh | bash
 ```
 
+The first run compiles the Tauri app locally, which often takes several minutes
+(depending on your machine). Let it finish unless you see a real error.
+
+`run.sh` installs a local `just` binary when needed, including for piped installs
+where stdin is not a TTY, so the one-liner above does not require `just` to be
+preinstalled.
+
 The installer uses `pnpm` and Rust/Cargo, so install those first if they are not
 already available:
 

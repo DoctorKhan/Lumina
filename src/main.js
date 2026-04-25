@@ -47,6 +47,8 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let terminalOutputUnlisten = null;
         let terminalResizeFrame = null;
         let terminalInputBuffer = '';
+        let terminalPtyHangupUnlisten = null;
+        let terminalShellRespawnPromise = null;
         let claudeTerminal = null;
         let claudeFitAddon = null;
         let claudeVisible = false;
@@ -292,6 +294,28 @@ async function openFilePath(path) {
     filenameDisplay.title = file.path;
     rememberOpenedPath(file.path);
     editor.focus();
+}
+
+async function flushPendingOpenPathsFromBackend() {
+    let paths;
+    try {
+        paths = await invoke('drain_pending_open_paths');
+    } catch (error) {
+        setUpdateStatus(`Unable to read pending files: ${error?.message || error}`);
+        return;
+    }
+
+    if (!Array.isArray(paths) || paths.length === 0) {
+        return;
+    }
+
+    for (const path of paths) {
+        try {
+            await openFilePath(path);
+        } catch (error) {
+            setUpdateStatus(`Unable to open ${path}: ${error?.message || error}`);
+        }
+    }
 }
 
 async function openLastOpenedFile() {
@@ -625,13 +649,94 @@ function hideInstallUpdateBadge() {
             return `curl -fsSL ${publicInstallerUrl} | GIT_REF=${shellQuote(tagName)} bash`;
         }
 
+        function waitForTerminalToSettle(ms) {
+            return new Promise((resolve) => {
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        setTimeout(resolve, ms);
+                    });
+                });
+            });
+        }
+
+        function isPtyOrShellWriteErrorMessage(message) {
+            const m = String(message);
+            return (
+                m.includes('os error 5') ||
+                m.includes('Input/output error') ||
+                m.includes('Broken pipe') ||
+                m.includes('not running') ||
+                m.includes('Not connected') ||
+                m.includes('not connected')
+            );
+        }
+
+        async function respawnShellProcess() {
+            if (terminalShellRespawnPromise) {
+                return terminalShellRespawnPromise;
+            }
+            terminalShellRespawnPromise = (async () => {
+                try {
+                    if (!terminal) {
+                        return;
+                    }
+                    await invoke('terminal_kill');
+                    await invoke('terminal_spawn', { cols: terminal.cols, rows: terminal.rows });
+                    terminalStarted = true;
+                    terminalStatus.textContent = 'Running';
+                    terminal.write(
+                        '\r\n\x1b[33m[Shell restarted: previous process ended or the PTY closed (common after Ctrl+C or EIO).]\x1b[0m\r\n'
+                    );
+                } catch (e) {
+                    terminalStarted = false;
+                    const msg = e?.message || String(e);
+                    terminal?.write(`\r\n\x1b[31mFailed to start shell: ${msg}\x1b[0m\r\n`);
+                    terminalStatus.textContent = 'Error';
+                } finally {
+                    terminalShellRespawnPromise = null;
+                }
+            })();
+            return terminalShellRespawnPromise;
+        }
+
+        async function writeToTerminalPtyWithRetry(data) {
+            try {
+                await invoke('terminal_write', { data });
+            } catch (error) {
+                const message = error?.message || String(error);
+                if (!isPtyOrShellWriteErrorMessage(message)) {
+                    throw error;
+                }
+                await respawnShellProcess();
+                await invoke('terminal_write', { data });
+            }
+        }
+
+        /**
+         * Injects a full line into the shell. Sends a single `terminal_write` with
+         * the command and carriage return so the PTY line discipline gets one
+         * atomic line (xterm's `paste` path and split `onData` → invoke chains
+         * were racing and the shell could miss or mangle the line).
+         * Echoes the same line in the buffer so the full command is visible even
+         * before the host shell echoes.
+         */
         async function runCommandInTerminal(command, label) {
+            const shellReadyBefore = terminalStarted;
             await toggleTerminal(true);
             terminalInputBuffer = '';
-            terminal?.write(`\r\n${label}\r\nRunning: ${command}\r\n`);
+            terminal?.write(`\r\n\x1b[1m${label}\x1b[0m\r\n`);
+            terminal?.write(`\x1b[2m${command}\x1b[0m\r\n`);
             terminal?.scrollToBottom();
-            // Cancel any partially typed prompt input before injecting the command.
-            await invoke('terminal_write', { data: `\u0003${command}\r` });
+
+            const settleMs = shellReadyBefore && terminalStarted ? 180 : 600;
+            await waitForTerminalToSettle(settleMs);
+
+            try {
+                await writeToTerminalPtyWithRetry(`${command}\r`);
+            } catch (e) {
+                setUpdateStatus(`Terminal: ${e?.message || e}`);
+                terminal?.write(`\r\n\x1b[31m${e?.message || e}\x1b[0m\r\n`);
+            }
             terminal?.focus();
         }
 
@@ -706,7 +811,9 @@ async function checkForUpdate({ background = false } = {}) {
             }
 
             const confirmed = window.confirm(
-                `Install Lumina ${latestReleaseTag} from GitHub?\n\nThis runs the public install.sh script and rebuilds the app locally.`
+                `Install Lumina ${latestReleaseTag} from GitHub?\n\n` +
+                    'This runs the public install.sh and rebuilds the app locally. ' +
+                    'The first build often takes many minutes; wait until it finishes (do not treat a quiet terminal as a hang).'
             );
             if (!confirmed) return;
 
@@ -985,10 +1092,16 @@ async function replaceSelectionFromClipboard() {
             terminal.registerLinkProvider({ provideLinks: provideTerminalFileLinks });
             terminal.onData((data) => {
                 handleTerminalCommandInput(data);
-                invoke('terminal_write', { data }).catch((error) => {
-                    terminal.write(`\r\nTerminal write failed: ${error}\r\n`);
+                void writeToTerminalPtyWithRetry(data).catch((error) => {
+                    terminal.write(`\r\nTerminal write failed: ${error?.message || error}\r\n`);
                 });
             });
+
+            if (terminalPtyHangupUnlisten == null) {
+                terminalPtyHangupUnlisten = await listen('terminal-pty-hangup', () => {
+                    void respawnShellProcess();
+                });
+            }
 
             terminalStatus.textContent = 'Starting';
             terminal.write('Starting shell...\r\n');
@@ -1200,6 +1313,12 @@ async function replaceSelectionFromClipboard() {
         listen('lumina-menu', (event) => handleMenuCommand(event.payload)).catch((error) => {
             setUpdateStatus(`Menu unavailable: ${error?.message || error}`);
         });
+        listen('lumina-pending-open-files', () => {
+            flushPendingOpenPathsFromBackend();
+        }).catch((error) => {
+            setUpdateStatus(`Open-file events unavailable: ${error?.message || error}`);
+        });
+        flushPendingOpenPathsFromBackend();
         syncRecentFilesMenu();
 installUpdateBadge.addEventListener('click', installDetectedUpdate);
         toggleSourceBtn.addEventListener('click', toggleSource);

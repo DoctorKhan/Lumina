@@ -162,9 +162,18 @@ require_command git "Install git from https://git-scm.com/"
 require_command pnpm "Install pnpm from https://pnpm.io/installation"
 require_command cargo "Install Rust via https://rustup.rs/"
 
+git_ref_resolves() {
+  git -C "$1" rev-parse -q --verify "$GIT_REF^{commit}" >/dev/null 2>&1
+}
+
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   echo "Updating existing checkout in $INSTALL_DIR"
   git -C "$INSTALL_DIR" fetch --all --tags
+  if ! git_ref_resolves "$INSTALL_DIR"; then
+    echo "error: $GIT_REF is not a valid git ref in $INSTALL_DIR after fetch."
+    echo "If you are installing a release, ensure the tag exists on the remote (e.g. push the tag to GitHub)."
+    exit 1
+  fi
   # This install directory is managed by the installer, so we can safely
   # discard local/untracked build artifacts before updating.
   git -C "$INSTALL_DIR" reset --hard "$GIT_REF"
@@ -182,6 +191,11 @@ fi
 
 echo "Installing Lumina from $GIT_REF"
 git fetch --all --tags
+if ! git rev-parse -q --verify "$GIT_REF^{commit}" >/dev/null 2>&1; then
+  echo "error: $GIT_REF is not a valid git ref after fetch."
+  echo "If you are installing a release, ensure the tag exists on the remote (e.g. push the tag to GitHub)."
+  exit 1
+fi
 git reset --hard "$GIT_REF"
 git clean -fd
 ./run.sh setup

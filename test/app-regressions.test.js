@@ -22,6 +22,16 @@ test("Contribute on GitHub uses the native external URL command", () => {
   assert.doesNotMatch(main, /window\.open\('https:\/\/github\.com\/DoctorKhan\/Lumina'/);
 });
 
+test("CLI and Open With pass file paths into the editor via pending open queue", () => {
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  assert.match(rust, /RunEvent::Opened/);
+  assert.match(rust, /fn drain_pending_open_paths/);
+  assert.match(main, /invoke\('drain_pending_open_paths'/);
+  assert.match(main, /listen\('lumina-pending-open-files'/);
+});
+
 test("startup update check is quiet and exposes an install badge", () => {
   const html = fs.readFileSync("index.html", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
@@ -51,6 +61,13 @@ test("macOS folder permission prompts explain Claude and file access", () => {
 
   assert.match(plist, /Claude pane edits the current file's folder/);
   assert.match(main, /If macOS asks for folder access, it is for this Claude editing session\./);
+});
+
+test("macOS bundle plist does not request legacy Carbon launch mode", () => {
+  const plist = fs.readFileSync("src-tauri/Info.plist", "utf8");
+
+  assert.match(plist, /<key>LSRequiresCarbon<\/key>\s*<false\/>/);
+  assert.doesNotMatch(plist, /<key>LSRequiresCarbon<\/key>\s*<true\/>/);
 });
 
 test("editor metadata bar truncates long filenames without wrapping", () => {
