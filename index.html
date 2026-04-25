@@ -24,7 +24,40 @@
             <h1 class="text-xl font-semibold tracking-tight text-slate-100">Lumina <span id="app-version-badge" class="text-slate-500 font-normal text-sm ml-2">v0.2.10</span><button id="install-update-badge" type="button" class="update-install-badge hidden" title="Install available update"></button></h1>
         </div>
         <div class="flex items-center gap-2 min-w-0">
-            <span id="update-status" class="max-w-80 truncate text-xs text-slate-500" title="">Not checked</span>
+            <div class="flex flex-col items-end gap-1 min-w-0 max-w-[20rem]">
+                <div
+                    id="install-progress"
+                    class="install-progress hidden w-full min-w-0"
+                    aria-label="Install progress"
+                    role="status"
+                    aria-live="polite"
+                >
+                    <div class="install-progress-card">
+                        <div class="install-progress-card-head">
+                            <div class="install-progress-card-label">
+                                <span class="install-progress-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path
+                                            d="M12 3v10m0 0l-3.5-3.5M12 13l3.5-3.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"
+                                            stroke="currentColor"
+                                            stroke-width="1.8"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                        />
+                                    </svg>
+                                </span>
+                                <span class="install-progress-eyebrow">Update</span>
+                            </div>
+                            <span id="install-progress-percent" class="install-progress-pct" translate="no">—</span>
+                        </div>
+                        <div class="install-progress-track" aria-hidden="true">
+                            <div id="install-progress-fill" class="install-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <p id="install-progress-detail" class="install-progress-detail" title=""></p>
+                    </div>
+                </div>
+                <span id="update-status" class="max-w-80 truncate text-xs text-slate-500" title="">Not checked</span>
+            </div>
             <div class="h-6 w-px bg-slate-800"></div>
             <div class="flex items-center gap-1" aria-label="Pane controls">
                 <button id="toggle-source-btn" type="button" class="pane-toggle-btn rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors" title="Hide source pane" aria-label="Toggle source pane" aria-pressed="true">
