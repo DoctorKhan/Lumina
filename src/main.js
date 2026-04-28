@@ -956,30 +956,52 @@ async function checkForUpdate({ background = false } = {}) {
             }
         }
 
-        async function openClickedTerminalFile(path) {
-            const cleanPath = cleanTerminalPath(path);
-            if (!cleanPath) return;
+        function clearTerminalSelectionAfterLink() {
+            if (!terminal) return;
+            const run = () => {
+                try {
+                    terminal.clearSelection();
+                } catch {
+                    // ignore
+                }
+            };
+            run();
+            queueMicrotask(run);
+            requestAnimationFrame(() => {
+                run();
+                requestAnimationFrame(run);
+            });
+        }
 
+        async function openClickedTerminalFile(path) {
             try {
-                filenameDisplay.textContent = `Opening: ${cleanPath}`;
-                filenameDisplay.title = cleanPath;
-                await new Promise((resolve) => setTimeout(resolve, 0));
-                const file = await invoke('open_file_path', { path: cleanPath });
-                setEditorContent(file.content, `Editing: ${file.path}`);
-                filenameDisplay.title = file.path;
-                rememberOpenedPath(file.path);
-                editor.focus();
-            } catch (error) {
-                filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
-                filenameDisplay.title = '';
-                terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
-                scheduleTerminalScrollToBottom();
+                const cleanPath = cleanTerminalPath(path);
+                if (!cleanPath) return;
+
+                try {
+                    filenameDisplay.textContent = `Opening: ${cleanPath}`;
+                    filenameDisplay.title = cleanPath;
+                    await new Promise((resolve) => setTimeout(resolve, 0));
+                    const file = await invoke('open_file_path', { path: cleanPath });
+                    setEditorContent(file.content, `Editing: ${file.path}`);
+                    filenameDisplay.title = file.path;
+                    rememberOpenedPath(file.path);
+                    editor.focus();
+                } catch (error) {
+                    filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
+                    filenameDisplay.title = '';
+                    terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
+                    scheduleTerminalScrollToBottom();
+                }
+            } finally {
+                clearTerminalSelectionAfterLink();
             }
         }
 
         function activateTerminalFileLink(event, path) {
             event?.preventDefault?.();
             event?.stopPropagation?.();
+            clearTerminalSelectionAfterLink();
             setTimeout(() => {
                 openClickedTerminalFile(path).catch((error) => {
                     terminal?.write(`\r\nUnable to open ${path}: ${error}\r\n`);
