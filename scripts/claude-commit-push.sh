@@ -2,6 +2,14 @@
 set -euo pipefail
 
 MESSAGE_FILE="${CLAUDE_COMMIT_MSG_FILE:-.git/claude-commit-message.txt}"
+TMP_PROMPT_FILE=""
+TMP_MSG_FILE=""
+
+cleanup_temp_files() {
+  rm -f "${TMP_PROMPT_FILE:-}" "${TMP_MSG_FILE:-}"
+}
+
+trap cleanup_temp_files EXIT
 
 ensure_git_repo() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
@@ -48,16 +56,13 @@ generate_message() {
   ensure_changes
   ensure_claude
 
-  local tmp_prompt
-  local tmp_msg
   local commit_msg
-  tmp_prompt="$(mktemp)"
-  tmp_msg="$(mktemp)"
-  trap 'rm -f "$tmp_prompt" "$tmp_msg"' EXIT
+  TMP_PROMPT_FILE="$(mktemp)"
+  TMP_MSG_FILE="$(mktemp)"
 
-  build_prompt >"$tmp_prompt"
-  claude -p "$(cat "$tmp_prompt")" >"$tmp_msg"
-  commit_msg="$(awk 'BEGIN{start=0} { if (start || NF) { start=1; print } }' "$tmp_msg")"
+  build_prompt >"$TMP_PROMPT_FILE"
+  claude -p "$(cat "$TMP_PROMPT_FILE")" >"$TMP_MSG_FILE"
+  commit_msg="$(awk 'BEGIN{start=0} { if (start || NF) { start=1; print } }' "$TMP_MSG_FILE")"
 
   if [[ -z "$commit_msg" ]]; then
     echo "Claude returned an empty commit message."
