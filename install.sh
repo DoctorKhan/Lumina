@@ -523,7 +523,12 @@ if [[ "\${1:-}" == "--update" ]]; then
   exit 0
 fi
 
-open -a "$launcher_target" "\$@"
+if [[ \$# -gt 0 ]]; then
+  # Prefer explicit CLI targets over restored app session windows.
+  open -F -a "$launcher_target" "\$@"
+else
+  open -a "$launcher_target"
+fi
 EOF
   chmod +x "$launcher_path"
 
