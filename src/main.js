@@ -109,8 +109,6 @@ let claudeWorkspaceFilePath = null;
         let currentFilePath = null;
         let currentFileMtime = 0;
         let fileWatcherTimer = null;
-        let fileWatcherConsecutiveErrors = 0;
-        const fileWatcherMaxErrors = 4;
         const fileWatcherIntervalMs = 2000;
         const lastOpenedFilePathKey = 'lumina:last-opened-file-path';
 const recentFilePathsKey = 'lumina:recent-file-paths';
@@ -356,7 +354,6 @@ function stopFileWatcher() {
 
 function startFileWatcher(path, mtime) {
     stopFileWatcher();
-    fileWatcherConsecutiveErrors = 0;
     fileWatcherTimer = setInterval(async () => {
         if (!currentFilePath) {
             stopFileWatcher();
@@ -367,7 +364,6 @@ function startFileWatcher(path, mtime) {
                 path: currentFilePath,
                 knownModifiedMs: currentFileMtime
             });
-            fileWatcherConsecutiveErrors = 0;
             if (changed) {
                 currentFileMtime = changed.modifiedMs;
                 editor.value = changed.content;
@@ -375,12 +371,8 @@ function startFileWatcher(path, mtime) {
                 void updatePreview();
             }
         } catch (_) {
-            // Transient errors (e.g. mid-write by Claude) are ignored; persistent
-            // errors (file deleted/moved) stop the watcher after several attempts.
-            fileWatcherConsecutiveErrors++;
-            if (fileWatcherConsecutiveErrors >= fileWatcherMaxErrors) {
-                stopFileWatcher();
-            }
+            // Ignore transient errors (e.g. mid-write by external editor or Claude).
+            // The watcher keeps running; it only stops when the file is closed.
         }
     }, fileWatcherIntervalMs);
 }
