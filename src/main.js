@@ -106,6 +106,9 @@ let claudeWorkspaceFilePath = null;
         let updateCheckInProgress = false;
         let currentCheckoutInstallCommand = null;
         let currentFilePath = null;
+        let currentFileMtime = 0;
+        let fileWatcherTimer = null;
+        const fileWatcherIntervalMs = 2000;
         const lastOpenedFilePathKey = 'lumina:last-opened-file-path';
 const recentFilePathsKey = 'lumina:recent-file-paths';
 const maxRecentFilePaths = 10;
@@ -226,6 +229,8 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
 
         function newUntitledDocument() {
             currentFilePath = null;
+            currentFileMtime = 0;
+            stopFileWatcher();
             editor.value = '';
             filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
             filenameDisplay.title = '';
@@ -339,14 +344,48 @@ Nearest heading: ${context.heading}
 Use the Claude file for full-document edits. If you propose replacement text, keep it concise and valid Markdown.${selectionBlock}`;
 }
 
+function stopFileWatcher() {
+    if (fileWatcherTimer !== null) {
+        clearInterval(fileWatcherTimer);
+        fileWatcherTimer = null;
+    }
+}
+
+function startFileWatcher(path, mtime) {
+    stopFileWatcher();
+    fileWatcherTimer = setInterval(async () => {
+        if (!currentFilePath) {
+            stopFileWatcher();
+            return;
+        }
+        try {
+            const changed = await invoke('poll_file_for_changes', {
+                path: currentFilePath,
+                knownModifiedMs: currentFileMtime
+            });
+            if (changed) {
+                currentFileMtime = changed.modifiedMs;
+                editor.value = changed.content;
+                updateEditorMetrics();
+                void updatePreview();
+            }
+        } catch (_) {
+            // file may have been deleted or moved; stop watching
+            stopFileWatcher();
+        }
+    }, fileWatcherIntervalMs);
+}
+
 async function openFilePath(path) {
     filenameDisplay.textContent = `Opening: ${path}`;
     filenameDisplay.title = path;
     await new Promise((resolve) => setTimeout(resolve, 0));
     const file = await invoke('open_file_path', { path });
+    currentFileMtime = file.modifiedMs ?? 0;
     setEditorContent(file.content, `Editing: ${file.path}`);
     filenameDisplay.title = file.path;
     rememberOpenedPath(file.path);
+    startFileWatcher(file.path, currentFileMtime);
     editor.focus();
 }
 
@@ -356,11 +395,11 @@ async function flushPendingOpenPathsFromBackend() {
         paths = await invoke('drain_pending_open_paths');
     } catch (error) {
         setUpdateStatus(`Unable to read pending files: ${error?.message || error}`);
-        return;
+        return false;
     }
 
     if (!Array.isArray(paths) || paths.length === 0) {
-        return;
+        return false;
     }
 
     for (const path of paths) {
@@ -370,6 +409,7 @@ async function flushPendingOpenPathsFromBackend() {
             setUpdateStatus(`Unable to open ${path}: ${error?.message || error}`);
         }
     }
+    return true;
 }
 
 async function openLastOpenedFile() {
@@ -1494,7 +1534,6 @@ async function replaceSelectionFromClipboard() {
         }).catch((error) => {
             setUpdateStatus(`Open-file events unavailable: ${error?.message || error}`);
         });
-        flushPendingOpenPathsFromBackend();
         syncAppMenu();
 installUpdateBadge.addEventListener('click', installDetectedUpdate);
         toggleSourceBtn.addEventListener('click', toggleSource);
@@ -1821,8 +1860,11 @@ document.addEventListener('click', (event) => {
             const fileDisplayName = params.get('name');
 
             if (!fileParam) {
-        if (await openLastOpenedFile()) {
-            return;
+                if (await flushPendingOpenPathsFromBackend()) {
+                    return;
+                }
+                if (await openLastOpenedFile()) {
+                    return;
                 }
 
                 void updatePreview();

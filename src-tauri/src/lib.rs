@@ -119,6 +119,16 @@ struct OpenedFile {
     path: String,
     name: String,
     content: String,
+    modified_ms: u64,
+}
+
+fn file_modified_ms(path: &Path) -> u64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[derive(Deserialize)]
@@ -822,6 +832,7 @@ fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<Opene
         .to_string();
 
     Ok(OpenedFile {
+        modified_ms: file_modified_ms(&path),
         path: path.to_string_lossy().to_string(),
         name,
         content,
@@ -848,6 +859,7 @@ fn save_file_path(path: String, content: String) -> Result<OpenedFile, String> {
         fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
 
     Ok(OpenedFile {
+        modified_ms: file_modified_ms(&path),
         path: path.to_string_lossy().to_string(),
         name,
         content,
@@ -872,6 +884,7 @@ fn write_document(path: String, content: String) -> Result<OpenedFile, String> {
         fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
 
     Ok(OpenedFile {
+        modified_ms: file_modified_ms(&path),
         path: path.to_string_lossy().to_string(),
         name,
         content,
@@ -915,6 +928,28 @@ fn current_checkout_install_info() -> CheckoutInstallInfo {
         )),
         label: format!("Install current checkout from {root_dir}"),
     }
+}
+
+#[tauri::command]
+fn poll_file_for_changes(path: String, known_modified_ms: u64) -> Result<Option<OpenedFile>, String> {
+    let path = PathBuf::from(path.trim());
+    let path = fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let mtime = file_modified_ms(&path);
+    if mtime <= known_modified_ms {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    Ok(Some(OpenedFile {
+        modified_ms: mtime,
+        path: path.to_string_lossy().to_string(),
+        name,
+        content,
+    }))
 }
 
 #[tauri::command]
@@ -992,6 +1027,7 @@ pub fn run() {
             write_document,
             sync_app_menu,
             drain_pending_open_paths,
+            poll_file_for_changes,
             open_external_url,
             current_checkout_install_info
         ])
