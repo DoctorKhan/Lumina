@@ -254,6 +254,8 @@ body > header {
 .prose h2 { border-bottom: 1px solid #e2e8f0; padding-bottom: 0.35rem; margin-top: 1.2rem; font-weight: 650; font-size: 1.65rem; letter-spacing: -0.01em; }
 .prose h3 { font-weight: 620; font-size: 1.35rem; }
 .prose p { margin: 0.95rem 0; line-height: 1.78; }
+.prose code::before,
+.prose code::after { content: none; }
 .prose code:not(pre code) { background: #eef2ff; padding: 0.18rem 0.45rem; border-radius: 6px; font-family: 'Fira Code', monospace; font-size: 0.89em; color: #be123c; }
 .prose pre { background: #1a2338; border-radius: 10px; padding: 1rem; overflow-x: auto; margin: 1rem 0; box-shadow: 0 8px 22px rgba(15, 23, 42, 0.18); }
 .prose blockquote { border-left: 4px solid #cbd5e1; padding-left: 1rem; font-style: italic; color: #64748b; margin: 1rem 0; background: #f8fafc; border-radius: 0 8px 8px 0; }
