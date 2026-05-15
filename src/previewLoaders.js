@@ -74,7 +74,11 @@ export async function applyKatexToPreview(preview, normalizedSource) {
             { left: '\\(', right: '\\)', display: false },
             { left: '\\[', right: '\\]', display: true }
         ],
-        throwOnError: false
+        throwOnError: false,
+        // GitHub's markdown parser applies CommonMark backslash escaping before
+        // passing math to KaTeX: \\X → \X for ASCII punctuation. Mirror that here
+        // so documents with \\_  render the same as they do on GitHub.
+        preProcess: (math) => math.replace(/\\\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/g, '\\$1')
     });
 }
 
