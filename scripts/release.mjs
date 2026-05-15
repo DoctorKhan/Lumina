@@ -130,12 +130,33 @@ export function isMainModule() {
   return process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 }
 
+export function checkTauriSync() {
+  const cargoLock = fs.readFileSync(path.resolve(rootDir, "src-tauri/Cargo.lock"), "utf8");
+  const rustMatch = cargoLock.match(/^name = "tauri"\nversion = "(\d+)\.(\d+)\.\d+"/m);
+  if (!rustMatch) throw new Error("Could not find tauri version in src-tauri/Cargo.lock");
+  const rustMajorMinor = `${rustMatch[1]}.${rustMatch[2]}`;
+
+  const pnpmLock = fs.readFileSync(path.resolve(rootDir, "pnpm-lock.yaml"), "utf8");
+  const npmMatch = pnpmLock.match(/'@tauri-apps\/api@(\d+)\.(\d+)\.\d+':/);
+  if (!npmMatch) throw new Error("Could not find @tauri-apps/api version in pnpm-lock.yaml");
+  const npmMajorMinor = `${npmMatch[1]}.${npmMatch[2]}`;
+
+  if (rustMajorMinor !== npmMajorMinor) {
+    throw new Error(
+      `Tauri version mismatch: Rust crate=${rustMajorMinor}.x vs npm @tauri-apps/api=${npmMajorMinor}.x\n` +
+      `Update @tauri-apps/api in package.json to "~${rustMajorMinor}.0" and run pnpm install.`,
+    );
+  }
+}
+
 if (isMainModule()) {
 try {
   ensureCommand("git", "Install git: https://git-scm.com/");
   ensureCommand("node", "Install Node.js: https://nodejs.org/");
   ensureCommand("cargo", "Install Rust toolchain: https://rustup.rs/");
   ensureCommand("gh", "Install GitHub CLI: https://cli.github.com/");
+
+  checkTauriSync();
 
   const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { capture: true }).trim();
   if (branch === "HEAD") {
