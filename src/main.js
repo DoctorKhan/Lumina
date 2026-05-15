@@ -35,6 +35,7 @@ import {
         const editor = document.getElementById('editor');
         const preview = document.getElementById('preview');
         const charCount = document.getElementById('char-count');
+const fixLatexBtn = document.getElementById('fix-latex-btn');
         const fileInput = document.getElementById('file-input');
         const filenameDisplay = document.getElementById('filename-display');
 const appVersionBadge = document.getElementById('app-version-badge');
@@ -108,6 +109,8 @@ let claudeWorkspaceFilePath = null;
         let currentFilePath = null;
         let currentFileMtime = 0;
         let fileWatcherTimer = null;
+        let fileWatcherConsecutiveErrors = 0;
+        const fileWatcherMaxErrors = 4;
         const fileWatcherIntervalMs = 2000;
         const lastOpenedFilePathKey = 'lumina:last-opened-file-path';
 const recentFilePathsKey = 'lumina:recent-file-paths';
@@ -353,6 +356,7 @@ function stopFileWatcher() {
 
 function startFileWatcher(path, mtime) {
     stopFileWatcher();
+    fileWatcherConsecutiveErrors = 0;
     fileWatcherTimer = setInterval(async () => {
         if (!currentFilePath) {
             stopFileWatcher();
@@ -363,6 +367,7 @@ function startFileWatcher(path, mtime) {
                 path: currentFilePath,
                 knownModifiedMs: currentFileMtime
             });
+            fileWatcherConsecutiveErrors = 0;
             if (changed) {
                 currentFileMtime = changed.modifiedMs;
                 editor.value = changed.content;
@@ -370,8 +375,12 @@ function startFileWatcher(path, mtime) {
                 void updatePreview();
             }
         } catch (_) {
-            // file may have been deleted or moved; stop watching
-            stopFileWatcher();
+            // Transient errors (e.g. mid-write by Claude) are ignored; persistent
+            // errors (file deleted/moved) stop the watcher after several attempts.
+            fileWatcherConsecutiveErrors++;
+            if (fileWatcherConsecutiveErrors >= fileWatcherMaxErrors) {
+                stopFileWatcher();
+            }
         }
     }, fileWatcherIntervalMs);
 }
@@ -548,6 +557,7 @@ async function openRecentFile(recentIndex = null) {
                     content: editor.value
                 });
                 currentFilePath = file.path;
+                currentFileMtime = file.modifiedMs ?? currentFileMtime;
                 filenameDisplay.textContent = `Editing: ${file.path}`;
                 filenameDisplay.title = file.path;
                 setUpdateStatus('Saved.');
@@ -1343,10 +1353,11 @@ async function replaceSelectionFromClipboard() {
                 claudeTerminal.write(accessMessage);
                 setUpdateStatus(`Claude may ask macOS for access to ${directory}.`);
                 claudeTerminal.write(`Saving and opening Claude in the file directory:\r\n${currentFilePath}\r\n`);
-                await invoke('write_document', {
+                const savedFile = await invoke('write_document', {
                     path: currentFilePath,
                     content: editor.value
                 });
+                currentFileMtime = savedFile.modifiedMs ?? currentFileMtime;
             } else {
                 claudeTerminal.write('No saved file path is open; starting Claude in the current terminal directory.\r\n');
             }
@@ -1548,6 +1559,21 @@ claudeApplyMenuBtn.addEventListener('click', (event) => {
 });
 claudePullFileBtn.addEventListener('click', pullClaudeWorkspaceFile);
 claudeReplaceSelectionBtn.addEventListener('click', replaceSelectionFromClipboard);
+fixLatexBtn.addEventListener('click', () => {
+    const fixed = normalizeEscapedLatexDelimiters(normalizeMathBlocks(editor.value));
+    if (fixed === editor.value) {
+        setUpdateStatus('No LaTeX formatting changes needed.');
+        return;
+    }
+    const selStart = editor.selectionStart;
+    const selEnd = editor.selectionEnd;
+    pushEditorHistory();
+    editor.value = fixed;
+    editor.selectionStart = selStart;
+    editor.selectionEnd = selEnd;
+    schedulePreviewUpdate();
+    setUpdateStatus('LaTeX delimiters normalized.');
+});
         closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
         closeClaudeBtn.addEventListener('click', () => toggleClaude(false));
 document.addEventListener('click', (event) => {
