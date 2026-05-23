@@ -996,12 +996,35 @@ body > header {
 }
 
 .install-progress-pct {
+    margin-left: auto;
     font-size: 0.8rem;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
     color: #7dd3fc;
     text-shadow: 0 0 20px rgba(14, 165, 233, 0.35);
+}
+
+.install-progress-dismiss {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.2rem;
+    height: 1.2rem;
+    padding: 0;
+    border: none;
+    border-radius: 0.3rem;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.install-progress-dismiss:hover {
+    color: #e2e8f0;
+    background: rgba(148, 163, 184, 0.16);
 }
 
 .install-progress-track {
