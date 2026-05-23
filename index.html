@@ -50,7 +50,7 @@
                         <p id="install-progress-detail" class="install-progress-detail" title=""></p>
                     </div>
                 </div>
-                <span id="update-status" class="max-w-80 truncate text-xs text-slate-500" title="">Not checked</span>
+                <span id="update-status" class="update-status-line text-xs text-slate-500" title="">Not checked</span>
             </div>
             <div class="h-6 w-px shrink-0 bg-slate-800" aria-hidden="true"></div>
             <div class="flex items-center gap-1 shrink-0" aria-label="Pane controls">
@@ -69,10 +69,48 @@
     <main class="editor-container flex w-full">
         <div id="workspace-panes" class="workspace-panes flex min-w-0">
             <div class="editor-pane flex-1 flex flex-col min-w-0">
-                <div class="editor-meta-bar h-10 bg-slate-800/85 flex items-center gap-4 px-4 text-xs font-medium uppercase tracking-wider text-slate-400 justify-between border-b border-slate-700/70">
-                    <span id="filename-display" class="min-w-0 flex-1 truncate">Editor (Markdown + LaTeX)</span>
+                <div class="editor-meta-bar bg-slate-800/85 flex flex-col border-b border-slate-700/70">
+                    <div class="editor-meta-bar-row h-10 flex items-center gap-3 px-4 text-xs font-medium uppercase tracking-wider text-slate-400 justify-between">
+                    <div class="filename-display-wrap min-w-0 flex-1">
+                        <div id="filename-path-view" class="filename-path-view">
+                            <button type="button" id="filename-display" class="filename-display-btn" title="Click to open another file by path">
+                                <span class="filename-marquee-track">
+                                    <span id="filename-display-text" class="filename-display-text">Editor (Markdown + LaTeX)</span>
+                                </span>
+                            </button>
+                            <button type="button" id="filename-copy-btn" class="filename-copy-btn hidden" title="Copy full path" aria-label="Copy full path">⎘</button>
+                        </div>
+                        <div id="filename-path-editor" class="filename-path-editor hidden">
+                            <input id="filename-path-input" class="filename-path-input" type="text" spellcheck="false" autocomplete="off" aria-label="File path" />
+                            <button type="button" id="filename-path-open-btn" class="filename-path-action-btn">Open</button>
+                            <button type="button" id="filename-path-cancel-btn" class="filename-path-action-btn">Cancel</button>
+                        </div>
+                        <ul id="filename-path-suggestions" class="filename-path-suggestions hidden" role="listbox" aria-label="Path suggestions"></ul>
+                    </div>
                     <button id="fix-latex-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors" title="Normalize LaTeX delimiters in source (converts \[…\] and \(…\) to $$ and $)">Fix LaTeX</button>
-                    <span id="char-count" class="shrink-0 whitespace-nowrap text-right">0 chars</span>
+                    <span id="char-count" class="shrink-0 whitespace-nowrap text-right normal-case tracking-normal">0 chars</span>
+                    </div>
+                    <div id="filename-path-toast" class="filename-path-toast hidden" role="status" aria-live="polite"></div>
+                </div>
+                <div id="find-replace-bar" class="find-replace-bar hidden" role="search" aria-label="Find and replace">
+                    <div class="find-replace-row">
+                        <label class="find-replace-label" for="find-input">Find</label>
+                        <input id="find-input" type="search" class="find-replace-input" placeholder="Find…" autocomplete="off" spellcheck="false" />
+                        <span id="find-match-status" class="find-match-status" aria-live="polite"></span>
+                        <div class="find-replace-actions">
+                            <button id="find-prev-btn" type="button" class="find-replace-btn" title="Previous match (⌘⇧G)">↑</button>
+                            <button id="find-next-btn" type="button" class="find-replace-btn" title="Next match (⌘G)">↓</button>
+                        </div>
+                    </div>
+                    <div id="find-replace-replace-row" class="find-replace-row hidden">
+                        <label class="find-replace-label" for="replace-input">Replace</label>
+                        <input id="replace-input" type="text" class="find-replace-input" placeholder="Replace…" autocomplete="off" spellcheck="false" />
+                        <div class="find-replace-actions">
+                            <button id="replace-btn" type="button" class="find-replace-btn find-replace-btn-primary" title="Replace (Enter)">Replace</button>
+                            <button id="replace-all-btn" type="button" class="find-replace-btn" title="Replace all">All</button>
+                        </div>
+                    </div>
+                    <button id="find-replace-close-btn" type="button" class="find-replace-close-btn" title="Close (Esc)" aria-label="Close find and replace">×</button>
                 </div>
                 <textarea id="editor" class="flex-1 p-6 leading-relaxed" spellcheck="false" placeholder="Start typing your masterpiece..."></textarea>
             </div>
@@ -114,6 +152,8 @@
                         <div id="claude-workspace-status" class="truncate text-[11px] font-normal normal-case tracking-normal text-violet-200/45" title="">No file attached</div>
                     </div>
                     <div class="flex items-center gap-1.5">
+                        <button id="claude-develop-lumina-btn" class="claude-action-button hidden" title="Edit Lumina's own source code with Claude" aria-pressed="false">Lumina src</button>
+                        <button id="claude-rebuild-lumina-btn" class="claude-action-button claude-action-primary hidden" title="Rebuild Lumina from the source checkout and reinstall">Rebuild &amp; Install</button>
                         <button id="claude-send-context-btn" class="claude-action-button claude-action-primary" title="Send file, cursor, and selected text context to Claude">Send Context</button>
                         <button id="claude-presets-btn" class="claude-action-button" title="Choose a preset Claude prompt">Prompt...</button>
                         <div class="relative">

@@ -36,8 +36,27 @@ import {
         const preview = document.getElementById('preview');
         const charCount = document.getElementById('char-count');
 const fixLatexBtn = document.getElementById('fix-latex-btn');
+const findReplaceBar = document.getElementById('find-replace-bar');
+const findReplaceReplaceRow = document.getElementById('find-replace-replace-row');
+const findInput = document.getElementById('find-input');
+const replaceInput = document.getElementById('replace-input');
+const findMatchStatus = document.getElementById('find-match-status');
+const findNextBtn = document.getElementById('find-next-btn');
+const findPrevBtn = document.getElementById('find-prev-btn');
+const replaceBtn = document.getElementById('replace-btn');
+const replaceAllBtn = document.getElementById('replace-all-btn');
+const findReplaceCloseBtn = document.getElementById('find-replace-close-btn');
         const fileInput = document.getElementById('file-input');
         const filenameDisplay = document.getElementById('filename-display');
+const filenameDisplayText = document.getElementById('filename-display-text');
+const filenameCopyBtn = document.getElementById('filename-copy-btn');
+const filenamePathView = document.getElementById('filename-path-view');
+const filenamePathEditor = document.getElementById('filename-path-editor');
+const filenamePathInput = document.getElementById('filename-path-input');
+const filenamePathOpenBtn = document.getElementById('filename-path-open-btn');
+const filenamePathCancelBtn = document.getElementById('filename-path-cancel-btn');
+const filenamePathSuggestions = document.getElementById('filename-path-suggestions');
+const filenamePathToast = document.getElementById('filename-path-toast');
 const appVersionBadge = document.getElementById('app-version-badge');
 const installUpdateBadge = document.getElementById('install-update-badge');
         const updateStatus = document.getElementById('update-status');
@@ -50,6 +69,8 @@ const claudeApplyMenuBtn = document.getElementById('claude-apply-menu-btn');
 const claudeApplyMenu = document.getElementById('claude-apply-menu');
 const claudePullFileBtn = document.getElementById('claude-pull-file-btn');
 const claudeReplaceSelectionBtn = document.getElementById('claude-replace-selection-btn');
+const claudeDevelopLuminaBtn = document.getElementById('claude-develop-lumina-btn');
+const claudeRebuildLuminaBtn = document.getElementById('claude-rebuild-lumina-btn');
         const closeTerminalBtn = document.getElementById('close-terminal-btn');
         const closeClaudeBtn = document.getElementById('close-claude-btn');
         const terminalPane = document.getElementById('terminal-pane');
@@ -103,6 +124,8 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let claudeLastFitCols = 0;
         let claudeLastFitRows = 0;
 let claudeWorkspaceFilePath = null;
+        let luminaSourceDir = null;
+        let developLuminaMode = false;
         let latestReleaseTag = null;
         let updateCheckInProgress = false;
         let currentCheckoutInstallCommand = null;
@@ -212,9 +235,278 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             charCount.textContent = `${rawValue.length} chars • ${wordCount} words`;
         }
 
-        function setEditorContent(content, label) {
+        let homeDirectory = null;
+        let filenamePathToastTimer = null;
+        let filenamePathNavigatorOpen = false;
+        let filenamePathSuggestionsList = [];
+        let filenamePathSuggestionIndex = -1;
+        let filenamePathCompletionTimer = null;
+
+        async function getHomeDirectory() {
+            if (homeDirectory) return homeDirectory;
+            try {
+                homeDirectory = await invoke('home_dir_path');
+            } catch (_) {
+                homeDirectory = '';
+            }
+            return homeDirectory;
+        }
+
+        function resolveFilenamePath(label, fullPath = '') {
+            if (fullPath) return fullPath;
+            if (label.startsWith('Editing: ')) return label.slice('Editing: '.length);
+            if (label.startsWith('Opening: ')) return label.slice('Opening: '.length);
+            return '';
+        }
+
+        function formatPathForDisplay(path) {
+            if (!path) return '';
+            if (homeDirectory && path.startsWith(homeDirectory)) {
+                return `~${path.slice(homeDirectory.length)}`;
+            }
+            return path;
+        }
+
+        function refreshFilenameMarquee() {
+            const track = filenameDisplay.querySelector('.filename-marquee-track');
+            if (!track || !filenameDisplayText) return;
+
+            filenameDisplayText.classList.remove('is-overflowing');
+            filenameDisplayText.style.removeProperty('--filename-marquee-shift');
+
+            const overflow = filenameDisplayText.scrollWidth - track.clientWidth;
+            if (overflow > 4) {
+                filenameDisplayText.classList.add('is-overflowing');
+                filenameDisplayText.style.setProperty('--filename-marquee-shift', `-${overflow}px`);
+            }
+        }
+
+        function showFilenamePathToast(message) {
+            if (!message) return;
+            filenamePathToast.textContent = message;
+            filenamePathToast.classList.remove('hidden');
+            clearTimeout(filenamePathToastTimer);
+            filenamePathToastTimer = setTimeout(() => {
+                filenamePathToast.classList.add('hidden');
+            }, 5000);
+        }
+
+        function setFilenameLabel(label, fullPath = '') {
+            const path = resolveFilenamePath(label, fullPath);
+            void getHomeDirectory().then(() => {
+                if (path) {
+                    filenameDisplayText.textContent = formatPathForDisplay(path);
+                    filenameDisplay.dataset.fullPath = path;
+                    filenameDisplay.title = `${path}\n\nClick to open another file · ⎘ copies path`;
+                    filenameCopyBtn.classList.remove('hidden');
+                } else {
+                    filenameDisplayText.textContent = label;
+                    delete filenameDisplay.dataset.fullPath;
+                    filenameDisplay.title = label || '';
+                    filenameCopyBtn.classList.add('hidden');
+                }
+                requestAnimationFrame(refreshFilenameMarquee);
+            });
+        }
+
+        async function copyFilenamePath() {
+            const path = filenameDisplay.dataset.fullPath;
+            if (!path) return;
+
+            try {
+                await navigator.clipboard.writeText(path);
+                showFilenamePathToast(`Copied: ${path}`);
+                setUpdateStatus('Path copied to clipboard.');
+            } catch {
+                showFilenamePathToast(path);
+                setUpdateStatus('Unable to copy path to clipboard.');
+            }
+        }
+
+        function hideFilenamePathSuggestions() {
+            filenamePathSuggestions.classList.add('hidden');
+            filenamePathSuggestions.innerHTML = '';
+            filenamePathSuggestionsList = [];
+            filenamePathSuggestionIndex = -1;
+        }
+
+        function renderFilenamePathSuggestions(paths) {
+            filenamePathSuggestionsList = paths;
+            filenamePathSuggestionIndex = paths.length ? 0 : -1;
+            filenamePathSuggestions.innerHTML = paths
+                .map(
+                    (path, index) =>
+                        `<li role="option" data-index="${index}" class="${index === 0 ? 'is-active' : ''}" title="${path}">${formatPathForDisplay(path)}</li>`
+                )
+                .join('');
+            filenamePathSuggestions.classList.toggle('hidden', paths.length === 0);
+        }
+
+        async function refreshFilenamePathSuggestions() {
+            const query = filenamePathInput.value.trim();
+            const recentMatches = readRecentFilePaths().filter(
+                (path) => !query || path.toLowerCase().includes(query.toLowerCase())
+            );
+
+            let directoryMatches = [];
+            if (query) {
+                try {
+                    directoryMatches = await invoke('complete_file_path', { query, limit: 20 });
+                } catch (_) {
+                    directoryMatches = [];
+                }
+            }
+
+            const merged = [...new Set([...directoryMatches, ...recentMatches])].slice(0, 20);
+            renderFilenamePathSuggestions(merged);
+        }
+
+        function scheduleFilenamePathSuggestions() {
+            clearTimeout(filenamePathCompletionTimer);
+            filenamePathCompletionTimer = setTimeout(() => {
+                void refreshFilenamePathSuggestions();
+            }, 120);
+        }
+
+        function closeFilenamePathNavigator({ restoreFocus = true } = {}) {
+            filenamePathNavigatorOpen = false;
+            filenamePathEditor.classList.add('hidden');
+            filenamePathView.classList.remove('hidden');
+            hideFilenamePathSuggestions();
+            if (restoreFocus) {
+                editor.focus();
+            }
+        }
+
+        function openFilenamePathNavigator() {
+            const path = filenameDisplay.dataset.fullPath || '';
+            if (!path) {
+                void openFileWithDialog();
+                return;
+            }
+
+            filenamePathNavigatorOpen = true;
+            filenamePathView.classList.add('hidden');
+            filenamePathEditor.classList.remove('hidden');
+            filenamePathInput.value = formatPathForDisplay(path);
+            hideFilenamePathSuggestions();
+            requestAnimationFrame(() => {
+                filenamePathInput.focus();
+                filenamePathInput.select();
+                void refreshFilenamePathSuggestions();
+            });
+        }
+
+        async function submitFilenamePathNavigator() {
+            const raw = filenamePathInput.value.trim();
+            if (!raw) return;
+
+            closeFilenamePathNavigator({ restoreFocus: false });
+            try {
+                await openFilePath(raw);
+            } catch (error) {
+                setUpdateStatus(`Unable to open ${raw}: ${error?.message || error}`);
+                editor.focus();
+            }
+        }
+
+        function highlightFilenamePathSuggestion(index) {
+            const path = filenamePathSuggestionsList[index];
+            if (!path) return;
+            filenamePathSuggestionIndex = index;
+            filenamePathInput.value = formatPathForDisplay(path);
+            [...filenamePathSuggestions.querySelectorAll('[data-index]')].forEach((item) => {
+                item.classList.toggle('is-active', Number(item.dataset.index) === index);
+            });
+        }
+
+        function applyFilenamePathSuggestion(index) {
+            highlightFilenamePathSuggestion(index);
+            hideFilenamePathSuggestions();
+            filenamePathInput.focus();
+        }
+
+        filenameDisplay.addEventListener('click', (event) => {
+            event.preventDefault();
+            openFilenamePathNavigator();
+        });
+
+        filenameCopyBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            void copyFilenamePath();
+        });
+
+        filenamePathOpenBtn.addEventListener('click', () => {
+            void submitFilenamePathNavigator();
+        });
+
+        filenamePathCancelBtn.addEventListener('click', () => {
+            closeFilenamePathNavigator();
+        });
+
+        filenamePathInput.addEventListener('input', scheduleFilenamePathSuggestions);
+
+        filenamePathInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                closeFilenamePathNavigator();
+                return;
+            }
+
+            if (event.key === 'Tab' && filenamePathSuggestionsList.length) {
+                event.preventDefault();
+                const nextIndex =
+                    (filenamePathSuggestionIndex + 1 + filenamePathSuggestionsList.length) %
+                    filenamePathSuggestionsList.length;
+                highlightFilenamePathSuggestion(nextIndex);
+                return;
+            }
+
+            if (event.key === 'ArrowDown' && filenamePathSuggestionsList.length) {
+                event.preventDefault();
+                const nextIndex = Math.min(
+                    filenamePathSuggestionsList.length - 1,
+                    Math.max(0, filenamePathSuggestionIndex + 1)
+                );
+                highlightFilenamePathSuggestion(nextIndex);
+                return;
+            }
+
+            if (event.key === 'ArrowUp' && filenamePathSuggestionsList.length) {
+                event.preventDefault();
+                const nextIndex = Math.max(0, filenamePathSuggestionIndex - 1);
+                highlightFilenamePathSuggestion(nextIndex);
+                return;
+            }
+
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                if (
+                    filenamePathSuggestionIndex >= 0 &&
+                    filenamePathSuggestionsList[filenamePathSuggestionIndex]
+                ) {
+                    filenamePathInput.value = formatPathForDisplay(
+                        filenamePathSuggestionsList[filenamePathSuggestionIndex]
+                    );
+                }
+                void submitFilenamePathNavigator();
+            }
+        });
+
+        filenamePathSuggestions.addEventListener('mousedown', (event) => {
+            const item = event.target.closest('[data-index]');
+            if (!item) return;
+            event.preventDefault();
+            applyFilenamePathSuggestion(Number(item.dataset.index));
+        });
+
+        window.addEventListener('resize', () => {
+            requestAnimationFrame(refreshFilenameMarquee);
+        });
+
+        function setEditorContent(content, label, fullPath = '') {
             editor.value = content;
-            filenameDisplay.textContent = label;
+            setFilenameLabel(label, fullPath);
             charCount.textContent = `${content.length} chars`;
             resetEditorHistory();
             schedulePreviewUpdate();
@@ -223,6 +515,7 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
         function loadExampleGuide() {
             currentFilePath = null;
             setEditorContent(exampleMarkdown, 'Example Guide (Lumina Help)');
+            delete filenameDisplay.dataset.fullPath;
             filenameDisplay.title = 'Bundled Lumina example guide';
             setUpdateStatus('Loaded the Lumina example guide.');
             editor.focus();
@@ -233,8 +526,7 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             currentFileMtime = 0;
             stopFileWatcher();
             editor.value = '';
-            filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
-            filenameDisplay.title = '';
+            setFilenameLabel('Editor (Markdown + LaTeX)');
             resetEditorHistory();
             updateEditorMetrics();
             schedulePreviewUpdate();
@@ -378,13 +670,11 @@ function startFileWatcher(path, mtime) {
 }
 
 async function openFilePath(path) {
-    filenameDisplay.textContent = `Opening: ${path}`;
-    filenameDisplay.title = path;
+    setFilenameLabel(`Opening: ${path}`, path);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const file = await invoke('open_file_path', { path });
     currentFileMtime = file.modifiedMs ?? 0;
-    setEditorContent(file.content, `Editing: ${file.path}`);
-    filenameDisplay.title = file.path;
+    setEditorContent(file.content, `Editing: ${file.path}`, file.path);
     rememberOpenedPath(file.path);
     startFileWatcher(file.path, currentFileMtime);
     editor.focus();
@@ -425,8 +715,7 @@ async function openLastOpenedFile() {
         return true;
     } catch (error) {
         forgetOpenedPath(path);
-        filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
-        filenameDisplay.title = '';
+        setFilenameLabel('Editor (Markdown + LaTeX)');
         setUpdateStatus(`Unable to reopen ${basename(path)}: ${error?.message || error}`);
         return false;
     }
@@ -459,8 +748,7 @@ async function openRecentFile(recentIndex = null) {
         await openFilePath(path);
     } catch (error) {
         forgetOpenedPath(path);
-        filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
-        filenameDisplay.title = '';
+        setFilenameLabel('Editor (Markdown + LaTeX)');
         setUpdateStatus(`Unable to open ${basename(path)}: ${error?.message || error}`);
     }
 }
@@ -480,8 +768,7 @@ async function openRecentFile(recentIndex = null) {
 
         await openFilePath(selectedPath);
             } catch (error) {
-                filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
-                filenameDisplay.title = '';
+                setFilenameLabel('Editor (Markdown + LaTeX)');
                 setUpdateStatus(`Open failed: ${error?.message || error}`);
                 fileInput.click();
             }
@@ -520,6 +807,40 @@ async function openRecentFile(recentIndex = null) {
             await highlightCodeBlocksIn(preview);
             await renderMermaidInPreview(preview);
             await applyKatexToPreview(preview, normalizedValue);
+            syncPreviewScrollToEditor();
+        }
+
+        function getEditorFirstVisibleLine() {
+            const style = getComputedStyle(editor);
+            const lineHeight = parseFloat(style.lineHeight);
+            if (!Number.isFinite(lineHeight) || lineHeight <= 0) return 0;
+            return Math.max(0, Math.floor(editor.scrollTop / lineHeight));
+        }
+
+        function syncPreviewScrollToEditor() {
+            const blocks = [...preview.children];
+            if (!blocks.length) {
+                const editorRange = editor.scrollHeight - editor.clientHeight;
+                const scrollPercentage = editorRange > 0 ? editor.scrollTop / editorRange : 0;
+                const previewRange = Math.max(0, preview.scrollHeight - preview.clientHeight);
+                preview.scrollTop = scrollPercentage * previewRange;
+                return;
+            }
+
+            const sourceLineCount = Math.max(1, editor.value.split('\n').length);
+            const firstLine = getEditorFirstVisibleLine();
+            const lineRatio =
+                sourceLineCount > 1 ? Math.min(1, firstLine / (sourceLineCount - 1)) : 0;
+            const blockIndex = Math.min(
+                blocks.length - 1,
+                Math.max(0, Math.round(lineRatio * (blocks.length - 1)))
+            );
+            const target = blocks[blockIndex];
+            const targetTop =
+                target.getBoundingClientRect().top -
+                preview.getBoundingClientRect().top +
+                preview.scrollTop;
+            preview.scrollTop = Math.max(0, targetTop - 12);
         }
 
         async function updatePreview() {
@@ -550,8 +871,7 @@ async function openRecentFile(recentIndex = null) {
                 });
                 currentFilePath = file.path;
                 currentFileMtime = file.modifiedMs ?? currentFileMtime;
-                filenameDisplay.textContent = `Editing: ${file.path}`;
-                filenameDisplay.title = file.path;
+                setFilenameLabel(`Editing: ${file.path}`, file.path);
                 setUpdateStatus('Saved.');
             } catch (error) {
                 setUpdateStatus(`Save failed: ${error?.message || error}`);
@@ -571,8 +891,7 @@ async function openRecentFile(recentIndex = null) {
                 if (!path) return;
                 const file = await invoke('write_document', { path, content: editor.value });
                 currentFilePath = file.path;
-                filenameDisplay.textContent = `Editing: ${file.path}`;
-                filenameDisplay.title = file.path;
+                setFilenameLabel(`Editing: ${file.path}`, file.path);
                 rememberOpenedPath(file.path);
                 setUpdateStatus('Saved.');
             } catch (error) {
@@ -1021,17 +1340,14 @@ async function checkForUpdate({ background = false } = {}) {
                 if (!cleanPath) return;
 
                 try {
-                    filenameDisplay.textContent = `Opening: ${cleanPath}`;
-                    filenameDisplay.title = cleanPath;
+                    setFilenameLabel(`Opening: ${cleanPath}`, cleanPath);
                     await new Promise((resolve) => setTimeout(resolve, 0));
                     const file = await invoke('open_file_path', { path: cleanPath });
-                    setEditorContent(file.content, `Editing: ${file.path}`);
-                    filenameDisplay.title = file.path;
+                    setEditorContent(file.content, `Editing: ${file.path}`, file.path);
                     rememberOpenedPath(file.path);
                     editor.focus();
                 } catch (error) {
-                    filenameDisplay.textContent = 'Editor (Markdown + LaTeX)';
-                    filenameDisplay.title = '';
+                    setFilenameLabel('Editor (Markdown + LaTeX)');
                     terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
                     scheduleTerminalScrollToBottom();
                 }
@@ -1339,7 +1655,15 @@ async function replaceSelectionFromClipboard() {
 
             claudeFitAddon.fit();
             scheduleClaudeScrollToBottom();
-            if (currentFilePath) {
+            const spawnArgs = {
+                cols: claudeTerminal.cols,
+                rows: claudeTerminal.rows
+            };
+            if (developLuminaMode && luminaSourceDir) {
+                claudeTerminal.write(`Editing Lumina source. Claude is opening:\r\n${luminaSourceDir}\r\nAsk Claude to make changes, then use the Rebuild & Install button when ready.\r\n`);
+                setUpdateStatus(`Claude is editing Lumina source at ${luminaSourceDir}.`);
+                spawnArgs.cwd = luminaSourceDir;
+            } else if (currentFilePath) {
                 const directory = currentFileDirectory();
                 const accessMessage = `Claude will open this file's folder so it can read and edit the current document:\r\n${directory}\r\nIf macOS asks for folder access, it is for this Claude editing session.\r\n`;
                 claudeTerminal.write(accessMessage);
@@ -1350,25 +1674,104 @@ async function replaceSelectionFromClipboard() {
                     content: editor.value
                 });
                 currentFileMtime = savedFile.modifiedMs ?? currentFileMtime;
+                spawnArgs.filePath = currentFilePath;
+                spawnArgs.cwd = currentFileDirectory();
             } else {
                 claudeTerminal.write('No saved file path is open; starting Claude in the current terminal directory.\r\n');
             }
             scheduleClaudeScrollToBottom();
-            const workspaceInfo = await invoke('claude_spawn', {
-                cols: claudeTerminal.cols,
-                rows: claudeTerminal.rows,
-                filePath: currentFilePath,
-                cwd: currentFileDirectory()
-            });
-            claudeWorkspaceFilePath = workspaceInfo?.filePath || currentFilePath;
-            claudeWorkspaceStatus.textContent = claudeWorkspaceFilePath
-            ? `Editing ${basename(claudeWorkspaceFilePath)}`
-            : 'Using terminal directory';
-        claudeWorkspaceStatus.title = claudeWorkspaceFilePath || 'Claude is using the current terminal directory';
+            const workspaceInfo = await invoke('claude_spawn', spawnArgs);
+            if (developLuminaMode && luminaSourceDir) {
+                claudeWorkspaceFilePath = null;
+                claudeWorkspaceStatus.textContent = `Editing Lumina source · ${basename(luminaSourceDir)}`;
+                claudeWorkspaceStatus.title = luminaSourceDir;
+            } else {
+                claudeWorkspaceFilePath = workspaceInfo?.filePath || currentFilePath;
+                claudeWorkspaceStatus.textContent = claudeWorkspaceFilePath
+                    ? `Editing ${basename(claudeWorkspaceFilePath)}`
+                    : 'Using terminal directory';
+                claudeWorkspaceStatus.title = claudeWorkspaceFilePath || 'Claude is using the current terminal directory';
+            }
             claudeStarted = true;
             claudeStatus.textContent = 'Running';
             resizeClaude();
             setTimeout(resizeClaude, 80);
+        }
+
+        async function loadLuminaSourceDir() {
+            try {
+                const info = await invoke('source_dir_info');
+                if (info?.available && info.path) {
+                    luminaSourceDir = info.path;
+                } else {
+                    luminaSourceDir = null;
+                }
+            } catch (_) {
+                luminaSourceDir = null;
+            }
+            updateDevelopLuminaUi();
+        }
+
+        function updateDevelopLuminaUi() {
+            const hasSource = Boolean(luminaSourceDir);
+            claudeDevelopLuminaBtn.classList.toggle('hidden', !hasSource);
+            claudeRebuildLuminaBtn.classList.toggle('hidden', !hasSource || !developLuminaMode);
+            claudeDevelopLuminaBtn.setAttribute('aria-pressed', String(developLuminaMode));
+            claudeDevelopLuminaBtn.classList.toggle('claude-action-primary', developLuminaMode);
+            claudeDevelopLuminaBtn.title = developLuminaMode
+                ? 'Stop editing Lumina source (next Claude session goes back to the open document)'
+                : `Edit Lumina source code with Claude (${luminaSourceDir || 'no source detected'})`;
+        }
+
+        async function toggleDevelopLuminaMode() {
+            if (!luminaSourceDir) {
+                setUpdateStatus('No Lumina source checkout found.');
+                return;
+            }
+            const turningOn = !developLuminaMode;
+            if (claudeStarted) {
+                const message = turningOn
+                    ? `Restart Claude in the Lumina source directory?\n\n${luminaSourceDir}\n\nThis will end the current Claude session.`
+                    : 'End the Lumina source Claude session and return to editing the open document?';
+                if (!window.confirm(message)) return;
+                try {
+                    await invoke('claude_kill');
+                } catch (_) {
+                    // best effort
+                }
+                claudeOutputUnlisten?.();
+                claudeOutputUnlisten = null;
+                claudeStarted = false;
+                if (claudeTerminal) {
+                    claudeTerminal.dispose();
+                    claudeTerminal = null;
+                    claudeFitAddon = null;
+                }
+                claudeElement.innerHTML = '';
+            }
+            developLuminaMode = turningOn;
+            updateDevelopLuminaUi();
+            if (!claudeVisible) {
+                toggleClaude(true);
+            } else {
+                await ensureClaude();
+            }
+        }
+
+        async function rebuildLumina() {
+            if (!currentCheckoutInstallCommand) {
+                setUpdateStatus('No installable Lumina checkout was detected.');
+                return;
+            }
+            const confirmed = window.confirm(
+                `Rebuild Lumina from source and reinstall?\n\n${luminaSourceDir || ''}\n\nThe app will rebuild (may take several minutes) and relaunch.`
+            );
+            if (!confirmed) return;
+            await runCommandInTerminal(
+                currentCheckoutInstallCommand,
+                'Rebuilding Lumina from the source checkout...',
+                { trackInstallProgress: true }
+            );
         }
 
         function setPaneToggleState(button, active, activeClasses) {
@@ -1487,6 +1890,12 @@ async function replaceSelectionFromClipboard() {
                 case 'lumina_redo':
                     redoEditor();
                     break;
+                case 'lumina_find':
+                    openFindBar({ replace: false });
+                    break;
+                case 'lumina_find_replace':
+                    openFindBar({ replace: true });
+                    break;
                 case 'lumina_copy_html':
                     copyToClipboard();
                     break;
@@ -1551,6 +1960,8 @@ claudeApplyMenuBtn.addEventListener('click', (event) => {
 });
 claudePullFileBtn.addEventListener('click', pullClaudeWorkspaceFile);
 claudeReplaceSelectionBtn.addEventListener('click', replaceSelectionFromClipboard);
+claudeDevelopLuminaBtn.addEventListener('click', () => { void toggleDevelopLuminaMode(); });
+claudeRebuildLuminaBtn.addEventListener('click', () => { void rebuildLumina(); });
 fixLatexBtn.addEventListener('click', () => {
     const fixed = normalizeEscapedLatexDelimiters(normalizeMathBlocks(editor.value));
     if (fixed === editor.value) {
@@ -1630,8 +2041,7 @@ document.addEventListener('click', (event) => {
             reader.onload = (event) => {
                 currentFilePath = null;
                 editor.value = event.target.result;
-                filenameDisplay.textContent = `Editing: ${file.name}`;
-                filenameDisplay.title = '';
+                setFilenameLabel(`Editing: ${file.name}`);
                 resetEditorHistory();
                 void updatePreview();
             };
@@ -1728,6 +2138,312 @@ document.addEventListener('click', (event) => {
             schedulePreviewUpdate();
         }
 
+        let findBarVisible = false;
+        let findBarShowsReplace = false;
+        let findMatchIndex = -1;
+        let suppressFindInputHandler = false;
+
+        function findNeedle() {
+            return findInput.value;
+        }
+
+        function collectFindMatches(needle = findNeedle(), haystack = editor.value) {
+            if (!needle) return [];
+
+            const lowerHaystack = haystack.toLowerCase();
+            const lowerNeedle = needle.toLowerCase();
+            const matches = [];
+            let index = 0;
+
+            while (index <= lowerHaystack.length - lowerNeedle.length) {
+                const found = lowerHaystack.indexOf(lowerNeedle, index);
+                if (found === -1) break;
+                matches.push({ start: found, end: found + needle.length });
+                index = found + Math.max(1, needle.length);
+            }
+
+            return matches;
+        }
+
+        function activeFindMatchIndex(matches) {
+            if (!matches.length) return -1;
+
+            const selectionStart = editor.selectionStart;
+            const selectionEnd = editor.selectionEnd;
+            const exact = matches.findIndex(
+                (match) => match.start === selectionStart && match.end === selectionEnd
+            );
+            if (exact !== -1) return exact;
+
+            if (findMatchIndex >= 0 && findMatchIndex < matches.length) {
+                const tracked = matches[findMatchIndex];
+                if (
+                    tracked.start === selectionStart &&
+                    (selectionEnd === tracked.end || selectionStart === selectionEnd)
+                ) {
+                    return findMatchIndex;
+                }
+            }
+
+            const atOrAfter = matches.findIndex((match) => match.start >= selectionStart);
+            return atOrAfter === -1 ? matches.length - 1 : atOrAfter;
+        }
+
+        function updateFindMatchStatus() {
+            const needle = findNeedle();
+            if (!needle) {
+                findMatchStatus.textContent = '';
+                findMatchStatus.classList.remove('is-error');
+                return;
+            }
+
+            const matches = collectFindMatches(needle);
+            if (!matches.length) {
+                findMatchStatus.textContent = 'No results';
+                findMatchStatus.classList.add('is-error');
+                return;
+            }
+
+            const index = activeFindMatchIndex(matches);
+            findMatchIndex = index;
+            findMatchStatus.textContent = `${index + 1} of ${matches.length}`;
+            findMatchStatus.classList.remove('is-error');
+        }
+
+        function shouldFocusEditorForFind() {
+            if (!findBarVisible) return true;
+            return !isFindReplaceTarget(document.activeElement);
+        }
+
+        function scrollEditorMatchIntoView(start) {
+            const style = getComputedStyle(editor);
+            const lineHeight = parseFloat(style.lineHeight);
+            if (!Number.isFinite(lineHeight) || lineHeight <= 0) return;
+
+            const line = editor.value.slice(0, start).split('\n').length - 1;
+            const paddingTop = parseFloat(style.paddingTop) || 0;
+            const targetTop = line * lineHeight + paddingTop - editor.clientHeight * 0.25;
+            const maxScroll = Math.max(0, editor.scrollHeight - editor.clientHeight);
+            editor.scrollTop = Math.min(maxScroll, Math.max(0, targetTop));
+        }
+
+        function selectFindMatch(match, { focusEditor } = {}) {
+            if (!match) return false;
+
+            const focus = focusEditor ?? shouldFocusEditorForFind();
+            editor.setSelectionRange(match.start, match.end);
+            if (focus) {
+                editor.focus();
+            } else {
+                scrollEditorMatchIntoView(match.start);
+            }
+
+            findMatchIndex = collectFindMatches().findIndex(
+                (candidate) => candidate.start === match.start && candidate.end === match.end
+            );
+            updateFindMatchStatus();
+            return true;
+        }
+
+        function findNextMatch({ wrap = true, focusEditor } = {}) {
+            const needle = findNeedle();
+            if (!needle) {
+                updateFindMatchStatus();
+                return false;
+            }
+
+            const matches = collectFindMatches(needle);
+            if (!matches.length) {
+                findMatchIndex = -1;
+                updateFindMatchStatus();
+                return false;
+            }
+
+            const currentIndex = activeFindMatchIndex(matches);
+            const nextIndex = currentIndex + 1;
+            const targetIndex = nextIndex < matches.length ? nextIndex : wrap ? 0 : currentIndex;
+            return selectFindMatch(matches[targetIndex], { focusEditor });
+        }
+
+        function findPreviousMatch({ wrap = true, focusEditor } = {}) {
+            const needle = findNeedle();
+            if (!needle) {
+                updateFindMatchStatus();
+                return false;
+            }
+
+            const matches = collectFindMatches(needle);
+            if (!matches.length) {
+                findMatchIndex = -1;
+                updateFindMatchStatus();
+                return false;
+            }
+
+            const currentIndex = activeFindMatchIndex(matches);
+            const previousIndex = currentIndex - 1;
+            const targetIndex =
+                previousIndex >= 0 ? previousIndex : wrap ? matches.length - 1 : currentIndex;
+            return selectFindMatch(matches[targetIndex], { focusEditor });
+        }
+
+        function openFindBar({ replace = false, seedFromSelection = true } = {}) {
+            findBarVisible = true;
+            findBarShowsReplace = replace;
+            findReplaceBar.classList.remove('hidden');
+            findReplaceReplaceRow.classList.toggle('hidden', !replace);
+
+            if (seedFromSelection && editor.selectionStart !== editor.selectionEnd) {
+                suppressFindInputHandler = true;
+                findInput.value = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+                suppressFindInputHandler = false;
+            }
+
+            const focusTarget = replace && findBarShowsReplace ? replaceInput : findInput;
+            requestAnimationFrame(() => {
+                focusTarget.focus();
+                focusTarget.select();
+                if (findInput.value) {
+                    findNextMatch({ wrap: false, focusEditor: false });
+                } else {
+                    updateFindMatchStatus();
+                }
+            });
+        }
+
+        function closeFindBar() {
+            if (!findBarVisible) return;
+            findBarVisible = false;
+            findBarShowsReplace = false;
+            findMatchIndex = -1;
+            findReplaceBar.classList.add('hidden');
+            findReplaceReplaceRow.classList.add('hidden');
+            findMatchStatus.textContent = '';
+            findMatchStatus.classList.remove('is-error');
+            editor.focus();
+        }
+
+        function selectionMatchesFind() {
+            const needle = findNeedle();
+            if (!needle || editor.selectionStart === editor.selectionEnd) return false;
+            return (
+                editor.value
+                    .slice(editor.selectionStart, editor.selectionEnd)
+                    .toLowerCase() === needle.toLowerCase()
+            );
+        }
+
+        function replaceCurrentMatch() {
+            const needle = findNeedle();
+            const replacement = replaceInput.value;
+            if (!needle) return false;
+
+            const keepFindFocus = shouldFocusEditorForFind() === false;
+            if (!selectionMatchesFind() && !findNextMatch({ wrap: false, focusEditor: !keepFindFocus })) {
+                return false;
+            }
+
+            const start = editor.selectionStart;
+            const end = editor.selectionEnd;
+            replaceEditorRange(start, end, replacement, start + replacement.length);
+            findMatchIndex = -1;
+            findNextMatch({ focusEditor: !keepFindFocus });
+            if (keepFindFocus) {
+                (document.activeElement === replaceInput ? replaceInput : findInput).focus();
+            }
+            return true;
+        }
+
+        function replaceAllMatches() {
+            const needle = findNeedle();
+            const replacement = replaceInput.value;
+            if (!needle) return 0;
+
+            const value = editor.value;
+            const lowerValue = value.toLowerCase();
+            const lowerNeedle = needle.toLowerCase();
+            let rebuilt = '';
+            let lastIndex = 0;
+            let count = 0;
+            let index = 0;
+
+            while (index <= lowerValue.length - lowerNeedle.length) {
+                const found = lowerValue.indexOf(lowerNeedle, index);
+                if (found === -1) break;
+                rebuilt += value.slice(lastIndex, found) + replacement;
+                lastIndex = found + needle.length;
+                index = lastIndex;
+                count += 1;
+            }
+
+            if (!count) {
+                updateFindMatchStatus();
+                return 0;
+            }
+
+            rebuilt += value.slice(lastIndex);
+            pushEditorHistory();
+            editor.value = rebuilt;
+            editor.setSelectionRange(0, 0);
+            pushEditorHistory();
+            schedulePreviewUpdate();
+            findMatchIndex = -1;
+            updateFindMatchStatus();
+            return count;
+        }
+
+        function isFindReplaceTarget(target) {
+            return (
+                target === findInput ||
+                target === replaceInput ||
+                target === findNextBtn ||
+                target === findPrevBtn ||
+                target === replaceBtn ||
+                target === replaceAllBtn ||
+                target === findReplaceCloseBtn
+            );
+        }
+
+        findInput.addEventListener('input', () => {
+            if (suppressFindInputHandler) return;
+            findMatchIndex = -1;
+            if (findInput.value) {
+                findNextMatch({ wrap: false, focusEditor: false });
+            } else {
+                updateFindMatchStatus();
+            }
+        });
+        replaceInput.addEventListener('input', updateFindMatchStatus);
+        findNextBtn.addEventListener('click', () => findNextMatch());
+        findPrevBtn.addEventListener('click', () => findPreviousMatch());
+        replaceBtn.addEventListener('click', () => replaceCurrentMatch());
+        replaceAllBtn.addEventListener('click', () => {
+            const count = replaceAllMatches();
+            setUpdateStatus(count ? `Replaced ${count} matches.` : 'No matches to replace.');
+        });
+        findReplaceCloseBtn.addEventListener('click', closeFindBar);
+
+        findReplaceBar.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                closeFindBar();
+                return;
+            }
+
+            if (event.key !== 'Enter') return;
+
+            event.preventDefault();
+            if (event.target === replaceInput || (findBarShowsReplace && event.shiftKey)) {
+                replaceCurrentMatch();
+                return;
+            }
+
+            if (event.shiftKey) {
+                findPreviousMatch();
+            } else {
+                findNextMatch();
+            }
+        });
+
         function handleListEnter(event) {
             if (editor.selectionStart !== editor.selectionEnd) return false;
 
@@ -1799,7 +2515,41 @@ document.addEventListener('click', (event) => {
         });
 
         document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape' && findBarVisible) {
+                event.preventDefault();
+                closeFindBar();
+                return;
+            }
+
             const mod = event.metaKey || event.ctrlKey;
+            const editorFocused =
+                document.activeElement === editor || isFindReplaceTarget(document.activeElement);
+
+            if (mod && event.key.toLowerCase() === 'f') {
+                event.preventDefault();
+                openFindBar({
+                    replace: event.altKey,
+                    seedFromSelection: document.activeElement === editor
+                });
+                return;
+            }
+
+            if (mod && event.key.toLowerCase() === 'h' && editorFocused) {
+                event.preventDefault();
+                openFindBar({ replace: true, seedFromSelection: document.activeElement === editor });
+                return;
+            }
+
+            if (mod && event.key.toLowerCase() === 'g' && editorFocused && findBarVisible) {
+                event.preventDefault();
+                if (event.shiftKey) {
+                    findPreviousMatch();
+                } else {
+                    findNextMatch();
+                }
+                return;
+            }
+
             if (!mod) return;
 
             if (event.key.toLowerCase() === 'z' && document.activeElement === editor) {
@@ -1850,10 +2600,7 @@ document.addEventListener('click', (event) => {
                 if (editorScrollSyncFrame != null) return;
                 editorScrollSyncFrame = requestAnimationFrame(() => {
                     editorScrollSyncFrame = null;
-                    const editorRange = editor.scrollHeight - editor.clientHeight;
-                    const scrollPercentage = editorRange > 0 ? editor.scrollTop / editorRange : 0;
-                    const previewRange = Math.max(0, preview.scrollHeight - preview.clientHeight);
-                    preview.scrollTop = scrollPercentage * previewRange;
+                    syncPreviewScrollToEditor();
                 });
             },
             { passive: true }
@@ -1897,9 +2644,8 @@ document.addEventListener('click', (event) => {
 
                 const text = await response.text();
                 const displayName = fileDisplayName || fileParam;
-                setEditorContent(text, `Editing: ${displayName}`);
+                setEditorContent(text, `Editing: ${displayName}`, displayName);
                 currentFilePath = null;
-                filenameDisplay.title = displayName;
             } catch (_) {
                 void updatePreview();
             }
@@ -1909,6 +2655,7 @@ document.addEventListener('click', (event) => {
             await refreshAppVersionBadge();
             await loadInitialContent();
             await loadCurrentCheckoutInstaller();
+            await loadLuminaSourceDir();
             if ('requestIdleCallback' in window) {
                 window.requestIdleCallback(
                     () => {

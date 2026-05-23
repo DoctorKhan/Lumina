@@ -69,10 +69,319 @@ body > header {
     overflow: hidden;
 }
 
-#filename-display {
+.find-replace-bar {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.45rem 2rem 0.45rem 0.65rem;
+    background: #1a2438;
+    border-bottom: 1px solid #2a3a55;
+}
+
+.find-replace-bar.hidden {
+    display: none;
+}
+
+.find-replace-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+}
+
+.find-replace-row.hidden {
+    display: none;
+}
+
+.find-replace-label {
+    flex: 0 0 3.25rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #94a3b8;
+}
+
+.find-replace-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: 1px solid #334155;
+    border-radius: 0.35rem;
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.82rem;
+    padding: 0.28rem 0.5rem;
+    outline: none;
+}
+
+.find-replace-input:focus {
+    border-color: #6366f1;
+    box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.35);
+}
+
+.find-match-status {
+    flex: 0 0 auto;
+    min-width: 3.5rem;
+    font-size: 0.72rem;
+    color: #94a3b8;
+    text-align: right;
+    white-space: nowrap;
+}
+
+.find-match-status.is-error {
+    color: #f87171;
+}
+
+.find-replace-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex-shrink: 0;
+}
+
+.find-replace-btn {
+    border: 1px solid #334155;
+    border-radius: 0.35rem;
+    background: #1e293b;
+    color: #cbd5e1;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1;
+    padding: 0.3rem 0.45rem;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.find-replace-btn:hover {
+    background: #334155;
+    color: #f8fafc;
+}
+
+.find-replace-btn-primary {
+    background: #4338ca;
+    border-color: #4f46e5;
+    color: #eef2ff;
+}
+
+.find-replace-btn-primary:hover {
+    background: #4f46e5;
+}
+
+.find-replace-close-btn {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.35rem;
+    width: 1.35rem;
+    height: 1.35rem;
+    border: none;
+    border-radius: 0.3rem;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.find-replace-close-btn:hover {
+    background: #334155;
+    color: #f8fafc;
+}
+
+.update-status-line {
+    display: block;
+    max-width: min(42rem, calc(100vw - 8rem));
+    overflow-x: auto;
+    white-space: nowrap;
+    scrollbar-width: thin;
+    scrollbar-color: #475569 transparent;
+}
+
+.filename-display-wrap {
+    position: relative;
+    overflow: visible;
+    min-width: 0;
+}
+
+.filename-path-view {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.filename-display-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    color: #cbd5e1;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.78rem;
+    font-weight: 500;
+    letter-spacing: normal;
+    text-transform: none;
+    text-align: left;
+    padding: 0.1rem 0;
+    cursor: pointer;
+}
+
+.filename-display-btn:hover {
+    color: #f8fafc;
+}
+
+.filename-marquee-track {
+    display: block;
+    overflow: hidden;
+    max-width: 100%;
+}
+
+.filename-display-text {
+    display: inline-block;
+    white-space: nowrap;
+    padding-right: 0.25rem;
+}
+
+.filename-display-text.is-overflowing {
+    animation: filename-marquee 10s linear infinite;
+}
+
+.filename-display-btn:hover .filename-display-text.is-overflowing,
+.filename-display-btn:focus-visible .filename-display-text.is-overflowing {
+    animation-play-state: running;
+}
+
+.filename-display-text.is-overflowing {
+    animation-play-state: paused;
+}
+
+@keyframes filename-marquee {
+    0%,
+    12% {
+        transform: translateX(0);
+    }
+    88%,
+    100% {
+        transform: translateX(var(--filename-marquee-shift, 0));
+    }
+}
+
+.filename-copy-btn {
+    flex: 0 0 auto;
+    border: 1px solid #334155;
+    border-radius: 0.3rem;
+    background: #1e293b;
+    color: #94a3b8;
+    font-size: 0.78rem;
+    line-height: 1;
+    padding: 0.2rem 0.35rem;
+    cursor: pointer;
+}
+
+.filename-copy-btn:hover {
+    color: #f8fafc;
+    border-color: #475569;
+}
+
+.filename-path-editor {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.filename-path-editor.hidden {
+    display: none;
+}
+
+.filename-path-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: 1px solid #4f46e5;
+    border-radius: 0.35rem;
+    background: #0f172a;
+    color: #e2e8f0;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.78rem;
+    padding: 0.25rem 0.45rem;
+    outline: none;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+.filename-path-action-btn {
+    flex: 0 0 auto;
+    border: 1px solid #334155;
+    border-radius: 0.35rem;
+    background: #1e293b;
+    color: #cbd5e1;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.28rem 0.5rem;
+    cursor: pointer;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+.filename-path-action-btn:hover {
+    background: #334155;
+    color: #f8fafc;
+}
+
+.filename-path-suggestions {
+    position: absolute;
+    top: calc(100% + 0.2rem);
+    left: 0;
+    right: 0;
+    z-index: 30;
+    margin: 0;
+    padding: 0.25rem 0;
+    list-style: none;
+    max-height: 11rem;
+    overflow-y: auto;
+    border: 1px solid #334155;
+    border-radius: 0.4rem;
+    background: #0f172a;
+    box-shadow: 0 12px 28px rgba(2, 6, 23, 0.45);
+}
+
+.filename-path-suggestions.hidden {
+    display: none;
+}
+
+.filename-path-suggestions li {
+    padding: 0.3rem 0.55rem;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.74rem;
+    color: #cbd5e1;
+    cursor: pointer;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
+}
+
+.filename-path-suggestions li:hover,
+.filename-path-suggestions li.is-active {
+    background: #1e293b;
+    color: #f8fafc;
+}
+
+.filename-path-toast {
+    padding: 0.35rem 1rem 0.45rem;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.72rem;
+    line-height: 1.35;
+    color: #a5b4fc;
+    background: #111827;
+    border-top: 1px solid #312e81;
+    word-break: break-all;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+.filename-path-toast.hidden {
+    display: none;
 }
 
 #char-count {
@@ -205,6 +514,12 @@ body > header {
 .claude-action-primary {
     color: #ffffff;
     background: rgba(124, 58, 237, 0.8);
+}
+
+.claude-action-button[aria-pressed="true"] {
+    color: #ffffff;
+    background: rgba(217, 70, 239, 0.78);
+    box-shadow: 0 0 0 1px rgba(232, 121, 249, 0.55) inset;
 }
 
 .claude-icon-button {
