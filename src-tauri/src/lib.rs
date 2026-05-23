@@ -1167,11 +1167,16 @@ fn run_git(
     let mut command = Command::new("git");
     command
         .current_dir(repo)
+        // Never let git block waiting for interactive credential or prompt input;
+        // fail fast instead so the UI does not hang.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if stdin.is_some() {
         command.stdin(Stdio::piped());
+    } else {
+        command.stdin(Stdio::null());
     }
     let mut child = command
         .spawn()
@@ -1238,7 +1243,7 @@ fn parse_porcelain_path(rest: &str) -> String {
 }
 
 #[tauri::command]
-fn git_status(
+async fn git_status(
     state: State<'_, TerminalState>,
     cwd: Option<String>,
 ) -> Result<GitStatusInfo, String> {
@@ -1313,7 +1318,7 @@ fn git_status(
 }
 
 #[tauri::command]
-fn git_diff(
+async fn git_diff(
     state: State<'_, TerminalState>,
     path: String,
     staged: bool,
@@ -1342,7 +1347,7 @@ fn git_diff(
 }
 
 #[tauri::command]
-fn git_stage(
+async fn git_stage(
     state: State<'_, TerminalState>,
     paths: Vec<String>,
     cwd: Option<String>,
@@ -1360,7 +1365,7 @@ fn git_stage(
 }
 
 #[tauri::command]
-fn git_unstage(
+async fn git_unstage(
     state: State<'_, TerminalState>,
     paths: Vec<String>,
     cwd: Option<String>,
@@ -1378,7 +1383,7 @@ fn git_unstage(
 }
 
 #[tauri::command]
-fn git_commit(
+async fn git_commit(
     state: State<'_, TerminalState>,
     message: String,
     cwd: Option<String>,
@@ -1392,17 +1397,81 @@ fn git_commit(
 }
 
 #[tauri::command]
-fn git_pull(state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
+async fn git_pull(state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
     let repo = resolve_git_root(&state, cwd.as_deref())?;
     let output = run_git(&repo, &["pull", "--ff-only"], None)?;
     ok_git_output(output)
 }
 
 #[tauri::command]
-fn git_push(state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
+async fn git_push(state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
     let repo = resolve_git_root(&state, cwd.as_deref())?;
     let output = run_git(&repo, &["push"], None)?;
     ok_git_output(output)
+}
+
+/// Cap diff text fed to Claude so the prompt stays a reasonable size.
+fn truncate_for_prompt(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_string();
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n…(diff truncated)…\n", &text[..end])
+}
+
+#[tauri::command]
+async fn git_generate_commit_message(
+    state: State<'_, TerminalState>,
+    cwd: Option<String>,
+) -> Result<String, String> {
+    let repo = resolve_git_root(&state, cwd.as_deref())?;
+
+    let staged = ok_git_output(run_git(&repo, &["diff", "--cached", "--no-color"], None)?)?;
+    if staged.trim().is_empty() {
+        return Err("Stage changes before generating a commit message.".to_string());
+    }
+    let recent = run_git(&repo, &["log", "-8", "--oneline"], None)
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default();
+
+    let mut prompt = String::new();
+    prompt.push_str("Write a git commit message for the following staged changes.\n");
+    prompt.push_str("Rules:\n");
+    prompt.push_str("- Return ONLY the commit message text, with no markdown fences or preamble.\n");
+    prompt.push_str("- First line must be <= 72 chars and in imperative mood.\n");
+    prompt.push_str("- Add a blank line then optional body bullets only when useful.\n");
+    prompt.push_str("- Focus on why the change exists. Do not invent changes absent from the diff.\n\n");
+    prompt.push_str("Recent commit style:\n");
+    prompt.push_str(&recent);
+    prompt.push_str("\nStaged diff:\n");
+    prompt.push_str(&truncate_for_prompt(&staged, 24_000));
+
+    let output = Command::new("claude")
+        .current_dir(&repo)
+        .args(["-p", &prompt])
+        .output()
+        .map_err(|error| {
+            format!(
+                "Unable to run claude: {error}. Install the Claude Code CLI to generate messages."
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("claude exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+    let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if message.is_empty() {
+        return Err("Claude returned an empty commit message.".to_string());
+    }
+    Ok(message)
 }
 
 #[tauri::command]
@@ -1477,7 +1546,8 @@ pub fn run() {
             git_unstage,
             git_commit,
             git_pull,
-            git_push
+            git_push,
+            git_generate_commit_message
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

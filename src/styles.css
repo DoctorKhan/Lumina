@@ -738,10 +738,17 @@ body > header {
     border-color: #3b82f6;
 }
 
-.git-commit-bar .git-action-button {
-    align-self: stretch;
+.git-commit-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 0 0 auto;
+}
+
+.git-commit-actions .git-action-button {
     padding-left: 12px;
     padding-right: 12px;
+    white-space: nowrap;
 }
 
 #terminal .xterm,
