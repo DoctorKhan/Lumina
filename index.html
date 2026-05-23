@@ -195,7 +195,10 @@
                 </div>
                 <div class="git-commit-bar shrink-0">
                     <textarea id="git-commit-message" class="git-commit-input" rows="2" placeholder="Commit message… (⌘↵ to commit)" spellcheck="false"></textarea>
-                    <button id="git-commit-btn" class="git-action-button git-action-primary" title="Commit staged changes">Commit</button>
+                    <div class="git-commit-actions">
+                        <button id="git-generate-btn" class="git-action-button" title="Draft a commit message from staged changes with Claude">✨ Generate</button>
+                        <button id="git-commit-btn" class="git-action-button git-action-primary" title="Commit staged changes">Commit</button>
+                    </div>
                 </div>
             </aside>
         </div>

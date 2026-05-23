@@ -97,6 +97,7 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         const gitDiff = document.getElementById('git-diff');
         const gitCommitMessage = document.getElementById('git-commit-message');
         const gitCommitBtn = document.getElementById('git-commit-btn');
+        const gitGenerateBtn = document.getElementById('git-generate-btn');
         const gitPullBtn = document.getElementById('git-pull-btn');
         const gitPushBtn = document.getElementById('git-push-btn');
         const gitRefreshBtn = document.getElementById('git-refresh-btn');
@@ -1886,6 +1887,26 @@ async function replaceSelectionFromClipboard() {
             return String(error?.message || error || 'Unknown error');
         }
 
+        let gitStagedCount = 0;
+        let autoCommitMessageTimer = null;
+        const autoCommitMessageDelayMs = 700;
+
+        // After staging, draft a commit message with Claude automatically — but only
+        // when the box is empty (never clobber what the user typed) and something is
+        // actually staged. Debounced so staging several files yields one message for
+        // the whole staged set rather than a draft per partial diff.
+        function scheduleAutoCommitMessage() {
+            if (autoCommitMessageTimer !== null) clearTimeout(autoCommitMessageTimer);
+            autoCommitMessageTimer = setTimeout(() => {
+                autoCommitMessageTimer = null;
+                if (!gitVisible) return;
+                if (gitStagedCount <= 0) return;
+                if (gitCommitMessage.value.trim()) return;
+                if (gitGenerateBtn.disabled) return; // a generation is already running
+                void generateCommitMessage();
+            }, autoCommitMessageDelayMs);
+        }
+
         function setGitMessage(text, isError = false) {
             if (!gitMessage) return;
             if (!text) {
@@ -1926,6 +1947,7 @@ async function replaceSelectionFromClipboard() {
         };
 
         function renderGitStatus(status) {
+            gitStagedCount = (status.staged && status.staged.length) || 0;
             gitBranch.textContent = status.branch || '';
             gitBranch.title = status.repoRoot || '';
             gitTracking.textContent = status.upstream
@@ -2019,6 +2041,7 @@ async function replaceSelectionFromClipboard() {
             try {
                 await invoke('git_stage', { paths, cwd: gitCwd() });
                 await refreshGitStatus();
+                scheduleAutoCommitMessage();
             } catch (error) {
                 setGitMessage(gitErrorText(error), true);
             }
@@ -2094,6 +2117,24 @@ async function replaceSelectionFromClipboard() {
         function hideGitDiff() {
             gitDiff.classList.add('hidden');
             gitDiff.innerHTML = '';
+        }
+
+        async function generateCommitMessage() {
+            gitGenerateBtn.disabled = true;
+            const previousLabel = gitGenerateBtn.textContent;
+            gitGenerateBtn.textContent = 'Generating…';
+            setGitMessage('Asking Claude to draft a commit message…');
+            try {
+                const message = await invoke('git_generate_commit_message', { cwd: gitCwd() });
+                gitCommitMessage.value = message;
+                gitCommitMessage.focus();
+                setGitMessage('');
+            } catch (error) {
+                setGitMessage(gitErrorText(error), true);
+            } finally {
+                gitGenerateBtn.disabled = false;
+                gitGenerateBtn.textContent = previousLabel;
+            }
         }
 
         async function commitStaged() {
@@ -2253,6 +2294,7 @@ installUpdateBadge.addEventListener('click', installDetectedUpdate);
         gitPullBtn.addEventListener('click', () => { void runGitSync('git_pull', 'Pulling…', 'Pulled.'); });
         gitPushBtn.addEventListener('click', () => { void runGitSync('git_push', 'Pushing…', 'Pushed.'); });
         gitCommitBtn.addEventListener('click', () => { void commitStaged(); });
+        gitGenerateBtn.addEventListener('click', () => { void generateCommitMessage(); });
         gitCommitMessage.addEventListener('keydown', (event) => {
             if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                 event.preventDefault();
