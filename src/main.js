@@ -84,6 +84,7 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         const installProgressFill = document.getElementById('install-progress-fill');
         const installProgressDetail = document.getElementById('install-progress-detail');
         const installProgressPercent = document.getElementById('install-progress-percent');
+        const installProgressDismiss = document.getElementById('install-progress-dismiss');
         const editorContainer = document.querySelector('.editor-container');
         const workspacePanes = document.getElementById('workspace-panes');
         const sidePane = document.getElementById('side-pane');
@@ -1064,10 +1065,17 @@ function hideInstallUpdateBadge() {
             const parts = installProgressLineBuffer.split(/\r\n|\n|\r/);
             installProgressLineBuffer = parts.pop() || '';
             for (const part of parts) {
-                const { changed, done } = processInstallProgressLine(installProgressState, part);
+                const { changed, done, failed } = processInstallProgressLine(installProgressState, part);
                 if (changed || done) {
                     refreshInstallProgressAnchor(installProgressAnchor, installProgressState);
                     syncInstallProgressView();
+                }
+                if (done && failed) {
+                    // Installer/build failed or was interrupted — close the card and
+                    // surface the error rather than relaunching into a stale build.
+                    endInstallProgressSession();
+                    setUpdateStatus('Install/rebuild failed — see the terminal for details.');
+                    return;
                 }
                 if (done) {
                     scheduleEndInstallAfterComplete();
@@ -2297,6 +2305,12 @@ async function replaceSelectionFromClipboard() {
         });
         syncAppMenu();
 installUpdateBadge.addEventListener('click', installDetectedUpdate);
+        installProgressDismiss?.addEventListener('click', () => {
+            // Universal escape hatch: stop tracking and hide the card. Covers cases the
+            // completion/failure markers don't (Ctrl-C, network hang, unrecognized output).
+            endInstallProgressSession();
+            setUpdateStatus('Dismissed install progress. The terminal command keeps running.');
+        });
         toggleSourceBtn.addEventListener('click', toggleSource);
         toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
         toggleClaudeBtn.addEventListener('click', () => toggleClaude());

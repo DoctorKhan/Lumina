@@ -68,7 +68,14 @@ export function processInstallProgressLine(state, line) {
     // install.sh: explicit completion when the last progress line is not 100% (e.g. macOS
     // build succeeded but the .app was not in the expected bundle path — estimates never hit 100%).
     if (t === 'LUMINA_INSTALL_COMPLETE') {
-        return { changed: true, done: true };
+        return { changed: true, done: true, failed: false };
+    }
+
+    // install.sh EXIT trap fires this on any non-zero exit (failed build, missing
+    // dependency, interrupted run). Lets the UI close the card with an error instead
+    // of hanging on "Preparing…" — the common case when a Rebuild & Install fails.
+    if (t === 'LUMINA_INSTALL_FAILED') {
+        return { changed: true, done: true, failed: true };
     }
 
     let changed = false;

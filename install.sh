@@ -617,6 +617,18 @@ emit_lumina_install_done_marker() {
   printf '%s\n' 'LUMINA_INSTALL_COMPLETE'
 }
 
+# On any non-zero exit (failed build, missing dependency, interrupted run) tell the
+# in-app progress card so it stops tracking instead of hanging on "Preparing…".
+# The success path emits LUMINA_INSTALL_COMPLETE then exits 0, so rc is 0 here.
+# Must stay in sync with processInstallProgressLine in src/installProgressParse.js
+lumina_install_exit_trap() {
+  local rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    printf '%s\n' 'LUMINA_INSTALL_FAILED'
+  fi
+}
+trap lumina_install_exit_trap EXIT
+
 require_command() {
   local cmd="$1"
   local help="$2"
