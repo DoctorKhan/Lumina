@@ -1440,6 +1440,16 @@ async function checkForUpdate({ background = false } = {}) {
             });
         }
 
+        // True when the viewport is scrolled to the bottom. xterm's `viewportY` is the
+        // top line of the current viewport and `baseY` is that value when fully scrolled
+        // down, so equal (or greater) means we're tailing the latest output. When the
+        // user has scrolled up to read, this returns false and we leave the view alone.
+        function isTermAtBottom(term) {
+            if (!term) return true;
+            const buffer = term.buffer.active;
+            return buffer.viewportY >= buffer.baseY;
+        }
+
         function applyTerminalFit() {
             if (!terminalVisible || !fitAddon || !terminal) return;
             fitAddon.fit();
@@ -1628,8 +1638,9 @@ async function replaceSelectionFromClipboard() {
             terminalOutputUnlisten = await listen('terminal-output', (event) => {
                 const payload = event.payload;
                 feedInstallProgressFromTerminal(payload);
+                const stick = isTermAtBottom(terminal);
                 terminal.write(payload);
-                scheduleTerminalScrollToBottom();
+                if (stick) scheduleTerminalScrollToBottom();
             });
 
             fitAddon.fit();
@@ -1667,8 +1678,9 @@ async function replaceSelectionFromClipboard() {
             claudeTerminal.write('Starting Claude...\r\n');
             scheduleClaudeScrollToBottom();
             claudeOutputUnlisten = await listen('claude-output', (event) => {
+                const stick = isTermAtBottom(claudeTerminal);
                 claudeTerminal.write(event.payload);
-                scheduleClaudeScrollToBottom();
+                if (stick) scheduleClaudeScrollToBottom();
             });
 
             claudeFitAddon.fit();
