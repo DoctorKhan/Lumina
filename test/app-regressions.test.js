@@ -107,15 +107,24 @@ test("app top chrome and pane layout are locked in app CSS, not only Tailwind", 
   assert.match(css, /\.workspace-panes[^}]*min-height:\s*0/);
 });
 
-test("editor metadata bar truncates long filenames without wrapping", () => {
+test("editor metadata bar shows full paths with marquee, toast, and path navigator", () => {
   const html = fs.readFileSync("index.html", "utf8");
   const css = fs.readFileSync("src/styles.css", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
 
-  assert.match(html, /class="editor-meta-bar[^"]*gap-4[^"]*"/);
-  assert.match(html, /id="filename-display" class="[^"]*min-w-0[^"]*flex-1[^"]*truncate[^"]*"/);
-  assert.match(html, /id="char-count" class="[^"]*shrink-0[^"]*whitespace-nowrap[^"]*"/);
-  assert.match(css, /#filename-display\s*\{[\s\S]*text-overflow:\s*ellipsis;[\s\S]*white-space:\s*nowrap;/);
-  assert.match(css, /#char-count\s*\{[\s\S]*white-space:\s*nowrap;/);
+  assert.match(html, /filename-display-wrap/);
+  assert.match(html, /id="filename-display-text"/);
+  assert.match(html, /id="filename-copy-btn"/);
+  assert.match(html, /id="filename-path-input"/);
+  assert.match(html, /id="filename-path-toast"/);
+  assert.match(css, /@keyframes filename-marquee/);
+  assert.match(css, /\.filename-path-toast\s*\{[\s\S]*word-break:\s*break-all;/);
+  assert.match(css, /\.filename-display-btn\s*\{[\s\S]*text-transform:\s*none;/);
+  assert.match(main, /function openFilenamePathNavigator/);
+  assert.match(main, /complete_file_path/);
+  assert.match(main, /showFilenamePathToast/);
+  assert.match(rust, /fn complete_file_path/);
 });
 
 test("terminal and Claude share a resizable right-side rail", () => {
@@ -138,6 +147,54 @@ test("terminal and Claude share a resizable right-side rail", () => {
   assert.match(main, /resizeTerminals\(\{ settle: false \}\)/);
   assert.match(main, /sidePaneResizer\?\.addEventListener/);
   assert.match(main, /\(workspacePanes \|\| editorContainer\)\.getBoundingClientRect\(\)/);
+});
+
+test("editor find and replace is wired with hotkeys and Edit menu items", () => {
+  const html = fs.readFileSync("index.html", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  assert.match(html, /id="find-replace-bar"/);
+  assert.match(html, /id="find-input"/);
+  assert.match(html, /id="replace-input"/);
+  assert.match(rust, /MENU_FIND/);
+  assert.match(rust, /MENU_FIND_REPLACE/);
+  assert.match(rust, /Find…/);
+  assert.match(rust, /Find and Replace…/);
+  assert.match(rust, /CmdOrCtrl\+F/);
+  assert.match(rust, /CmdOrCtrl\+Alt\+F/);
+  assert.match(main, /function openFindBar/);
+  assert.match(main, /function replaceAllMatches/);
+  assert.match(main, /case 'lumina_find':/);
+  assert.match(main, /case 'lumina_find_replace':/);
+  assert.match(main, /event\.key\.toLowerCase\(\) === 'f'/);
+  assert.match(main, /event\.key\.toLowerCase\(\) === 'g'/);
+  assert.match(main, /function shouldFocusEditorForFind/);
+  assert.match(main, /function syncPreviewScrollToEditor/);
+  assert.match(main, /focusEditor: false/);
+});
+
+test("develop-Lumina mode lets Claude edit the source checkout and rebuild from the UI", () => {
+  const html = fs.readFileSync("index.html", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  assert.match(html, /id="claude-develop-lumina-btn"/);
+  assert.match(html, /id="claude-rebuild-lumina-btn"/);
+
+  assert.match(rust, /fn source_dir_info/);
+  assert.match(rust, /fn find_lumina_source_dir/);
+  assert.match(rust, /fn looks_like_lumina_source/);
+  assert.match(rust, /"Documents\/Projects\/Lumina"/);
+  assert.doesNotMatch(rust, /Local checkout install is only shown in development builds/);
+
+  assert.match(main, /invoke\('source_dir_info'\)/);
+  assert.match(main, /function toggleDevelopLuminaMode/);
+  assert.match(main, /async function rebuildLumina/);
+  assert.match(main, /developLuminaMode/);
+  assert.match(main, /luminaSourceDir/);
+  assert.match(main, /claudeDevelopLuminaBtn\.addEventListener\('click'/);
+  assert.match(main, /claudeRebuildLuminaBtn\.addEventListener\('click'/);
 });
 
 test("example guide documents the app features that have regressed before", () => {

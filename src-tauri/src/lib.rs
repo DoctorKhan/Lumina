@@ -23,6 +23,8 @@ const MENU_SAVE: &str = "lumina_save";
 const MENU_SAVE_AS: &str = "lumina_save_as";
 const MENU_UNDO: &str = "lumina_undo";
 const MENU_REDO: &str = "lumina_redo";
+const MENU_FIND: &str = "lumina_find";
+const MENU_FIND_REPLACE: &str = "lumina_find_replace";
 const MENU_COPY_HTML: &str = "lumina_copy_html";
 const MENU_CHECK_UPDATES: &str = "lumina_check_updates";
 const MENU_INSTALL_UPDATE: &str = "lumina_install_update";
@@ -149,6 +151,51 @@ struct CheckoutInstallInfo {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct SourceDirInfo {
+    available: bool,
+    path: Option<String>,
+    label: String,
+}
+
+fn looks_like_lumina_source(dir: &Path) -> bool {
+    dir.join("run.sh").is_file()
+        && dir.join("src-tauri").join("Cargo.toml").is_file()
+        && dir.join("package.json").is_file()
+}
+
+fn find_lumina_source_dir() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if let Some(root) = manifest_dir.parent() {
+            if looks_like_lumina_source(root) {
+                if let Ok(canonical) = fs::canonicalize(root) {
+                    return Some(canonical);
+                }
+                return Some(root.to_path_buf());
+            }
+        }
+    }
+
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    for candidate in [
+        home.join("Documents/Projects/Lumina"),
+        home.join("Projects/Lumina"),
+        home.join("dev/Lumina"),
+        home.join("src/Lumina"),
+        home.join("code/Lumina"),
+    ] {
+        if looks_like_lumina_source(&candidate) {
+            if let Ok(canonical) = fs::canonicalize(&candidate) {
+                return Some(canonical);
+            }
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ClaudeWorkspaceInfo {
     workspace_path: String,
     file_path: String,
@@ -240,6 +287,13 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
     )?;
     let undo = menu_item(manager, MENU_UNDO, "Undo", Some("CmdOrCtrl+Z"))?;
     let redo = menu_item(manager, MENU_REDO, "Redo", Some("CmdOrCtrl+Shift+Z"))?;
+    let find = menu_item(manager, MENU_FIND, "Find…", Some("CmdOrCtrl+F"))?;
+    let find_replace = menu_item(
+        manager,
+        MENU_FIND_REPLACE,
+        "Find and Replace…",
+        Some("CmdOrCtrl+Alt+F"),
+    )?;
     let copy_html = menu_item(
         manager,
         MENU_COPY_HTML,
@@ -318,6 +372,9 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .item(&undo)
         .item(&redo)
         .separator()
+        .item(&find)
+        .item(&find_replace)
+        .separator()
         .cut()
         .copy()
         .paste()
@@ -365,6 +422,8 @@ fn is_lumina_menu_id(id: &str) -> bool {
                 | MENU_SAVE_AS
                 | MENU_UNDO
                 | MENU_REDO
+                | MENU_FIND
+                | MENU_FIND_REPLACE
                 | MENU_COPY_HTML
                 | MENU_CHECK_UPDATES
                 | MENU_INSTALL_UPDATE
@@ -805,6 +864,74 @@ fn strip_editor_line_column_suffix(s: &str) -> &str {
 }
 
 #[tauri::command]
+fn home_dir_path() -> Result<String, String> {
+    env::var_os("HOME")
+        .map(|home| home.to_string_lossy().to_string())
+        .ok_or_else(|| "HOME is not set.".to_string())
+}
+
+#[tauri::command]
+fn complete_file_path(
+    state: State<'_, TerminalState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<String>, String> {
+    let limit = limit.unwrap_or(25).min(50);
+    let cwd = state
+        .cwd
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?
+        .clone();
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let expanded = expand_user_path(query, cwd.as_ref());
+    let (dir, prefix) = if query.ends_with('/') {
+        (
+            if expanded.is_dir() {
+                expanded
+            } else {
+                expanded
+                    .parent()
+                    .map(|parent| parent.to_path_buf())
+                    .unwrap_or(expanded)
+            },
+            String::new(),
+        )
+    } else {
+        let prefix = expanded
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_string();
+        let parent = expanded
+            .parent()
+            .map(|parent| parent.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("/"));
+        (parent, prefix)
+    };
+
+    let mut matches = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() || !is_supported_document_path(&path) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if prefix.is_empty() || name.to_lowercase().starts_with(&prefix.to_lowercase()) {
+            matches.push(path.to_string_lossy().to_string());
+        }
+    }
+
+    matches.sort();
+    matches.truncate(limit);
+    Ok(matches)
+}
+
+#[tauri::command]
 fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<OpenedFile, String> {
     let path = path
         .trim()
@@ -893,31 +1020,13 @@ fn write_document(path: String, content: String) -> Result<OpenedFile, String> {
 
 #[tauri::command]
 fn current_checkout_install_info() -> CheckoutInstallInfo {
-    if !cfg!(debug_assertions) {
+    let Some(root_dir) = find_lumina_source_dir() else {
         return CheckoutInstallInfo {
             available: false,
             command: None,
-            label: "Local checkout install is only shown in development builds.".to_string(),
-        };
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let Some(root_dir) = manifest_dir.parent() else {
-        return CheckoutInstallInfo {
-            available: false,
-            command: None,
-            label: "Unable to resolve the current checkout path.".to_string(),
+            label: "No Lumina source checkout was found in the usual locations.".to_string(),
         };
     };
-    let run_script = root_dir.join("run.sh");
-
-    if !run_script.is_file() {
-        return CheckoutInstallInfo {
-            available: false,
-            command: None,
-            label: "Unable to find run.sh for this checkout.".to_string(),
-        };
-    }
 
     let root_dir = root_dir.to_string_lossy().to_string();
     CheckoutInstallInfo {
@@ -927,6 +1036,25 @@ fn current_checkout_install_info() -> CheckoutInstallInfo {
             shell_quote(&root_dir)
         )),
         label: format!("Install current checkout from {root_dir}"),
+    }
+}
+
+#[tauri::command]
+fn source_dir_info() -> SourceDirInfo {
+    match find_lumina_source_dir() {
+        Some(dir) => {
+            let path = dir.to_string_lossy().to_string();
+            SourceDirInfo {
+                available: true,
+                label: format!("Lumina source at {path}"),
+                path: Some(path),
+            }
+        }
+        None => SourceDirInfo {
+            available: false,
+            path: None,
+            label: "No Lumina source checkout found".to_string(),
+        },
     }
 }
 
@@ -1022,6 +1150,8 @@ pub fn run() {
             claude_write,
             claude_resize,
             claude_kill,
+            home_dir_path,
+            complete_file_path,
             open_file_path,
             save_file_path,
             write_document,
@@ -1029,7 +1159,8 @@ pub fn run() {
             drain_pending_open_paths,
             poll_file_for_changes,
             open_external_url,
-            current_checkout_install_info
+            current_checkout_install_info,
+            source_dir_info
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
