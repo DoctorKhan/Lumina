@@ -117,6 +117,7 @@ fn drain_pending_open_paths(state: State<'_, PendingOpenPaths>) -> Result<Vec<St
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct OpenedFile {
     path: String,
     name: String,
