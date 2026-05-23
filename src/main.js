@@ -906,8 +906,10 @@ async function openRecentFile(recentIndex = null) {
                 if (!path) return;
                 const file = await invoke('write_document', { path, content: editor.value });
                 currentFilePath = file.path;
+                currentFileMtime = file.modifiedMs ?? 0;
                 setFilenameLabel(`Editing: ${file.path}`, file.path);
                 rememberOpenedPath(file.path);
+                startFileWatcher(file.path, currentFileMtime);
                 setUpdateStatus('Saved.');
             } catch (error) {
                 setUpdateStatus(`Save failed: ${error?.message || error}`);
@@ -1691,6 +1693,9 @@ async function replaceSelectionFromClipboard() {
                 currentFileMtime = savedFile.modifiedMs ?? currentFileMtime;
                 spawnArgs.filePath = currentFilePath;
                 spawnArgs.cwd = currentFileDirectory();
+                // Ensure the watcher is live so Claude's edits flow back into the
+                // editor and preview, even if this file was created via Save As.
+                startFileWatcher(currentFilePath, currentFileMtime);
             } else {
                 claudeTerminal.write('No saved file path is open; starting Claude in the current terminal directory.\r\n');
             }
