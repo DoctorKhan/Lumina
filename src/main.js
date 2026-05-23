@@ -88,6 +88,19 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         const workspacePanes = document.getElementById('workspace-panes');
         const sidePane = document.getElementById('side-pane');
         const sidePaneResizer = document.getElementById('side-pane-resizer');
+        const toggleGitBtn = document.getElementById('toggle-git-btn');
+        const gitPane = document.getElementById('git-pane');
+        const gitBranch = document.getElementById('git-branch');
+        const gitTracking = document.getElementById('git-tracking');
+        const gitSections = document.getElementById('git-sections');
+        const gitMessage = document.getElementById('git-message');
+        const gitDiff = document.getElementById('git-diff');
+        const gitCommitMessage = document.getElementById('git-commit-message');
+        const gitCommitBtn = document.getElementById('git-commit-btn');
+        const gitPullBtn = document.getElementById('git-pull-btn');
+        const gitPushBtn = document.getElementById('git-push-btn');
+        const gitRefreshBtn = document.getElementById('git-refresh-btn');
+        const closeGitBtn = document.getElementById('close-git-btn');
         const editorPane = document.querySelector('.editor-pane');
         const previewPane = document.querySelector('.preview-pane');
         const paneResizer = document.getElementById('pane-resizer');
@@ -118,6 +131,7 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let claudeFitAddon = null;
         let claudeVisible = false;
         let claudeStarted = false;
+        let gitVisible = false;
         let claudeOutputUnlisten = null;
         let claudeResizeFrame = null;
         let claudeScrollBottomRaf = null;
@@ -873,6 +887,7 @@ async function openRecentFile(recentIndex = null) {
                 currentFileMtime = file.modifiedMs ?? currentFileMtime;
                 setFilenameLabel(`Editing: ${file.path}`, file.path);
                 setUpdateStatus('Saved.');
+                if (gitVisible) void refreshGitStatus();
             } catch (error) {
                 setUpdateStatus(`Save failed: ${error?.message || error}`);
             }
@@ -1787,21 +1802,25 @@ async function replaceSelectionFromClipboard() {
             setPaneToggleState(toggleSourceBtn, !sourceCollapsed, ['ring-1', 'ring-sky-500/40']);
             setPaneToggleState(toggleTerminalBtn, terminalVisible, ['ring-1', 'ring-sky-500/40']);
             setPaneToggleState(toggleClaudeBtn, claudeVisible, ['bg-violet-700', 'ring-1', 'ring-violet-400/50']);
+            setPaneToggleState(toggleGitBtn, gitVisible, ['ring-1', 'ring-emerald-500/40']);
             toggleSourceBtn.title = sourceCollapsed ? 'Show source pane' : 'Hide source pane';
             toggleTerminalBtn.title = terminalVisible ? 'Hide terminal' : 'Show terminal';
             toggleClaudeBtn.title = claudeVisible ? 'Hide Claude' : 'Show Claude';
+            toggleGitBtn.title = gitVisible ? 'Hide Git' : 'Show Git';
             syncAppMenu();
         }
 
         function syncSidePaneLayout() {
-            const sidePaneVisible = terminalVisible || claudeVisible;
+            const visibleCount =
+                (terminalVisible ? 1 : 0) + (claudeVisible ? 1 : 0) + (gitVisible ? 1 : 0);
+            const sidePaneVisible = visibleCount > 0;
             if (!sidePane) {
                 resizeTerminals();
                 return;
             }
             sidePane.classList.toggle('hidden', !sidePaneVisible);
             sidePaneResizer?.classList.toggle('hidden', !sidePaneVisible);
-            sidePane.classList.toggle('side-pane-split', terminalVisible && claudeVisible);
+            sidePane.classList.toggle('side-pane-split', visibleCount > 1);
             sidePane.style.flexBasis = sidePaneVisible ? `${sidePanePercent}%` : '';
             resizeTerminals();
         }
@@ -1841,6 +1860,278 @@ async function replaceSelectionFromClipboard() {
                     claudeTerminal?.write(`\r\nClaude failed to start: ${error}\r\n`);
                     scheduleClaudeScrollToBottom();
                 }
+            }
+        }
+
+        async function toggleGit(forceVisible) {
+            gitVisible = typeof forceVisible === 'boolean' ? forceVisible : !gitVisible;
+            gitPane.classList.toggle('hidden', !gitVisible);
+            syncSidePaneLayout();
+            syncPaneToggleButtons();
+            if (gitVisible) {
+                await refreshGitStatus();
+            }
+        }
+
+        function gitCwd() {
+            return currentFileDirectory() || undefined;
+        }
+
+        function gitErrorText(error) {
+            return String(error?.message || error || 'Unknown error');
+        }
+
+        function setGitMessage(text, isError = false) {
+            if (!gitMessage) return;
+            if (!text) {
+                gitMessage.classList.add('hidden');
+                gitMessage.textContent = '';
+                return;
+            }
+            gitMessage.textContent = text;
+            gitMessage.classList.remove('hidden');
+            gitMessage.classList.toggle('git-message-error', isError);
+        }
+
+        async function refreshGitStatus() {
+            setGitMessage('Loading…');
+            try {
+                const status = await invoke('git_status', { cwd: gitCwd() });
+                renderGitStatus(status);
+                setGitMessage('');
+            } catch (error) {
+                gitSections.innerHTML = '';
+                gitBranch.textContent = '';
+                gitBranch.title = '';
+                gitTracking.textContent = '';
+                hideGitDiff();
+                setGitMessage(gitErrorText(error), true);
+            }
+        }
+
+        const GIT_STATUS_LABELS = {
+            M: 'Modified',
+            A: 'Added',
+            D: 'Deleted',
+            R: 'Renamed',
+            C: 'Copied',
+            U: 'Unmerged',
+            T: 'Type changed',
+            '?': 'Untracked'
+        };
+
+        function renderGitStatus(status) {
+            gitBranch.textContent = status.branch || '';
+            gitBranch.title = status.repoRoot || '';
+            gitTracking.textContent = status.upstream
+                ? `↑${status.ahead} ↓${status.behind}`
+                : '';
+
+            gitSections.innerHTML = '';
+            if (status.clean) {
+                hideGitDiff();
+                const empty = document.createElement('div');
+                empty.className = 'git-empty';
+                empty.textContent = 'Working tree clean';
+                gitSections.appendChild(empty);
+                return;
+            }
+            if (status.staged.length) {
+                gitSections.appendChild(renderGitSection('Staged', status.staged, 'unstage'));
+            }
+            if (status.unstaged.length) {
+                gitSections.appendChild(renderGitSection('Changes', status.unstaged, 'stage'));
+            }
+            if (status.untracked.length) {
+                gitSections.appendChild(renderGitSection('Untracked', status.untracked, 'stage'));
+            }
+        }
+
+        function renderGitSection(title, files, action) {
+            const section = document.createElement('div');
+            section.className = 'git-section';
+
+            const head = document.createElement('div');
+            head.className = 'git-section-head';
+            const label = document.createElement('span');
+            label.textContent = `${title} (${files.length})`;
+            head.appendChild(label);
+
+            const allBtn = document.createElement('button');
+            allBtn.type = 'button';
+            allBtn.className = 'git-section-action';
+            allBtn.textContent = action === 'stage' ? 'Stage all' : 'Unstage all';
+            allBtn.addEventListener('click', () => {
+                const paths = files.map((file) => file.path);
+                if (action === 'stage') stagePaths(paths);
+                else unstagePaths(paths);
+            });
+            head.appendChild(allBtn);
+            section.appendChild(head);
+
+            for (const file of files) {
+                section.appendChild(renderGitRow(file, action));
+            }
+            return section;
+        }
+
+        function renderGitRow(file, action) {
+            const row = document.createElement('div');
+            row.className = 'git-row';
+
+            const code = file.status === '??' ? '?' : file.status;
+            const badge = document.createElement('span');
+            badge.className = 'git-badge';
+            badge.dataset.status = code;
+            badge.textContent = code;
+            badge.title = GIT_STATUS_LABELS[code] || file.status;
+            row.appendChild(badge);
+
+            const name = document.createElement('button');
+            name.type = 'button';
+            name.className = 'git-row-path';
+            name.textContent = file.path;
+            name.title = file.path;
+            name.addEventListener('click', () => showGitDiff(file));
+            row.appendChild(name);
+
+            const actionBtn = document.createElement('button');
+            actionBtn.type = 'button';
+            actionBtn.className = 'git-row-action';
+            actionBtn.textContent = action === 'stage' ? '+' : '−';
+            actionBtn.title = action === 'stage' ? 'Stage' : 'Unstage';
+            actionBtn.addEventListener('click', (event) => {
+                event.stopPropagation();
+                if (action === 'stage') stagePaths([file.path]);
+                else unstagePaths([file.path]);
+            });
+            row.appendChild(actionBtn);
+            return row;
+        }
+
+        async function stagePaths(paths) {
+            if (!paths.length) return;
+            try {
+                await invoke('git_stage', { paths, cwd: gitCwd() });
+                await refreshGitStatus();
+            } catch (error) {
+                setGitMessage(gitErrorText(error), true);
+            }
+        }
+
+        async function unstagePaths(paths) {
+            if (!paths.length) return;
+            try {
+                await invoke('git_unstage', { paths, cwd: gitCwd() });
+                await refreshGitStatus();
+            } catch (error) {
+                setGitMessage(gitErrorText(error), true);
+            }
+        }
+
+        async function showGitDiff(file) {
+            try {
+                const diff = await invoke('git_diff', {
+                    path: file.path,
+                    staged: !!file.staged,
+                    untracked: !!file.untracked,
+                    cwd: gitCwd()
+                });
+                renderGitDiff(file.path, diff);
+            } catch (error) {
+                setGitMessage(gitErrorText(error), true);
+            }
+        }
+
+        function renderGitDiff(path, diff) {
+            gitDiff.innerHTML = '';
+
+            const head = document.createElement('div');
+            head.className = 'git-diff-head';
+            const title = document.createElement('span');
+            title.textContent = path;
+            title.title = path;
+            head.appendChild(title);
+            const closeBtn = document.createElement('button');
+            closeBtn.type = 'button';
+            closeBtn.className = 'git-diff-close';
+            closeBtn.textContent = '×';
+            closeBtn.title = 'Close diff';
+            closeBtn.addEventListener('click', hideGitDiff);
+            head.appendChild(closeBtn);
+            gitDiff.appendChild(head);
+
+            const pre = document.createElement('pre');
+            pre.className = 'git-diff-body';
+            const lines = diff && diff.length ? diff.replace(/\n$/, '').split('\n') : ['(no changes)'];
+            for (const line of lines) {
+                const span = document.createElement('span');
+                span.className = 'git-diff-line';
+                const first = line.charAt(0);
+                if (line.startsWith('+++') || line.startsWith('---')) {
+                    span.classList.add('git-diff-meta');
+                } else if (line.startsWith('@@')) {
+                    span.classList.add('git-diff-hunk');
+                } else if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('new file') || line.startsWith('deleted file')) {
+                    span.classList.add('git-diff-meta');
+                } else if (first === '+') {
+                    span.classList.add('git-diff-add');
+                } else if (first === '-') {
+                    span.classList.add('git-diff-del');
+                }
+                span.textContent = line.length ? line : ' ';
+                pre.appendChild(span);
+            }
+            gitDiff.appendChild(pre);
+            gitDiff.classList.remove('hidden');
+        }
+
+        function hideGitDiff() {
+            gitDiff.classList.add('hidden');
+            gitDiff.innerHTML = '';
+        }
+
+        async function commitStaged() {
+            const message = gitCommitMessage.value.trim();
+            if (!message) {
+                setGitMessage('Enter a commit message first.', true);
+                gitCommitMessage.focus();
+                return;
+            }
+            gitCommitBtn.disabled = true;
+            try {
+                const output = await invoke('git_commit', { message, cwd: gitCwd() });
+                gitCommitMessage.value = '';
+                hideGitDiff();
+                await refreshGitStatus();
+                const summary = output.trim().split('\n').find((line) => line.trim());
+                setGitMessage(summary || 'Committed.');
+            } catch (error) {
+                setGitMessage(gitErrorText(error), true);
+            } finally {
+                gitCommitBtn.disabled = false;
+            }
+        }
+
+        async function runGitSync(command, busyLabel, doneLabel) {
+            setGitMessage(busyLabel);
+            gitPullBtn.disabled = true;
+            gitPushBtn.disabled = true;
+            try {
+                const output = await invoke(command, { cwd: gitCwd() });
+                await refreshGitStatus();
+                const summary = output
+                    .trim()
+                    .split('\n')
+                    .map((line) => line.trim())
+                    .filter(Boolean)
+                    .pop();
+                setGitMessage(summary || doneLabel);
+            } catch (error) {
+                setGitMessage(gitErrorText(error), true);
+            } finally {
+                gitPullBtn.disabled = false;
+                gitPushBtn.disabled = false;
             }
         }
 
@@ -1951,6 +2242,18 @@ installUpdateBadge.addEventListener('click', installDetectedUpdate);
         toggleSourceBtn.addEventListener('click', toggleSource);
         toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
         toggleClaudeBtn.addEventListener('click', () => toggleClaude());
+        toggleGitBtn.addEventListener('click', () => { void toggleGit(); });
+        closeGitBtn.addEventListener('click', () => { void toggleGit(false); });
+        gitRefreshBtn.addEventListener('click', () => { void refreshGitStatus(); });
+        gitPullBtn.addEventListener('click', () => { void runGitSync('git_pull', 'Pulling…', 'Pulled.'); });
+        gitPushBtn.addEventListener('click', () => { void runGitSync('git_push', 'Pushing…', 'Pushed.'); });
+        gitCommitBtn.addEventListener('click', () => { void commitStaged(); });
+        gitCommitMessage.addEventListener('keydown', (event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                event.preventDefault();
+                void commitStaged();
+            }
+        });
 claudeSendContextBtn.addEventListener('click', () => sendClaudeContext());
 claudePresetsBtn.addEventListener('click', sendClaudePreset);
 claudeApplyMenuBtn.addEventListener('click', (event) => {

@@ -1095,6 +1095,315 @@ fn sync_app_menu(app: AppHandle<Wry>, params: AppMenuParams) -> Result<(), Strin
         .map_err(|error| error.to_string())
 }
 
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct GitFileEntry {
+    path: String,
+    status: String,
+    staged: bool,
+    untracked: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStatusInfo {
+    repo_root: String,
+    branch: String,
+    upstream: Option<String>,
+    ahead: u32,
+    behind: u32,
+    staged: Vec<GitFileEntry>,
+    unstaged: Vec<GitFileEntry>,
+    untracked: Vec<GitFileEntry>,
+    clean: bool,
+}
+
+fn git_repo_root(start: &Path) -> Result<PathBuf, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(start)
+        .output()
+        .map_err(|error| format!("Unable to run git: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "Not a git repository.".to_string()
+        } else {
+            stderr
+        });
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        return Err("Not a git repository.".to_string());
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn resolve_git_root(
+    state: &State<'_, TerminalState>,
+    cwd_override: Option<&str>,
+) -> Result<PathBuf, String> {
+    let start = if let Some(path) = cwd_override.map(str::trim).filter(|p| !p.is_empty()) {
+        let expanded = expand_user_path(path, None);
+        fs::canonicalize(&expanded).unwrap_or(expanded)
+    } else {
+        state
+            .cwd
+            .lock()
+            .map_err(|_| "Terminal state is unavailable.".to_string())?
+            .clone()
+            .unwrap_or_else(default_cwd)
+    };
+    git_repo_root(&start)
+}
+
+fn run_git(
+    repo: &Path,
+    args: &[&str],
+    stdin: Option<&str>,
+) -> Result<std::process::Output, String> {
+    use std::process::Stdio;
+    let mut command = Command::new("git");
+    command
+        .current_dir(repo)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if stdin.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Unable to run git: {error}"))?;
+    if let Some(data) = stdin {
+        if let Some(mut writer) = child.stdin.take() {
+            writer
+                .write_all(data.as_bytes())
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    child
+        .wait_with_output()
+        .map_err(|error| error.to_string())
+}
+
+fn ok_git_output(output: std::process::Output) -> Result<String, String> {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git exited with {}", output.status)
+        } else {
+            stderr
+        });
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn parse_branch_line(line: &str) -> (String, Option<String>, u32, u32) {
+    // "## main...origin/main [ahead 1, behind 2]"  or  "## main"  or  "## HEAD (no branch)"
+    let rest = line.trim_start_matches("## ").trim();
+    if rest.starts_with("HEAD (no branch)") {
+        return ("HEAD (detached)".to_string(), None, 0, 0);
+    }
+    let (head_part, track_part) = match rest.find(" [") {
+        Some(i) => (rest[..i].to_string(), Some(&rest[i + 2..rest.len() - 1])),
+        None => (rest.to_string(), None),
+    };
+    let (branch, upstream) = match head_part.split_once("...") {
+        Some((b, u)) => (b.to_string(), Some(u.to_string())),
+        None => (head_part, None),
+    };
+    let mut ahead = 0;
+    let mut behind = 0;
+    if let Some(track) = track_part {
+        for segment in track.split(", ") {
+            if let Some(rest) = segment.strip_prefix("ahead ") {
+                ahead = rest.parse().unwrap_or(0);
+            } else if let Some(rest) = segment.strip_prefix("behind ") {
+                behind = rest.parse().unwrap_or(0);
+            }
+        }
+    }
+    (branch, upstream, ahead, behind)
+}
+
+fn parse_porcelain_path(rest: &str) -> String {
+    // For renames, porcelain v1 gives "newpath -> oldpath". Keep the new path.
+    if let Some((new_path, _)) = rest.split_once(" -> ") {
+        new_path.to_string()
+    } else {
+        rest.to_string()
+    }
+}
+
+#[tauri::command]
+fn git_status(
+    state: State<'_, TerminalState>,
+    cwd: Option<String>,
+) -> Result<GitStatusInfo, String> {
+    let repo = resolve_git_root(&state, cwd.as_deref())?;
+    let output = run_git(&repo, &["status", "--porcelain=v1", "--branch", "-uall"], None)?;
+    let text = ok_git_output(output)?;
+
+    let mut branch = String::from("(unknown)");
+    let mut upstream = None;
+    let mut ahead = 0;
+    let mut behind = 0;
+    let mut staged = Vec::new();
+    let mut unstaged = Vec::new();
+    let mut untracked = Vec::new();
+
+    for raw_line in text.lines() {
+        if raw_line.starts_with("## ") {
+            let parsed = parse_branch_line(raw_line);
+            branch = parsed.0;
+            upstream = parsed.1;
+            ahead = parsed.2;
+            behind = parsed.3;
+            continue;
+        }
+        if raw_line.len() < 3 {
+            continue;
+        }
+        let index_status = raw_line.chars().next().unwrap_or(' ');
+        let worktree_status = raw_line.chars().nth(1).unwrap_or(' ');
+        let path = parse_porcelain_path(&raw_line[3..]);
+
+        if index_status == '?' && worktree_status == '?' {
+            untracked.push(GitFileEntry {
+                path,
+                status: "??".to_string(),
+                staged: false,
+                untracked: true,
+            });
+            continue;
+        }
+
+        if index_status != ' ' && index_status != '?' {
+            staged.push(GitFileEntry {
+                path: path.clone(),
+                status: index_status.to_string(),
+                staged: true,
+                untracked: false,
+            });
+        }
+        if worktree_status != ' ' && worktree_status != '?' {
+            unstaged.push(GitFileEntry {
+                path,
+                status: worktree_status.to_string(),
+                staged: false,
+                untracked: false,
+            });
+        }
+    }
+
+    let clean = staged.is_empty() && unstaged.is_empty() && untracked.is_empty();
+    Ok(GitStatusInfo {
+        repo_root: repo.to_string_lossy().to_string(),
+        branch,
+        upstream,
+        ahead,
+        behind,
+        staged,
+        unstaged,
+        untracked,
+        clean,
+    })
+}
+
+#[tauri::command]
+fn git_diff(
+    state: State<'_, TerminalState>,
+    path: String,
+    staged: bool,
+    untracked: bool,
+    cwd: Option<String>,
+) -> Result<String, String> {
+    let repo = resolve_git_root(&state, cwd.as_deref())?;
+    if untracked {
+        // git diff doesn't show untracked files; emulate it by diffing against /dev/null.
+        let output = run_git(
+            &repo,
+            &["diff", "--no-color", "--no-index", "--", "/dev/null", &path],
+            None,
+        )?;
+        // git diff --no-index returns 1 when files differ, which is expected.
+        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+    }
+    let mut args = vec!["diff", "--no-color"];
+    if staged {
+        args.push("--cached");
+    }
+    args.push("--");
+    args.push(&path);
+    let output = run_git(&repo, &args, None)?;
+    Ok(ok_git_output(output)?)
+}
+
+#[tauri::command]
+fn git_stage(
+    state: State<'_, TerminalState>,
+    paths: Vec<String>,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let repo = resolve_git_root(&state, cwd.as_deref())?;
+    let mut args: Vec<&str> = vec!["add", "--"];
+    for path in &paths {
+        args.push(path);
+    }
+    ok_git_output(run_git(&repo, &args, None)?)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn git_unstage(
+    state: State<'_, TerminalState>,
+    paths: Vec<String>,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let repo = resolve_git_root(&state, cwd.as_deref())?;
+    let mut args: Vec<&str> = vec!["restore", "--staged", "--"];
+    for path in &paths {
+        args.push(path);
+    }
+    ok_git_output(run_git(&repo, &args, None)?)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn git_commit(
+    state: State<'_, TerminalState>,
+    message: String,
+    cwd: Option<String>,
+) -> Result<String, String> {
+    if message.trim().is_empty() {
+        return Err("Commit message is empty.".to_string());
+    }
+    let repo = resolve_git_root(&state, cwd.as_deref())?;
+    let output = run_git(&repo, &["commit", "-F", "-"], Some(&message))?;
+    ok_git_output(output)
+}
+
+#[tauri::command]
+fn git_pull(state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
+    let repo = resolve_git_root(&state, cwd.as_deref())?;
+    let output = run_git(&repo, &["pull", "--ff-only"], None)?;
+    ok_git_output(output)
+}
+
+#[tauri::command]
+fn git_push(state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
+    let repo = resolve_git_root(&state, cwd.as_deref())?;
+    let output = run_git(&repo, &["push"], None)?;
+    ok_git_output(output)
+}
+
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     if url != "https://github.com/DoctorKhan/Lumina" {
@@ -1160,7 +1469,14 @@ pub fn run() {
             poll_file_for_changes,
             open_external_url,
             current_checkout_install_info,
-            source_dir_info
+            source_dir_info,
+            git_status,
+            git_diff,
+            git_stage,
+            git_unstage,
+            git_commit,
+            git_pull,
+            git_push
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
