@@ -10,9 +10,5 @@
   <string>Lumina needs access when you open or save Markdown files in Documents, or when the Claude pane edits the current file's folder.</string>
   <key>NSDownloadsFolderUsageDescription</key>
   <string>Lumina needs access when you open or save Markdown files in Downloads, or when the Claude pane edits the current file's folder.</string>
-  <key>NSNetworkVolumesUsageDescription</key>
-  <string>Lumina needs access when you open Markdown files from network volumes, or when the Claude pane edits the current file's folder.</string>
-  <key>NSRemovableVolumesUsageDescription</key>
-  <string>Lumina needs access when you open Markdown files from removable volumes, or when the Claude pane edits the current file's folder.</string>
 </dict>
 </plist>

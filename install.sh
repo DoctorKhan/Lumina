@@ -9,6 +9,14 @@ fi
 REPO_URL="${REPO_URL:-https://github.com/DoctorKhan/Lumina.git}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.lumina}"
 GIT_REF="${GIT_REF:-origin/main}"
+# Local rebuild mode (used by the in-app "Rebuild & Install" button): build and
+# install the checkout that contains this script instead of cloning/updating the
+# managed clone in $HOME/.lumina. Emits the same progress contract as a release
+# install so the in-app progress card animates and completes.
+LUMINA_LOCAL_BUILD="${LUMINA_LOCAL_BUILD:-}"
+if [[ -n "$LUMINA_LOCAL_BUILD" ]]; then
+  INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 APP_NAME="Lumina.app"
 APP_BUNDLE_ID="${APP_BUNDLE_ID:-com.doctorkhan.lumina}"
 INSTALL_STARTED_AT="$(date +%s)"
@@ -28,7 +36,10 @@ GLOBAL_MODEL_BASENAME="scripts/install-estimates-global.tsv"
 INSTALL_STEP_KEYS=()
 INSTALL_TOTAL_STEPS=0
 
-if [[ -d "$INSTALL_DIR/.git" ]]; then
+if [[ -n "$LUMINA_LOCAL_BUILD" ]]; then
+  # No clone/fetch/reset — build whatever is checked out locally.
+  INSTALL_STEP_KEYS=(js_deps tauri_icons tauri_build)
+elif [[ -d "$INSTALL_DIR/.git" ]]; then
   INSTALL_STEP_KEYS=(checkout_update fetch_refs reset_checkout js_deps tauri_icons tauri_build)
 else
   INSTALL_STEP_KEYS=(checkout_clone fetch_refs reset_checkout js_deps tauri_icons tauri_build)
@@ -473,8 +484,11 @@ confirm() {
   local default="${2:-N}"
   local reply=""
 
-  if ! is_interactive_shell; then
-    return 1
+  # Automated runs (the in-app "Rebuild & Install" runs in a PTY, plus any
+  # piped/non-TTY install) must not block on a prompt — honor the default.
+  if [[ -n "$LUMINA_LOCAL_BUILD" ]] || ! is_interactive_shell; then
+    [[ "$default" == "Y" ]]
+    return
   fi
 
   if [[ "$default" == "Y" ]]; then
@@ -647,48 +661,59 @@ git_ref_resolves() {
   git -C "$1" rev-parse -q --verify "$GIT_REF^{commit}" >/dev/null 2>&1
 }
 
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-  start_step "checkout_update" "Updating existing checkout in $INSTALL_DIR"
-  git -C "$INSTALL_DIR" fetch --all --tags --progress
-  if ! git_ref_resolves "$INSTALL_DIR"; then
-    echo "error: $GIT_REF is not a valid git ref in $INSTALL_DIR after fetch."
+if [[ -n "$LUMINA_LOCAL_BUILD" ]]; then
+  # Build the current checkout as-is (including uncommitted changes); skip all
+  # clone/fetch/reset steps so the user's local work is what gets installed.
+  cd "$INSTALL_DIR"
+  if install_use_color; then
+    printf "\n  ${C_BOLD}${C_VIO}Lumina${C_RESET}  ${C_DIM}·${C_RESET}  rebuild  ${C_DIM}·${C_RESET}  ${C_SKY}%s${C_RESET}\n\n" "$INSTALL_DIR"
+  else
+    echo "Rebuilding Lumina from local checkout $INSTALL_DIR"
+  fi
+else
+  if [[ -d "$INSTALL_DIR/.git" ]]; then
+    start_step "checkout_update" "Updating existing checkout in $INSTALL_DIR"
+    git -C "$INSTALL_DIR" fetch --all --tags --progress
+    if ! git_ref_resolves "$INSTALL_DIR"; then
+      echo "error: $GIT_REF is not a valid git ref in $INSTALL_DIR after fetch."
+      echo "If you are installing a release, ensure the tag exists on the remote (e.g. push the tag to GitHub)."
+      exit 1
+    fi
+    # This install directory is managed by the installer, so we can safely
+    # discard local/untracked build artifacts before updating.
+    git -C "$INSTALL_DIR" reset --hard "$GIT_REF"
+    git -C "$INSTALL_DIR" clean -fd
+    finish_step "Updated existing checkout"
+  else
+    start_step "checkout_clone" "Cloning repository to $INSTALL_DIR"
+    git clone --progress "$REPO_URL" "$INSTALL_DIR"
+    finish_step "Cloned repository"
+  fi
+
+  cd "$INSTALL_DIR"
+  if [[ ! -d ".git" ]]; then
+    echo "Install directory is not a git checkout: $INSTALL_DIR"
+    exit 1
+  fi
+
+  if install_use_color; then
+    printf "\n  ${C_BOLD}${C_VIO}Lumina${C_RESET}  ${C_DIM}·${C_RESET}  install  ${C_DIM}·${C_RESET}  ${C_SKY}%s${C_RESET}\n\n" "$GIT_REF"
+  else
+    echo "Installing Lumina from $GIT_REF"
+  fi
+  start_step "fetch_refs" "Fetching refs"
+  git fetch --all --tags --progress
+  finish_step "Fetched refs"
+  if ! git rev-parse -q --verify "$GIT_REF^{commit}" >/dev/null 2>&1; then
+    echo "error: $GIT_REF is not a valid git ref after fetch."
     echo "If you are installing a release, ensure the tag exists on the remote (e.g. push the tag to GitHub)."
     exit 1
   fi
-  # This install directory is managed by the installer, so we can safely
-  # discard local/untracked build artifacts before updating.
-  git -C "$INSTALL_DIR" reset --hard "$GIT_REF"
-  git -C "$INSTALL_DIR" clean -fd
-  finish_step "Updated existing checkout"
-else
-  start_step "checkout_clone" "Cloning repository to $INSTALL_DIR"
-  git clone --progress "$REPO_URL" "$INSTALL_DIR"
-  finish_step "Cloned repository"
+  start_step "reset_checkout" "Resetting checkout to $GIT_REF"
+  git reset --hard "$GIT_REF"
+  git clean -fd
+  finish_step "Reset checkout"
 fi
-
-cd "$INSTALL_DIR"
-if [[ ! -d ".git" ]]; then
-  echo "Install directory is not a git checkout: $INSTALL_DIR"
-  exit 1
-fi
-
-if install_use_color; then
-  printf "\n  ${C_BOLD}${C_VIO}Lumina${C_RESET}  ${C_DIM}·${C_RESET}  install  ${C_DIM}·${C_RESET}  ${C_SKY}%s${C_RESET}\n\n" "$GIT_REF"
-else
-  echo "Installing Lumina from $GIT_REF"
-fi
-start_step "fetch_refs" "Fetching refs"
-git fetch --all --tags --progress
-finish_step "Fetched refs"
-if ! git rev-parse -q --verify "$GIT_REF^{commit}" >/dev/null 2>&1; then
-  echo "error: $GIT_REF is not a valid git ref after fetch."
-  echo "If you are installing a release, ensure the tag exists on the remote (e.g. push the tag to GitHub)."
-  exit 1
-fi
-start_step "reset_checkout" "Resetting checkout to $GIT_REF"
-git reset --hard "$GIT_REF"
-git clean -fd
-finish_step "Reset checkout"
 start_step "js_deps" "Installing JavaScript dependencies"
 ./run.sh setup
 finish_step "Installed JavaScript dependencies"

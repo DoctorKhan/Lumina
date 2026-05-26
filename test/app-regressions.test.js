@@ -74,14 +74,22 @@ test("macOS folder permission prompts explain Claude and file access", () => {
   const plist = fs.readFileSync("src-tauri/Info.plist", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
 
+  // Only the standard user folders a Markdown editor actually reaches into.
   for (const key of [
     "NSDesktopFolderUsageDescription",
     "NSDocumentsFolderUsageDescription",
     "NSDownloadsFolderUsageDescription",
+  ]) {
+    assert.match(plist, new RegExp(`<key>${key}</key>`));
+  }
+
+  // Network/removable volumes are intentionally NOT declared: they prompted for
+  // access most users never need. Re-add only if a real network/USB flow exists.
+  for (const key of [
     "NSNetworkVolumesUsageDescription",
     "NSRemovableVolumesUsageDescription",
   ]) {
-    assert.match(plist, new RegExp(`<key>${key}</key>`));
+    assert.doesNotMatch(plist, new RegExp(`<key>${key}</key>`));
   }
 
   assert.match(plist, /Claude pane edits the current file's folder/);
@@ -139,7 +147,7 @@ test("terminal and Claude share a resizable right-side rail", () => {
   assert.match(css, /\.side-pane-split \.terminal-pane\s*\{[\s\S]*flex-basis:\s*50%;/);
   assert.match(css, /\.editor-collapsed #pane-resizer/);
   assert.match(main, /function syncSidePaneLayout\(\)/);
-  assert.match(main, /sidePane\.classList\.toggle\('side-pane-split', terminalVisible && claudeVisible\)/);
+  assert.match(main, /sidePane\.classList\.toggle\('side-pane-split', visibleCount > 1\)/);
   assert.match(main, /sidePanePercent = Math\.min\(65, Math\.max\(24, rawPercent\)\)/);
   assert.match(main, /editorPane\.style\.flex = `1 1 \$\{editorPercent\}%`/);
   assert.match(main, /terminalLastFitCols/);

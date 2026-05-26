@@ -8,6 +8,12 @@ use std::{
     process::Command,
     sync::{Mutex, PoisonError},
     thread,
+    time::Duration,
+};
+use notify_debouncer_full::{
+    new_debouncer,
+    notify::{EventKind, RecursiveMode, Watcher},
+    DebounceEventResult,
 };
 use tauri::{
     menu::{AboutMetadata, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
@@ -57,6 +63,15 @@ struct TerminalState {
 /// until the webview drains them.
 #[derive(Default)]
 struct PendingOpenPaths(Mutex<Vec<String>>);
+
+/// Holds the live filesystem watcher for the currently open document. The
+/// debouncer is boxed as `Any` so we don't have to name its generic watcher/cache
+/// types; keeping it here keeps the background watch thread alive, and replacing
+/// or clearing it stops the previous watch.
+#[derive(Default)]
+struct FileWatchState {
+    debouncer: Mutex<Option<Box<dyn std::any::Any + Send>>>,
+}
 
 fn is_supported_document_path(path: &Path) -> bool {
     path.extension()
@@ -116,7 +131,7 @@ fn drain_pending_open_paths(state: State<'_, PendingOpenPaths>) -> Result<Vec<St
     Ok(std::mem::take(&mut *guard))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 struct OpenedFile {
     path: String,
@@ -132,6 +147,24 @@ fn file_modified_ms(path: &Path) -> u64 {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// Reads a file into the `OpenedFile` shape the frontend already understands.
+/// Returns `None` for transient failures (e.g. the file is mid-write during an
+/// atomic save) so the watcher can simply skip that event.
+fn read_opened_file(path: &Path) -> Option<OpenedFile> {
+    let content = fs::read_to_string(path).ok()?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    Some(OpenedFile {
+        modified_ms: file_modified_ms(path),
+        path: path.to_string_lossy().to_string(),
+        name,
+        content,
+    })
 }
 
 #[derive(Deserialize)]
@@ -443,6 +476,75 @@ fn is_lumina_menu_id(id: &str) -> bool {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Reads the working directory of a live process straight from the OS. This is
+/// the source of truth for "where is the shell now" — far more reliable than
+/// reconstructing it from `cd` keystrokes, which silently miss zoxide/`z` jumps,
+/// tab-completion, aliases, `pushd`/`popd`, and history recall. Returns `None`
+/// when the process is gone or the platform is unsupported.
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+        // proc_pidinfo returns the number of bytes written, or -1 on error.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDVNODEPATHINFO,
+                0,
+                (&mut info as *mut libc::proc_vnodepathinfo).cast::<libc::c_void>(),
+                size,
+            )
+        };
+        if written < size {
+            return None;
+        }
+        // `vip_path` is a fixed MAXPATHLEN buffer holding a NUL-terminated path;
+        // libc models it as `[[c_char; 32]; 32]`, so read it as one flat slice.
+        let raw = &info.pvi_cdir.vip_path;
+        let bytes = unsafe {
+            std::slice::from_raw_parts(raw.as_ptr().cast::<u8>(), std::mem::size_of_val(raw))
+        };
+        let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        if len == 0 {
+            return None;
+        }
+        Some(PathBuf::from(std::ffi::OsStr::from_bytes(&bytes[..len])))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The live working directory of a PTY session's shell, if it can be read.
+fn session_live_cwd(session: &PtySession) -> Option<PathBuf> {
+    let pid = session.child.lock().ok()?.as_ref()?.process_id()?;
+    let cwd = process_cwd(pid)?;
+    cwd.is_dir().then_some(cwd)
+}
+
+/// Best-effort base directory for resolving relative paths the user clicks in
+/// the terminal or types into the open-file box. Prefers the terminal shell's
+/// *actual* working directory (read from the OS), falling back to the cwd we
+/// track from `cd` keystrokes when that lookup is unavailable.
+fn resolve_relative_base(state: &TerminalState) -> Option<PathBuf> {
+    if let Some(cwd) = session_live_cwd(&state.terminal) {
+        return Some(cwd);
+    }
+    state
+        .cwd
+        .lock()
+        .ok()
+        .and_then(|cwd| cwd.clone())
 }
 
 fn expand_user_path(path: &str, base_dir: Option<&PathBuf>) -> PathBuf {
@@ -878,17 +980,13 @@ fn complete_file_path(
     limit: Option<usize>,
 ) -> Result<Vec<String>, String> {
     let limit = limit.unwrap_or(25).min(50);
-    let cwd = state
-        .cwd
-        .lock()
-        .map_err(|_| "Terminal state is unavailable.".to_string())?
-        .clone();
+    let base = resolve_relative_base(&state);
     let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
 
-    let expanded = expand_user_path(query, cwd.as_ref());
+    let expanded = expand_user_path(query, base.as_ref());
     let (dir, prefix) = if query.ends_with('/') {
         (
             if expanded.is_dir() {
@@ -939,11 +1037,8 @@ fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<Opene
         .trim_matches(|character| matches!(character, '"' | '\'' | '`' | '<' | '>' | ')' | '('));
     let path = path.trim_end_matches(|character: char| matches!(character, ',' | ';' | '.'));
     let path = strip_editor_line_column_suffix(path);
-    let cwd = state
-        .cwd
-        .lock()
-        .map_err(|_| "Terminal state is unavailable.".to_string())?;
-    let path = expand_user_path(path, cwd.as_ref());
+    let base = resolve_relative_base(&state);
+    let path = expand_user_path(path, base.as_ref());
     let path = fs::canonicalize(&path).map_err(|error| error.to_string())?;
     let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
 
@@ -1033,7 +1128,7 @@ fn current_checkout_install_info() -> CheckoutInstallInfo {
     CheckoutInstallInfo {
         available: true,
         command: Some(format!(
-            "cd {} && ./run.sh install-app",
+            "cd {} && LUMINA_LOCAL_BUILD=1 bash install.sh",
             shell_quote(&root_dir)
         )),
         label: format!("Install current checkout from {root_dir}"),
@@ -1079,6 +1174,77 @@ fn poll_file_for_changes(path: String, known_modified_ms: u64) -> Result<Option<
         name,
         content,
     }))
+}
+
+/// Starts watching `path` for external changes and emits `lumina-file-changed`
+/// (an `OpenedFile`) whenever it is modified. Replaces any previous watch.
+///
+/// We watch the file's *parent directory* (non-recursive) and match by file name
+/// rather than watching the file inode directly: editors and Claude commonly save
+/// atomically by writing a temp file and renaming it over the target, which would
+/// silently break an inode-level watch. Matching by name in the parent dir keeps
+/// the watch alive across those rename-replace saves, like VS Code does.
+#[tauri::command]
+fn watch_file(
+    app: AppHandle<Wry>,
+    state: State<'_, FileWatchState>,
+    path: String,
+) -> Result<(), String> {
+    let path = fs::canonicalize(PathBuf::from(path.trim())).map_err(|error| error.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Watched file has no parent directory.".to_string())?
+        .to_path_buf();
+    let target_name = path.file_name().map(|name| name.to_os_string());
+
+    let app_handle = app.clone();
+    let watched = path.clone();
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(200),
+        None,
+        move |result: DebounceEventResult| {
+            let Ok(events) = result else {
+                return;
+            };
+            let touched_target = events.iter().any(|event| {
+                matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
+                    && event
+                        .paths
+                        .iter()
+                        .any(|changed| changed.file_name() == target_name.as_deref())
+            });
+            if touched_target {
+                if let Some(file) = read_opened_file(&watched) {
+                    let _ = app_handle.emit("lumina-file-changed", file);
+                }
+            }
+        },
+    )
+    .map_err(|error| error.to_string())?;
+
+    debouncer
+        .watcher()
+        .watch(&parent, RecursiveMode::NonRecursive)
+        .map_err(|error| error.to_string())?;
+
+    let mut guard = state
+        .debouncer
+        .lock()
+        .map_err(|_| "File watch state is unavailable.".to_string())?;
+    *guard = Some(Box::new(debouncer));
+    Ok(())
+}
+
+/// Stops watching the current document, if any. Dropping the stored debouncer
+/// shuts down its background watch thread.
+#[tauri::command]
+fn unwatch_file(state: State<'_, FileWatchState>) -> Result<(), String> {
+    let mut guard = state
+        .debouncer
+        .lock()
+        .map_err(|_| "File watch state is unavailable.".to_string())?;
+    *guard = None;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1505,6 +1671,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(TerminalState::default())
         .manage(PendingOpenPaths::default())
+        .manage(FileWatchState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
@@ -1537,6 +1704,8 @@ pub fn run() {
             sync_app_menu,
             drain_pending_open_paths,
             poll_file_for_changes,
+            watch_file,
+            unwatch_file,
             open_external_url,
             current_checkout_install_info,
             source_dir_info,
