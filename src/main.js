@@ -30,6 +30,7 @@ import {
         } from './previewLoaders.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
+        import { Unicode11Addon } from '@xterm/addon-unicode11';
         import '@xterm/xterm/css/xterm.css';
 
         const editor = document.getElementById('editor');
@@ -80,6 +81,8 @@ const claudeRebuildLuminaBtn = document.getElementById('claude-rebuild-lumina-bt
         const claudeElement = document.getElementById('claude-terminal');
         const claudeStatus = document.getElementById('claude-status');
 const claudeWorkspaceStatus = document.getElementById('claude-workspace-status');
+        const claudeInputBar = document.getElementById('claude-input-bar');
+        const claudeInput = document.getElementById('claude-input');
         const installProgressRoot = document.getElementById('install-progress');
         const installProgressFill = document.getElementById('install-progress-fill');
         const installProgressDetail = document.getElementById('install-progress-detail');
@@ -89,6 +92,10 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         const workspacePanes = document.getElementById('workspace-panes');
         const sidePane = document.getElementById('side-pane');
         const sidePaneResizer = document.getElementById('side-pane-resizer');
+        const sideSplitResizers = [
+            document.getElementById('side-split-resizer-1'),
+            document.getElementById('side-split-resizer-2'),
+        ];
         const toggleGitBtn = document.getElementById('toggle-git-btn');
         const gitPane = document.getElementById('git-pane');
         const gitBranch = document.getElementById('git-branch');
@@ -110,6 +117,9 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let isResizing = false;
         let isResizingSidePane = false;
         let sidePanePercent = 34;
+        // Relative flex weights for the vertically stacked side panes. Equal weights
+        // reproduce the old even split; the split-resizers below adjust these.
+        const paneWeights = { terminal: 1, claude: 1, git: 1 };
         let terminal = null;
         let fitAddon = null;
         let terminalVisible = false;
@@ -133,6 +143,14 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let claudeFitAddon = null;
         let claudeVisible = false;
         let claudeStarted = false;
+        // Auto-context-on-focus: remember the file we last fed Claude so we only
+        // re-send when you actually switch documents — refocusing the pane (or
+        // moving the cursor / changing the selection within the same file) no
+        // longer re-pastes the block. `undefined` so the first send always fires,
+        // even for an unsaved doc (whose path is null). We also suppress the focus
+        // our own programmatic sends trigger.
+        let lastClaudeContextPath;
+        let suppressClaudeFocusContext = false;
         let gitVisible = false;
         let claudeOutputUnlisten = null;
         let claudeResizeFrame = null;
@@ -142,13 +160,16 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
 let claudeWorkspaceFilePath = null;
         let luminaSourceDir = null;
         let developLuminaMode = false;
+        // Resolving the source checkout probes ~/Documents, which trips the macOS
+        // "access your Documents folder" prompt. Defer it until the Claude pane is
+        // actually opened (where the Develop Lumina feature lives), and only once.
+        let sourceCheckoutInfoLoaded = false;
         let latestReleaseTag = null;
         let updateCheckInProgress = false;
         let currentCheckoutInstallCommand = null;
         let currentFilePath = null;
         let currentFileMtime = 0;
-        let fileWatcherTimer = null;
-        const fileWatcherIntervalMs = 2000;
+        let fileChangedUnlisten = null;
         const lastOpenedFilePathKey = 'lumina:last-opened-file-path';
 const recentFilePathsKey = 'lumina:recent-file-paths';
 const maxRecentFilePaths = 10;
@@ -653,36 +674,39 @@ Nearest heading: ${context.heading}
 Use the Claude file for full-document edits. If you propose replacement text, keep it concise and valid Markdown.${selectionBlock}`;
 }
 
-function stopFileWatcher() {
-    if (fileWatcherTimer !== null) {
-        clearInterval(fileWatcherTimer);
-        fileWatcherTimer = null;
-    }
-}
-
-function startFileWatcher(path, mtime) {
-    stopFileWatcher();
-    fileWatcherTimer = setInterval(async () => {
-        if (!currentFilePath) {
-            stopFileWatcher();
+// The backend pushes `lumina-file-changed` whenever the open file is modified on
+// disk (native filesystem events, debounced ~200ms). We attach the listener once
+// and let it run for the app's lifetime; watch/unwatch just (de)register which
+// file the backend reports on.
+async function ensureFileChangeListener() {
+    if (fileChangedUnlisten) return;
+    fileChangedUnlisten = await listen('lumina-file-changed', (event) => {
+        const file = event.payload;
+        // Ignore events for a file we're no longer showing (stale backend watch).
+        if (!file || !currentFilePath || file.path !== currentFilePath) return;
+        // Skip echoes of our own save (content already matches the editor).
+        if (file.content === editor.value) {
+            currentFileMtime = file.modifiedMs ?? currentFileMtime;
             return;
         }
-        try {
-            const changed = await invoke('poll_file_for_changes', {
-                path: currentFilePath,
-                knownModifiedMs: currentFileMtime
-            });
-            if (changed) {
-                currentFileMtime = changed.modifiedMs;
-                editor.value = changed.content;
-                updateEditorMetrics();
-                void updatePreview();
-            }
-        } catch (_) {
-            // Ignore transient errors (e.g. mid-write by external editor or Claude).
-            // The watcher keeps running; it only stops when the file is closed.
-        }
-    }, fileWatcherIntervalMs);
+        currentFileMtime = file.modifiedMs ?? currentFileMtime;
+        editor.value = file.content;
+        updateEditorMetrics();
+        void updatePreview();
+    });
+}
+
+function stopFileWatcher() {
+    invoke('unwatch_file').catch(() => {});
+}
+
+async function startFileWatcher(path) {
+    await ensureFileChangeListener();
+    try {
+        await invoke('watch_file', { path: path || currentFilePath });
+    } catch (_) {
+        // Watching is best-effort; the document is still fully usable without it.
+    }
 }
 
 async function openFilePath(path) {
@@ -763,9 +787,18 @@ async function openRecentFile(recentIndex = null) {
     try {
         await openFilePath(path);
     } catch (error) {
-        forgetOpenedPath(path);
         setFilenameLabel('Editor (Markdown + LaTeX)');
-        setUpdateStatus(`Unable to open ${basename(path)}: ${error?.message || error}`);
+        const message = String(error?.message || error);
+        if (/no such file|os error 2|cannot find|not found/i.test(message)) {
+            // The file moved or was renamed. Tell the user plainly and keep the
+            // entry in the list rather than silently dropping it, so they can
+            // see what's missing instead of watching recents quietly disappear.
+            setUpdateStatus(
+                `"${basename(path)}" can’t be found — it may have been moved or renamed (${path}).`
+            );
+        } else {
+            setUpdateStatus(`Unable to open ${basename(path)}: ${message}`);
+        }
     }
 }
 
@@ -1512,14 +1545,110 @@ async function checkForUpdate({ background = false } = {}) {
             resizeClaude(options);
         }
 
-async function writeClaudePrompt(prompt) {
-    await toggleClaude(true);
-    if (!claudeStarted) return;
+        // Live drag path: fitAddon.fit() reflows the whole xterm scrollback, which is
+        // far too expensive to run on every mousemove (~60fps). The panes still resize
+        // visually via CSS at full frame rate; we only reflow the terminals a few times
+        // per second during the drag, then let the mouseup handlers run a final fit.
+        let liveResizeAt = 0;
+        const LIVE_RESIZE_INTERVAL_MS = 90;
+        function resizeTerminalsLive() {
+            const now = performance.now();
+            if (now - liveResizeAt < LIVE_RESIZE_INTERVAL_MS) return;
+            liveResizeAt = now;
+            resizeTerminals({ settle: false });
+        }
 
-    claudeTerminal?.write(`\r\nSending prompt to Claude...\r\n`);
-    scheduleClaudeScrollToBottom();
-    await invoke('claude_write', { data: `\x1b[200~${prompt}\x1b[201~\r` });
-    claudeTerminal?.focus();
+async function writeClaudePrompt(prompt) {
+    // Any programmatic send focuses the terminal at the end, which would re-fire
+    // the focus->auto-context path. Suppress it for the duration of the send.
+    suppressClaudeFocusContext = true;
+    try {
+        await toggleClaude(true);
+        if (!claudeStarted) return;
+
+        claudeTerminal?.write(`\r\nSending prompt to Claude...\r\n`);
+        scheduleClaudeScrollToBottom();
+        await invoke('claude_write', { data: `\x1b[200~${prompt}\x1b[201~\r` });
+        claudeTerminal?.focus();
+    } finally {
+        lastClaudeContextPath = currentFilePath;
+        // Clear after the focus event settles so the handler sees the flag.
+        setTimeout(() => { suppressClaudeFocusContext = false; }, 0);
+    }
+}
+
+// Sends a user-composed message to the Claude PTY. Typing happens in a normal
+// textarea (no IME/reflow corruption from typing straight into xterm), then the
+// finished text is delivered as one bracketed paste so multi-line messages and
+// slash commands arrive intact, followed by Enter to submit.
+async function sendClaudeMessage(text) {
+    const message = text.replace(/\s+$/, '');
+    if (!message.trim()) return;
+    suppressClaudeFocusContext = true;
+    try {
+        await toggleClaude(true);
+        if (!claudeStarted) return;
+        await invoke('claude_write', { data: `\x1b[200~${message}\x1b[201~\r` });
+        scheduleClaudeScrollToBottom();
+    } catch (error) {
+        claudeTerminal?.write(`\r\nClaude write failed: ${error}\r\n`);
+        scheduleClaudeScrollToBottom();
+    } finally {
+        lastClaudeContextPath = currentFilePath;
+        setTimeout(() => { suppressClaudeFocusContext = false; }, 0);
+    }
+}
+
+// Grows the input box with its content up to the CSS max-height, then scrolls.
+function autoSizeClaudeInput() {
+    if (!claudeInput) return;
+    claudeInput.style.height = 'auto';
+    claudeInput.style.height = `${claudeInput.scrollHeight}px`;
+    // The composer and xterm share a flex column; refit the terminal so growing
+    // the box doesn't clip Claude's output. resizeClaude is rAF-debounced and
+    // no-ops when the cell grid is unchanged, so this is cheap per keystroke.
+    resizeClaude();
+}
+
+function wireClaudeInputBar() {
+    if (!claudeInputBar || !claudeInput) return;
+
+    claudeInput.addEventListener('input', autoSizeClaudeInput);
+
+    claudeInput.addEventListener('focus', () => {
+        void maybeAutoSendClaudeContext();
+    });
+
+    // Enter sends; Shift+Enter inserts a newline. Keys are composed locally, so
+    // arrow/history navigation never reaches Claude's TUI from here — click into
+    // the terminal itself to drive interactive prompts (permissions, menus).
+    claudeInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+            event.preventDefault();
+            const text = claudeInput.value;
+            claudeInput.value = '';
+            autoSizeClaudeInput();
+            void sendClaudeMessage(text);
+        }
+    });
+
+    claudeInputBar.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const text = claudeInput.value;
+        claudeInput.value = '';
+        autoSizeClaudeInput();
+        void sendClaudeMessage(text);
+    });
+}
+
+// Send fresh context when the user focuses into the Claude pane — but only once
+// per document, when you switch files. Refocusing to read/scroll/continue a
+// conversation, or moving the cursor and selecting within the same file, no
+// longer re-pastes the block.
+async function maybeAutoSendClaudeContext() {
+    if (!claudeStarted || suppressClaudeFocusContext) return;
+    if (currentFilePath === lastClaudeContextPath) return;
+    await sendClaudeContext();
 }
 
 async function sendClaudeContext(extraInstruction = '') {
@@ -1617,13 +1746,23 @@ async function replaceSelectionFromClipboard() {
 
             terminal = new Terminal({
                 cursorBlink: true,
-                convertEol: true,
-                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                // No convertEol: the PTY already emits CRLF for cooked output, and
+                // full-screen TUIs (Claude Code) send bare \n as a same-column line
+                // feed plus their own cursor control. Converting \n→\r\n forces the
+                // cursor to column 0 mid-frame and corrupts the redraw (overlapping
+                // spinner frames, leftover characters from the previous frame).
+                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Apple Symbols", "Apple Color Emoji", monospace',
                 fontSize: 13,
+                // Required by the Unicode 11 addon below: without it xterm uses
+                // Unicode 6 character widths, so emoji/symbols in TUIs like Claude
+                // Code drift out of alignment and overdraw the input border.
+                allowProposedApi: true,
                 theme: terminalTheme()
             });
             fitAddon = new FitAddon();
             terminal.loadAddon(fitAddon);
+            terminal.loadAddon(new Unicode11Addon());
+            terminal.unicode.activeVersion = '11';
             terminal.open(terminalElement);
             terminal.registerLinkProvider({ provideLinks: provideTerminalFileLinks });
             terminal.onData((data) => {
@@ -1667,14 +1806,27 @@ async function replaceSelectionFromClipboard() {
 
             claudeTerminal = new Terminal({
                 cursorBlink: true,
-                convertEol: true,
-                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                // No convertEol: the PTY already emits CRLF for cooked output, and
+                // full-screen TUIs (Claude Code) send bare \n as a same-column line
+                // feed plus their own cursor control. Converting \n→\r\n forces the
+                // cursor to column 0 mid-frame and corrupts the redraw (overlapping
+                // spinner frames, leftover characters from the previous frame).
+                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Apple Symbols", "Apple Color Emoji", monospace',
                 fontSize: 13,
+                // Required by the Unicode 11 addon below: without it xterm uses
+                // Unicode 6 character widths, so emoji/symbols in TUIs like Claude
+                // Code drift out of alignment and overdraw the input border.
+                allowProposedApi: true,
                 theme: terminalTheme()
             });
             claudeFitAddon = new FitAddon();
             claudeTerminal.loadAddon(claudeFitAddon);
+            claudeTerminal.loadAddon(new Unicode11Addon());
+            claudeTerminal.unicode.activeVersion = '11';
             claudeTerminal.open(claudeElement);
+            claudeTerminal.textarea?.addEventListener('focus', () => {
+                void maybeAutoSendClaudeContext();
+            });
             claudeTerminal.onData((data) => {
                 invoke('claude_write', { data }).catch((error) => {
                     claudeTerminal.write(`\r\nClaude write failed: ${error}\r\n`);
@@ -1737,6 +1889,14 @@ async function replaceSelectionFromClipboard() {
             claudeStatus.textContent = 'Running';
             resizeClaude();
             setTimeout(resizeClaude, 80);
+        }
+
+        // Run the Documents-touching source-checkout probes once, on first need.
+        async function ensureSourceCheckoutInfo() {
+            if (sourceCheckoutInfoLoaded) return;
+            sourceCheckoutInfoLoaded = true;
+            await loadCurrentCheckoutInstaller();
+            await loadLuminaSourceDir();
         }
 
         async function loadLuminaSourceDir() {
@@ -1848,7 +2008,37 @@ async function replaceSelectionFromClipboard() {
             sidePaneResizer?.classList.toggle('hidden', !sidePaneVisible);
             sidePane.classList.toggle('side-pane-split', visibleCount > 1);
             sidePane.style.flexBasis = sidePaneVisible ? `${sidePanePercent}%` : '';
+            applyVerticalPaneSizing();
             resizeTerminals();
+        }
+
+        // Apply the relative flex weights to the visible stacked panes and show a
+        // drag handle between each adjacent visible pair.
+        function applyVerticalPaneSizing() {
+            const split = (terminalVisible ? 1 : 0) + (claudeVisible ? 1 : 0) + (gitVisible ? 1 : 0) > 1;
+            terminalPane.style.flex = split ? `${paneWeights.terminal} 1 0` : '';
+            claudePane.style.flex = split ? `${paneWeights.claude} 1 0` : '';
+            gitPane.style.flex = split ? `${paneWeights.git} 1 0` : '';
+
+            // Resizer 1 lives between the terminal and Claude panes; resizer 2 between
+            // Claude and git. A resizer is active only when the pane directly above it
+            // is visible and some pane below it is too, so each real gap gets one handle.
+            const firstBelow1 = claudeVisible ? 'claude' : (gitVisible ? 'git' : null);
+            configureSplitResizer(sideSplitResizers[0], terminalVisible && firstBelow1 ? 'terminal' : null, firstBelow1);
+            configureSplitResizer(sideSplitResizers[1], claudeVisible && gitVisible ? 'claude' : null, 'git');
+        }
+
+        function configureSplitResizer(resizer, aboveKey, belowKey) {
+            if (!resizer) return;
+            const active = Boolean(aboveKey && belowKey);
+            resizer.classList.toggle('hidden', !active);
+            if (active) {
+                resizer.dataset.above = aboveKey;
+                resizer.dataset.below = belowKey;
+            } else {
+                delete resizer.dataset.above;
+                delete resizer.dataset.below;
+            }
         }
 
         async function toggleTerminal(forceVisible) {
@@ -1877,10 +2067,14 @@ async function replaceSelectionFromClipboard() {
             syncPaneToggleButtons();
 
             if (claudeVisible) {
+                void ensureSourceCheckoutInfo();
                 try {
                     await ensureClaude();
                     resizeClaude();
-                    claudeTerminal.focus();
+                    // Land in the composer, not the xterm — typing belongs in the
+                    // textarea so it can't corrupt Claude's TUI input line.
+                    if (claudeInput) claudeInput.focus();
+                    else claudeTerminal.focus();
                 } catch (error) {
                     claudeStatus.textContent = 'Error';
                     claudeTerminal?.write(`\r\nClaude failed to start: ${error}\r\n`);
@@ -2327,6 +2521,7 @@ installUpdateBadge.addEventListener('click', installDetectedUpdate);
                 void commitStaged();
             }
         });
+wireClaudeInputBar();
 claudeSendContextBtn.addEventListener('click', () => sendClaudeContext());
 claudePresetsBtn.addEventListener('click', sendClaudePreset);
 claudeApplyMenuBtn.addEventListener('click', (event) => {
@@ -2371,15 +2566,20 @@ document.addEventListener('click', (event) => {
         });
 
         document.addEventListener('mouseup', () => {
+            let wasResizing = false;
             if (isResizing) {
                 isResizing = false;
                 paneResizer.classList.remove('dragging');
+                wasResizing = true;
             }
             if (isResizingSidePane) {
                 isResizingSidePane = false;
                 sidePaneResizer?.classList.remove('dragging');
+                wasResizing = true;
             }
             document.body.style.userSelect = '';
+            // Throttling skips most live fits, so settle the terminals once on release.
+            if (wasResizing) resizeTerminals();
         });
 
         document.addEventListener('mousemove', (event) => {
@@ -2390,7 +2590,7 @@ document.addEventListener('click', (event) => {
             const previewPercent = 100 - editorPercent;
             editorPane.style.flex = `1 1 ${editorPercent}%`;
             previewPane.style.flex = `1 1 ${previewPercent}%`;
-            resizeTerminals({ settle: false });
+            resizeTerminalsLive();
         });
 
         sidePaneResizer?.addEventListener('mousedown', () => {
@@ -2406,7 +2606,59 @@ document.addEventListener('click', (event) => {
             const rawPercent = ((rect.right - event.clientX) / rect.width) * 100;
             sidePanePercent = Math.min(65, Math.max(24, rawPercent));
             sidePane.style.flexBasis = `${sidePanePercent}%`;
-            resizeTerminals({ settle: false });
+            resizeTerminalsLive();
+        });
+
+        // Vertical drag between stacked side panes: shift weight from one neighbor to
+        // the other while keeping their combined weight (and the panes below) fixed.
+        const sidePaneElements = { terminal: terminalPane, claude: claudePane, git: gitPane };
+        const MIN_PANE_PX = 60;
+        let splitDrag = null;
+
+        for (const resizer of sideSplitResizers) {
+            resizer?.addEventListener('mousedown', (event) => {
+                const aboveKey = resizer.dataset.above;
+                const belowKey = resizer.dataset.below;
+                if (!aboveKey || !belowKey) return;
+                const above = sidePaneElements[aboveKey];
+                const below = sidePaneElements[belowKey];
+                splitDrag = {
+                    resizer,
+                    aboveKey,
+                    belowKey,
+                    startY: event.clientY,
+                    aboveStartPx: above.getBoundingClientRect().height,
+                    belowStartPx: below.getBoundingClientRect().height,
+                    combinedWeight: paneWeights[aboveKey] + paneWeights[belowKey],
+                };
+                resizer.classList.add('dragging');
+                document.body.style.userSelect = 'none';
+                event.preventDefault();
+            });
+        }
+
+        document.addEventListener('mousemove', (event) => {
+            if (!splitDrag) return;
+            const { aboveStartPx, belowStartPx, combinedWeight, aboveKey, belowKey } = splitDrag;
+            const total = aboveStartPx + belowStartPx;
+            if (total <= 0 || combinedWeight <= 0) return;
+            const delta = event.clientY - splitDrag.startY;
+            const abovePx = Math.min(total - MIN_PANE_PX, Math.max(MIN_PANE_PX, aboveStartPx + delta));
+            const aboveWeight = combinedWeight * (abovePx / total);
+            paneWeights[aboveKey] = aboveWeight;
+            paneWeights[belowKey] = combinedWeight - aboveWeight;
+            sidePaneElements[aboveKey].style.flex = `${paneWeights[aboveKey]} 1 0`;
+            sidePaneElements[belowKey].style.flex = `${paneWeights[belowKey]} 1 0`;
+            resizeTerminalsLive();
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (splitDrag) {
+                splitDrag.resizer.classList.remove('dragging');
+                splitDrag = null;
+                document.body.style.userSelect = '';
+                resizeTerminals();
+            }
         });
 
         fileInput.addEventListener('change', (e) => {
@@ -2959,6 +3211,7 @@ document.addEventListener('click', (event) => {
 
         window.addEventListener('resize', resizeTerminals);
         window.addEventListener('beforeunload', () => {
+            fileChangedUnlisten?.();
             terminalOutputUnlisten?.();
             if (terminalStarted) {
                 invoke('terminal_kill').catch(() => {});
@@ -3030,8 +3283,6 @@ document.addEventListener('click', (event) => {
         async function bootstrap() {
             await refreshAppVersionBadge();
             await loadInitialContent();
-            await loadCurrentCheckoutInstaller();
-            await loadLuminaSourceDir();
             if ('requestIdleCallback' in window) {
                 window.requestIdleCallback(
                     () => {

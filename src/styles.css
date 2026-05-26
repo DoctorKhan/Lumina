@@ -467,8 +467,23 @@ body > header {
     flex-basis: 50%;
 }
 
-.side-pane-split .terminal-pane + .terminal-pane:not(.hidden) {
-    border-top: 1px solid #1e293b;
+/* Draggable divider between vertically stacked side panes. */
+.side-split-resizer {
+    flex: 0 0 6px;
+    cursor: row-resize;
+    background: #111a2f;
+    border-top: 1px solid #223150;
+    border-bottom: 1px solid #223150;
+    transition: background-color 120ms ease;
+}
+
+.side-split-resizer:hover,
+.side-split-resizer.dragging {
+    background: #334155;
+}
+
+.side-split-resizer.hidden {
+    display: none;
 }
 
 .terminal-pane.hidden {
@@ -802,6 +817,61 @@ body > header {
 .claude-icon-button:hover {
     color: #ffffff;
     background: rgba(109, 40, 217, 0.62);
+}
+
+.claude-input-bar {
+    display: flex;
+    align-items: flex-end;
+    gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    border-top: 1px solid rgba(91, 33, 182, 0.5);
+    background: rgba(46, 16, 101, 0.55);
+}
+
+.claude-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    resize: none;
+    max-height: 9rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(124, 58, 237, 0.5);
+    background: rgba(30, 27, 75, 0.75);
+    color: rgba(237, 233, 254, 0.95);
+    font-family: inherit;
+    font-size: 0.8rem;
+    line-height: 1.4;
+    outline: none;
+}
+
+.claude-input::placeholder {
+    color: rgba(196, 181, 253, 0.45);
+}
+
+.claude-input:focus {
+    border-color: rgba(167, 139, 250, 0.9);
+    box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.4);
+}
+
+.claude-input-send {
+    flex: 0 0 auto;
+    border-radius: 0.5rem;
+    padding: 0.45rem 0.85rem;
+    color: #ffffff;
+    background: rgba(124, 58, 237, 0.85);
+    font-size: 0.78rem;
+    font-weight: 600;
+    line-height: 1;
+    transition: background-color 120ms ease;
+}
+
+.claude-input-send:hover {
+    background: rgba(139, 92, 246, 0.95);
+}
+
+.claude-input-send:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
 .claude-action-menu {
