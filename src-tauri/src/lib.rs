@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     env, fs,
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{Mutex, PoisonError},
     thread,
     time::Duration,
@@ -52,10 +52,21 @@ struct PtySession {
     writer: Mutex<Option<Box<dyn Write + Send>>>,
 }
 
+/// The headless `claude` chat session. Unlike the terminal it is not a PTY: we
+/// drive the CLI in bidirectional `stream-json` mode over plain pipes and parse
+/// the newline-delimited JSON in the webview. `child` keeps the process alive
+/// (one long-lived process == one multi-turn conversation); `stdin` is the
+/// cloned writer we push user messages into.
+#[derive(Default)]
+struct ClaudeChat {
+    child: Mutex<Option<std::process::Child>>,
+    stdin: Mutex<Option<std::process::ChildStdin>>,
+}
+
 #[derive(Default)]
 struct TerminalState {
     terminal: PtySession,
-    claude: PtySession,
+    claude_chat: ClaudeChat,
     cwd: Mutex<Option<PathBuf>>,
 }
 
@@ -819,59 +830,172 @@ fn terminal_spawn(
     )
 }
 
-#[tauri::command]
-fn claude_spawn(
-    app: AppHandle,
-    state: State<'_, TerminalState>,
-    rows: u16,
-    cols: u16,
+/// Resolves the working directory for a Claude session from an optional single
+/// file path (we open its parent folder) or an explicit directory, falling back
+/// to the shared terminal cwd. Returns the resolved cwd and, when a file was
+/// given, the workspace info the webview shows in the pane header.
+fn resolve_claude_cwd(
+    state: &State<'_, TerminalState>,
     file_path: Option<String>,
     cwd: Option<String>,
-) -> Result<Option<ClaudeWorkspaceInfo>, String> {
-    let command = CommandBuilder::new("claude");
-    let mut workspace_info = None;
-    let cwd = if let Some(file_path) = file_path {
+) -> Result<(PathBuf, Option<ClaudeWorkspaceInfo>), String> {
+    if let Some(file_path) = file_path {
         let file_path = fs::canonicalize(expand_user_path(file_path.trim(), None))
             .map_err(|error| error.to_string())?;
         let metadata = fs::metadata(&file_path).map_err(|error| error.to_string())?;
         if !metadata.is_file() {
             return Err("Claude can only open a single file path.".to_string());
         }
-        let cwd = file_path
+        let dir = file_path
             .parent()
             .ok_or_else(|| "Unable to resolve file directory.".to_string())?
             .to_path_buf();
         let info = ClaudeWorkspaceInfo {
-            workspace_path: cwd.to_string_lossy().to_string(),
+            workspace_path: dir.to_string_lossy().to_string(),
             file_path: file_path.to_string_lossy().to_string(),
         };
-        workspace_info = Some(info);
-        cwd
+        Ok((dir, Some(info)))
     } else if let Some(cwd) = cwd {
         let cwd = expand_user_path(cwd.trim(), None);
         let cwd = fs::canonicalize(&cwd).map_err(|error| error.to_string())?;
         if !cwd.is_dir() {
             return Err("Claude cwd is not a directory.".to_string());
         }
-        cwd
+        Ok((cwd, None))
     } else {
-        state
+        let cwd = state
             .cwd
             .lock()
             .map_err(|_| "Terminal state is unavailable.".to_string())?
             .clone()
-            .unwrap_or_else(default_cwd)
-    };
+            .unwrap_or_else(default_cwd);
+        Ok((cwd, None))
+    }
+}
 
-    spawn_pty_session(
-        app,
-        &state.claude,
-        "claude-output",
-        command,
-        cwd,
-        rows,
-        cols,
-    )?;
+/// Starts a headless Claude chat in bidirectional `stream-json` mode. A reader
+/// thread forwards each newline-delimited JSON event to the webview on the
+/// `claude-chat` event; user turns are written via `claude_chat_send`. A no-op
+/// if a session is already running.
+#[tauri::command]
+fn claude_chat_start(
+    app: AppHandle,
+    state: State<'_, TerminalState>,
+    file_path: Option<String>,
+    cwd: Option<String>,
+    permission_mode: Option<String>,
+    model: Option<String>,
+) -> Result<Option<ClaudeWorkspaceInfo>, String> {
+    if state
+        .claude_chat
+        .child
+        .lock()
+        .map_err(|_| "Claude chat state is unavailable.".to_string())?
+        .is_some()
+    {
+        return Ok(None);
+    }
+
+    let (cwd, workspace_info) = resolve_claude_cwd(&state, file_path, cwd)?;
+    let mode = permission_mode
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "acceptEdits".to_string());
+
+    let mut command = Command::new("claude");
+    command
+        .arg("-p")
+        .arg("--input-format")
+        .arg("stream-json")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--verbose")
+        .arg("--include-partial-messages")
+        .arg("--permission-mode")
+        .arg(&mode);
+    if let Some(model) = model {
+        let model = model.trim();
+        if !model.is_empty() {
+            command.arg("--model").arg(model);
+        }
+    }
+    // Tell Claude which file is the open document so a bare "fix this" or "the
+    // document" resolves to it by default, without the webview re-pasting file
+    // content on every turn. Mid-session file switches are handled by the
+    // "Now editing:" note the webview sends.
+    if let Some(info) = workspace_info.as_ref() {
+        command.arg("--append-system-prompt").arg(format!(
+            "The user is editing the file `{}` in the Lumina Markdown editor. \
+When they say \"this file\", \"this document\", \"the doc\", or give an \
+instruction without naming a file, they mean that file. Read and edit it \
+directly on disk and keep it valid Markdown.",
+            info.file_path
+        ));
+    }
+    command.current_dir(&cwd);
+    command.env("PATH", terminal_path());
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command.spawn().map_err(|error| {
+        format!("Unable to run claude: {error}. Install the Claude Code CLI to use the chat pane.")
+    })?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Claude stdin is unavailable.".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Claude stdout is unavailable.".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Claude stderr is unavailable.".to_string())?;
+
+    // Forward each JSON line verbatim; parsing lives in the webview so it stays
+    // unit-testable. An empty `__exit` marker tells the UI the process ended.
+    let app_out = app.clone();
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(line) if !line.trim().is_empty() => {
+                    let _ = app_out.emit("claude-chat", line);
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        let _ = app_out.emit("claude-chat", "{\"type\":\"__exit\"}".to_string());
+    });
+
+    // Surface stderr as a synthetic event so failures (bad flags, auth) show up
+    // in the transcript instead of vanishing.
+    let app_err = app.clone();
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let payload = serde_json::json!({ "type": "__stderr", "text": line }).to_string();
+            let _ = app_err.emit("claude-chat", payload);
+        }
+    });
+
+    *state
+        .claude_chat
+        .child
+        .lock()
+        .map_err(|_| "Claude chat state is unavailable.".to_string())? = Some(child);
+    *state
+        .claude_chat
+        .stdin
+        .lock()
+        .map_err(|_| "Claude chat state is unavailable.".to_string())? = Some(stdin);
 
     Ok(workspace_info)
 }
@@ -908,19 +1032,75 @@ fn terminal_kill(state: State<'_, TerminalState>) -> Result<(), String> {
     kill_pty_session(&state.terminal)
 }
 
+/// Sends one user turn to the running Claude chat as a `stream-json` line.
 #[tauri::command]
-fn claude_write(state: State<'_, TerminalState>, data: String) -> Result<(), String> {
-    write_pty_session(&state.claude, data)
+fn claude_chat_send(state: State<'_, TerminalState>, text: String) -> Result<(), String> {
+    let mut guard = state
+        .claude_chat
+        .stdin
+        .lock()
+        .map_err(|_| "Claude chat state is unavailable.".to_string())?;
+    let stdin = guard
+        .as_mut()
+        .ok_or_else(|| "Claude chat is not running.".to_string())?;
+    let message = serde_json::json!({
+        "type": "user",
+        "message": { "role": "user", "content": text }
+    })
+    .to_string();
+    stdin
+        .write_all(message.as_bytes())
+        .and_then(|_| stdin.write_all(b"\n"))
+        .and_then(|_| stdin.flush())
+        .map_err(|error| error.to_string())
 }
 
+/// Stops the running Claude chat (kills the process, drops the stdin writer).
 #[tauri::command]
-fn claude_resize(state: State<'_, TerminalState>, rows: u16, cols: u16) -> Result<(), String> {
-    resize_pty_session(&state.claude, rows, cols)
+fn claude_chat_stop(state: State<'_, TerminalState>) -> Result<(), String> {
+    if let Ok(mut guard) = state.claude_chat.stdin.lock() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = state.claude_chat.child.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    Ok(())
 }
 
+/// Persists clipboard image bytes under `~/.lumina/image-cache/` so the path can
+/// be referenced in a Claude prompt. Returns the absolute file path.
 #[tauri::command]
-fn claude_kill(state: State<'_, TerminalState>) -> Result<(), String> {
-    kill_pty_session(&state.claude)
+fn claude_save_pasted_image(bytes: Vec<u8>, extension: String) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("Pasted image is empty.".to_string());
+    }
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| "HOME is not set.".to_string())?;
+    let dir = home.join(".lumina").join("image-cache");
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+
+    let ext = extension
+        .trim()
+        .trim_start_matches('.')
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    let ext = if ext.is_empty() { "png".to_string() } else { ext };
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let name = format!("img-{stamp}-{}.{ext}", std::process::id());
+    let path = dir.join(name);
+
+    fs::write(&path, &bytes).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 /// Strips a trailing `:line` or `:line:col` (compiler / ripgrep style) only when it
@@ -1028,6 +1208,84 @@ fn complete_file_path(
     matches.sort();
     matches.truncate(limit);
     Ok(matches)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirEntryInfo {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirListing {
+    path: String,
+    parent: Option<String>,
+    entries: Vec<DirEntryInfo>,
+}
+
+/// Lists immediate children of a directory. Hidden entries (dotfiles), as well
+/// as common heavyweight folders (`node_modules`, `.git`, `target`, `dist`), are
+/// filtered out. Files are limited to supported document extensions so the Files
+/// pane only shows things the editor can actually open.
+#[tauri::command]
+fn list_directory(state: State<'_, TerminalState>, path: Option<String>) -> Result<DirListing, String> {
+    let base = resolve_relative_base(&state);
+    let raw = path
+        .as_deref()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty());
+
+    let target = match raw {
+        Some(p) => expand_user_path(p, base.as_ref()),
+        None => env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| "HOME is not set.".to_string())?,
+    };
+
+    let target = fs::canonicalize(&target).map_err(|error| error.to_string())?;
+    if !target.is_dir() {
+        return Err("Path is not a directory.".to_string());
+    }
+
+    let mut entries: Vec<DirEntryInfo> = Vec::new();
+    let read = fs::read_dir(&target).map_err(|error| error.to_string())?;
+    for entry in read.flatten() {
+        let entry_path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        let is_dir = entry_path.is_dir();
+        if is_dir {
+            if matches!(name.as_str(), "node_modules" | "target" | "dist" | "build") {
+                continue;
+            }
+        } else if !is_supported_document_path(&entry_path) {
+            continue;
+        }
+        entries.push(DirEntryInfo {
+            name,
+            path: entry_path.to_string_lossy().to_string(),
+            is_dir,
+        });
+    }
+
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+
+    Ok(DirListing {
+        parent: target
+            .parent()
+            .map(|p| p.to_string_lossy().to_string()),
+        path: target.to_string_lossy().to_string(),
+        entries,
+    })
 }
 
 #[tauri::command]
@@ -1618,6 +1876,10 @@ async fn git_generate_commit_message(
 
     let output = Command::new("claude")
         .current_dir(&repo)
+        // GUI-launched apps inherit a minimal PATH that omits ~/.local/bin and the
+        // other dirs where `claude` is typically installed, so spawn would fail with
+        // "No such file". Use the same enriched PATH as the terminal/chat panes.
+        .env("PATH", terminal_path())
         .args(["-p", &prompt])
         .output()
         .map_err(|error| {
@@ -1692,12 +1954,13 @@ pub fn run() {
             terminal_resize,
             terminal_kill,
             terminal_set_cwd,
-            claude_spawn,
-            claude_write,
-            claude_resize,
-            claude_kill,
+            claude_chat_start,
+            claude_chat_send,
+            claude_chat_stop,
+            claude_save_pasted_image,
             home_dir_path,
             complete_file_path,
+            list_directory,
             open_file_path,
             save_file_path,
             write_document,

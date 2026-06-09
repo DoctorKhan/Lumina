@@ -65,6 +65,9 @@
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
                 </button>
                 <button id="toggle-claude-btn" type="button" class="pane-toggle-btn rounded-md px-2 py-1.5 text-sm font-semibold text-violet-300 hover:text-white hover:bg-violet-900/70 transition-colors" title="Show Claude" aria-label="Toggle Claude pane" aria-pressed="false">C</button>
+                <button id="toggle-files-btn" type="button" class="pane-toggle-btn rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors" title="Show Files" aria-label="Toggle Files pane" aria-pressed="false">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+                </button>
             </div>
             <input type="file" id="file-input" accept=".md,.txt,.markdown">
         </div>
@@ -78,9 +81,8 @@
                     <div class="filename-display-wrap min-w-0 flex-1">
                         <div id="filename-path-view" class="filename-path-view">
                             <button type="button" id="filename-display" class="filename-display-btn" title="Click to open another file by path">
-                                <span class="filename-marquee-track">
-                                    <span id="filename-display-text" class="filename-display-text">Editor (Markdown + LaTeX)</span>
-                                </span>
+                                <span id="filename-name" class="filename-name">Editor (Markdown + LaTeX)</span>
+                                <span id="filename-dir" class="filename-dir"></span>
                             </button>
                             <button type="button" id="filename-copy-btn" class="filename-copy-btn hidden" title="Copy full path" aria-label="Copy full path">⎘</button>
                         </div>
@@ -160,6 +162,11 @@
                     <div class="flex items-center gap-1.5">
                         <button id="claude-develop-lumina-btn" class="claude-action-button hidden" title="Edit Lumina's own source code with Claude" aria-pressed="false">Lumina src</button>
                         <button id="claude-rebuild-lumina-btn" class="claude-action-button claude-action-primary hidden" title="Rebuild Lumina from the source checkout and reinstall">Rebuild &amp; Install</button>
+                        <select id="claude-mode" class="claude-mode-select" title="Tool permission mode for this Claude session">
+                            <option value="acceptEdits" selected>Auto-edit</option>
+                            <option value="plan">Plan (read-only)</option>
+                            <option value="bypassPermissions">Bypass all</option>
+                        </select>
                         <button id="claude-send-context-btn" class="claude-action-button claude-action-primary" title="Send file, cursor, and selected text context to Claude">Send Context</button>
                         <button id="claude-presets-btn" class="claude-action-button" title="Choose a preset Claude prompt">Prompt...</button>
                         <div class="relative">
@@ -169,11 +176,14 @@
                                 <button id="claude-replace-selection-btn" title="Replace the current selection with clipboard text">Replace selection from clipboard</button>
                             </div>
                         </div>
+                        <button id="claude-stop-btn" class="claude-action-button claude-action-stop hidden" title="Stop the current Claude session">Stop</button>
                         <button id="close-claude-btn" class="claude-icon-button" title="Hide Claude" aria-label="Hide Claude">×</button>
                     </div>
                 </div>
                 <div class="flex-1 min-h-0 min-w-0 flex flex-col">
-                    <div id="claude-terminal" class="flex-1 min-h-0 min-w-0"></div>
+                    <div id="claude-transcript" class="claude-transcript flex-1 min-h-0 min-w-0">
+                        <div id="claude-empty" class="claude-empty">Ask Claude about the open document — replies render as formatted chat.</div>
+                    </div>
                     <form id="claude-input-bar" class="claude-input-bar shrink-0">
                         <textarea id="claude-input" class="claude-input" rows="1" spellcheck="false" placeholder="Message Claude…  (Enter to send · Shift+Enter for newline)"></textarea>
                         <button id="claude-input-send" type="submit" class="claude-input-send" title="Send to Claude (Enter)" aria-label="Send to Claude">Send</button>
@@ -182,6 +192,27 @@
             </aside>
 
             <div id="side-split-resizer-2" class="side-split-resizer hidden" aria-hidden="true"></div>
+
+            <aside id="files-pane" class="terminal-pane files-pane hidden flex flex-col min-w-0">
+                <div class="h-10 bg-slate-950 flex items-center gap-3 px-4 text-xs font-medium text-slate-300 border-b border-slate-800 shrink-0">
+                    <div class="min-w-0 flex-1 flex items-center gap-2">
+                        <span class="uppercase tracking-wider shrink-0">Files</span>
+                        <span id="files-root" class="normal-case tracking-normal text-slate-400 truncate" title=""></span>
+                    </div>
+                    <div class="flex items-center gap-1.5 shrink-0">
+                        <button id="files-up-btn" class="git-action-button" title="Go up to parent folder" aria-label="Parent folder">↑</button>
+                        <button id="files-choose-btn" class="git-action-button" title="Choose a folder to browse">Open folder…</button>
+                        <button id="files-refresh-btn" class="git-action-button" title="Refresh listing" aria-label="Refresh">↻</button>
+                        <button id="close-files-btn" class="claude-icon-button" title="Hide Files" aria-label="Hide Files">×</button>
+                    </div>
+                </div>
+                <div class="flex-1 min-h-0 overflow-y-auto files-body">
+                    <div id="files-message" class="git-message hidden" role="status" aria-live="polite"></div>
+                    <ul id="files-tree" class="files-tree" role="tree"></ul>
+                </div>
+            </aside>
+
+            <div id="side-split-resizer-3" class="side-split-resizer hidden" aria-hidden="true"></div>
 
             <aside id="git-pane" class="terminal-pane git-pane hidden flex flex-col min-w-0">
                 <div class="h-10 bg-slate-950 flex items-center gap-3 px-4 text-xs font-medium text-slate-300 border-b border-slate-800 shrink-0">

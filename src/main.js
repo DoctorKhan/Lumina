@@ -28,6 +28,13 @@ import {
             marked,
             renderMermaidInPreview
         } from './previewLoaders.js';
+        import {
+            appendUserTurn,
+            createChatState,
+            describeTool,
+            parseChatLine,
+            reduceChatEvent
+        } from './claudeChatParse.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -49,7 +56,8 @@ const replaceAllBtn = document.getElementById('replace-all-btn');
 const findReplaceCloseBtn = document.getElementById('find-replace-close-btn');
         const fileInput = document.getElementById('file-input');
         const filenameDisplay = document.getElementById('filename-display');
-const filenameDisplayText = document.getElementById('filename-display-text');
+const filenameName = document.getElementById('filename-name');
+const filenameDir = document.getElementById('filename-dir');
 const filenameCopyBtn = document.getElementById('filename-copy-btn');
 const filenamePathView = document.getElementById('filename-path-view');
 const filenamePathEditor = document.getElementById('filename-path-editor');
@@ -78,11 +86,14 @@ const claudeRebuildLuminaBtn = document.getElementById('claude-rebuild-lumina-bt
         const terminalElement = document.getElementById('terminal');
         const terminalStatus = document.getElementById('terminal-status');
         const claudePane = document.getElementById('claude-pane');
-        const claudeElement = document.getElementById('claude-terminal');
+        const claudeTranscript = document.getElementById('claude-transcript');
+        const claudeEmpty = document.getElementById('claude-empty');
         const claudeStatus = document.getElementById('claude-status');
 const claudeWorkspaceStatus = document.getElementById('claude-workspace-status');
         const claudeInputBar = document.getElementById('claude-input-bar');
         const claudeInput = document.getElementById('claude-input');
+        const claudeModeSelect = document.getElementById('claude-mode');
+        const claudeStopBtn = document.getElementById('claude-stop-btn');
         const installProgressRoot = document.getElementById('install-progress');
         const installProgressFill = document.getElementById('install-progress-fill');
         const installProgressDetail = document.getElementById('install-progress-detail');
@@ -95,9 +106,19 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         const sideSplitResizers = [
             document.getElementById('side-split-resizer-1'),
             document.getElementById('side-split-resizer-2'),
+            document.getElementById('side-split-resizer-3'),
         ];
         const toggleGitBtn = document.getElementById('toggle-git-btn');
         const gitPane = document.getElementById('git-pane');
+        const toggleFilesBtn = document.getElementById('toggle-files-btn');
+        const filesPane = document.getElementById('files-pane');
+        const filesRootLabel = document.getElementById('files-root');
+        const filesTree = document.getElementById('files-tree');
+        const filesMessage = document.getElementById('files-message');
+        const filesUpBtn = document.getElementById('files-up-btn');
+        const filesChooseBtn = document.getElementById('files-choose-btn');
+        const filesRefreshBtn = document.getElementById('files-refresh-btn');
+        const closeFilesBtn = document.getElementById('close-files-btn');
         const gitBranch = document.getElementById('git-branch');
         const gitTracking = document.getElementById('git-tracking');
         const gitSections = document.getElementById('git-sections');
@@ -119,7 +140,7 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let sidePanePercent = 34;
         // Relative flex weights for the vertically stacked side panes. Equal weights
         // reproduce the old even split; the split-resizers below adjust these.
-        const paneWeights = { terminal: 1, claude: 1, git: 1 };
+        const paneWeights = { terminal: 1, claude: 1, files: 1, git: 1 };
         let terminal = null;
         let fitAddon = null;
         let terminalVisible = false;
@@ -139,8 +160,6 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let installProgressAnchor = createInstallProgressAnchorState();
         let installProgressTickTimer = null;
         const installProgressTickMs = 400;
-        let claudeTerminal = null;
-        let claudeFitAddon = null;
         let claudeVisible = false;
         let claudeStarted = false;
         // Auto-context-on-focus: remember the file we last fed Claude so we only
@@ -152,11 +171,14 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         let lastClaudeContextPath;
         let suppressClaudeFocusContext = false;
         let gitVisible = false;
-        let claudeOutputUnlisten = null;
-        let claudeResizeFrame = null;
-        let claudeScrollBottomRaf = null;
-        let claudeLastFitCols = 0;
-        let claudeLastFitRows = 0;
+        let filesVisible = false;
+        let filesRootPath = null;
+        let filesExpanded = new Set();
+        const filesRootKey = 'lumina:files-root-path';
+        const filesExpandedKey = 'lumina:files-expanded-paths';
+        let claudeChatUnlisten = null;
+        let claudeChatState = null;
+        let claudeRenderRaf = null;
 let claudeWorkspaceFilePath = null;
         let luminaSourceDir = null;
         let developLuminaMode = false;
@@ -304,20 +326,6 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             return path;
         }
 
-        function refreshFilenameMarquee() {
-            const track = filenameDisplay.querySelector('.filename-marquee-track');
-            if (!track || !filenameDisplayText) return;
-
-            filenameDisplayText.classList.remove('is-overflowing');
-            filenameDisplayText.style.removeProperty('--filename-marquee-shift');
-
-            const overflow = filenameDisplayText.scrollWidth - track.clientWidth;
-            if (overflow > 4) {
-                filenameDisplayText.classList.add('is-overflowing');
-                filenameDisplayText.style.setProperty('--filename-marquee-shift', `-${overflow}px`);
-            }
-        }
-
         function showFilenamePathToast(message) {
             if (!message) return;
             filenamePathToast.textContent = message;
@@ -332,17 +340,20 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             const path = resolveFilenamePath(label, fullPath);
             void getHomeDirectory().then(() => {
                 if (path) {
-                    filenameDisplayText.textContent = formatPathForDisplay(path);
+                    // Lead with the filename (bold, never truncated) so the open
+                    // file is obvious at a glance; trail the directory dimmed.
+                    filenameName.textContent = basename(path);
+                    filenameDir.textContent = formatPathForDisplay(dirname(path));
                     filenameDisplay.dataset.fullPath = path;
                     filenameDisplay.title = `${path}\n\nClick to open another file · ⎘ copies path`;
                     filenameCopyBtn.classList.remove('hidden');
                 } else {
-                    filenameDisplayText.textContent = label;
+                    filenameName.textContent = label;
+                    filenameDir.textContent = '';
                     delete filenameDisplay.dataset.fullPath;
                     filenameDisplay.title = label || '';
                     filenameCopyBtn.classList.add('hidden');
                 }
-                requestAnimationFrame(refreshFilenameMarquee);
             });
         }
 
@@ -537,10 +548,6 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             applyFilenamePathSuggestion(Number(item.dataset.index));
         });
 
-        window.addEventListener('resize', () => {
-            requestAnimationFrame(refreshFilenameMarquee);
-        });
-
         function setEditorContent(content, label, fullPath = '') {
             editor.value = content;
             setFilenameLabel(label, fullPath);
@@ -555,6 +562,7 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             delete filenameDisplay.dataset.fullPath;
             filenameDisplay.title = 'Bundled Lumina example guide';
             setUpdateStatus('Loaded the Lumina example guide.');
+            notifyActiveFileChanged();
             editor.focus();
         }
 
@@ -568,6 +576,7 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             updateEditorMetrics();
             schedulePreviewUpdate();
             setUpdateStatus('New document.');
+            notifyActiveFileChanged();
             editor.focus();
         }
 
@@ -624,6 +633,49 @@ function writeRecentFilePaths(paths) {
             if (directory) {
                 invoke('terminal_set_cwd', { path: directory }).catch(() => {});
             }
+            notifyActiveFileChanged();
+        }
+
+        // Side effects to run whenever the active file path changes (open, switch,
+        // save-as, new doc). Keeps the Files-pane highlight, the Claude header
+        // label, and Claude's own context in sync without each call site needing
+        // to know about all three.
+        function notifyActiveFileChanged() {
+            if (typeof highlightCurrentFileRow === 'function') highlightCurrentFileRow();
+            updateClaudeWorkspaceLabel();
+            void maybeAutoSendClaudeFileSwitch();
+        }
+
+        function updateClaudeWorkspaceLabel() {
+            if (!claudeWorkspaceStatus) return;
+            if (developLuminaMode && luminaSourceDir) return;
+            // Reflect the editor's current file as the file Claude is editing,
+            // even before the user clicks Send Context — the label was lagging
+            // until the next spawn before.
+            claudeWorkspaceFilePath = currentFilePath;
+            claudeWorkspaceStatus.textContent = currentFilePath
+                ? `Editing ${basename(currentFilePath)}`
+                : 'No file attached';
+            claudeWorkspaceStatus.title = currentFilePath || '';
+        }
+
+        async function maybeAutoSendClaudeFileSwitch() {
+            if (!claudeStarted) return;
+            if (currentFilePath === lastClaudeContextPath) return;
+            if (!currentFilePath) {
+                lastClaudeContextPath = currentFilePath;
+                return;
+            }
+            const message = `Now editing: ${currentFilePath}\n(Replaces any previous file context.)`;
+            suppressClaudeFocusContext = true;
+            try {
+                await submitClaudeMessage(message);
+                lastClaudeContextPath = currentFilePath;
+            } catch (_) {
+                // Best-effort — Claude may not be ready to accept input yet.
+            } finally {
+                setTimeout(() => { suppressClaudeFocusContext = false; }, 0);
+            }
         }
 
         function forgetOpenedPath(path) {
@@ -633,6 +685,7 @@ function writeRecentFilePaths(paths) {
     writeRecentFilePaths(readRecentFilePaths().filter((recentPath) => recentPath !== path));
             if (currentFilePath === path) {
                 currentFilePath = null;
+                notifyActiveFileChanged();
             }
         }
 
@@ -666,12 +719,11 @@ function claudeBaseContext() {
 
     return `You are helping edit a Markdown document in Lumina.
 
-Source: ${sourceLabel}
-Claude file: ${claudeWorkspaceFilePath || sourceLabel}
+File: ${claudeWorkspaceFilePath || sourceLabel}
 Cursor line: ${context.lineNumber}
 Nearest heading: ${context.heading}
 
-Use the Claude file for full-document edits. If you propose replacement text, keep it concise and valid Markdown.${selectionBlock}`;
+This file is in your working folder — read and edit it directly on disk. Keep edits valid Markdown.${selectionBlock}`;
 }
 
 // The backend pushes `lumina-file-changed` whenever the open file is modified on
@@ -841,21 +893,28 @@ async function openRecentFile(recentIndex = null) {
             }
         }
 
-        async function executePreviewRender() {
-            const rawValue = editor.value;
-            updateEditorMetrics();
+        // Shared markdown pipeline: math-protect -> marked -> math-restore ->
+        // highlight/mermaid/katex. Used by the editor preview and the Claude chat
+        // bubbles so both render code, diagrams, and LaTeX identically.
+        async function renderMarkdownInto(element, markdownText) {
             const normalizedValue = normalizeEscapedLatexDelimiters(
-                normalizeMathBlocks(rawValue)
+                normalizeMathBlocks(markdownText || "")
             );
             const protectedValue = extractMathForMarkdown(normalizedValue);
-            preview.innerHTML = restoreMathFromMarkdownHtml(
+            element.innerHTML = restoreMathFromMarkdownHtml(
                 marked.parse(protectedValue.markdown),
                 protectedValue.math
             );
+            await highlightCodeBlocksIn(element);
+            await renderMermaidInPreview(element);
+            await applyKatexToPreview(element, normalizedValue);
+        }
+
+        async function executePreviewRender() {
+            const rawValue = editor.value;
+            updateEditorMetrics();
+            await renderMarkdownInto(preview, rawValue);
             applySmartOutlineStyles();
-            await highlightCodeBlocksIn(preview);
-            await renderMermaidInPreview(preview);
-            await applyKatexToPreview(preview, normalizedValue);
             syncPreviewScrollToEditor();
         }
 
@@ -918,10 +977,12 @@ async function openRecentFile(recentIndex = null) {
                     path: currentFilePath,
                     content: editor.value
                 });
+                const pathChanged = currentFilePath !== file.path;
                 currentFilePath = file.path;
                 currentFileMtime = file.modifiedMs ?? currentFileMtime;
                 setFilenameLabel(`Editing: ${file.path}`, file.path);
                 setUpdateStatus('Saved.');
+                if (pathChanged) notifyActiveFileChanged();
                 if (gitVisible) void refreshGitStatus();
             } catch (error) {
                 setUpdateStatus(`Save failed: ${error?.message || error}`);
@@ -1469,15 +1530,23 @@ async function checkForUpdate({ background = false } = {}) {
             });
         }
 
+        // True when the chat transcript is scrolled (near) the bottom, so new
+        // messages keep tailing only while the user is already at the latest.
+        function isClaudeTranscriptAtBottom() {
+            if (!claudeTranscript) return true;
+            const slack = 28;
+            return (
+                claudeTranscript.scrollHeight -
+                    claudeTranscript.scrollTop -
+                    claudeTranscript.clientHeight <=
+                slack
+            );
+        }
+
         function scheduleClaudeScrollToBottom() {
-            if (!claudeTerminal) return;
-            if (claudeScrollBottomRaf != null) return;
-            claudeScrollBottomRaf = requestAnimationFrame(() => {
-                claudeScrollBottomRaf = null;
-                claudeTerminal.scrollToBottom();
-                requestAnimationFrame(() => {
-                    claudeTerminal.scrollToBottom();
-                });
+            if (!claudeTranscript) return;
+            requestAnimationFrame(() => {
+                claudeTranscript.scrollTop = claudeTranscript.scrollHeight;
             });
         }
 
@@ -1505,20 +1574,6 @@ async function checkForUpdate({ background = false } = {}) {
             }).catch(() => {});
         }
 
-        function applyClaudeFit() {
-            if (!claudeVisible || !claudeFitAddon || !claudeTerminal) return;
-            claudeFitAddon.fit();
-            scheduleClaudeScrollToBottom();
-            if (!claudeTerminal.cols || !claudeTerminal.rows) return;
-            if (claudeTerminal.cols === claudeLastFitCols && claudeTerminal.rows === claudeLastFitRows) return;
-            claudeLastFitCols = claudeTerminal.cols;
-            claudeLastFitRows = claudeTerminal.rows;
-            invoke('claude_resize', {
-                cols: claudeTerminal.cols,
-                rows: claudeTerminal.rows
-            }).catch(() => {});
-        }
-
         function resizeTerminal({ settle = true } = {}) {
             if (!terminalVisible || !terminal || !fitAddon) return;
 
@@ -1530,19 +1585,10 @@ async function checkForUpdate({ background = false } = {}) {
             });
         }
 
-        function resizeClaude({ settle = true } = {}) {
-            if (!claudeVisible || !claudeTerminal || !claudeFitAddon) return;
-
-            cancelAnimationFrame(claudeResizeFrame);
-            claudeResizeFrame = requestAnimationFrame(() => {
-                applyClaudeFit();
-                if (settle) requestAnimationFrame(applyClaudeFit);
-            });
-        }
-
+        // The Claude pane is now a flex chat view (no xterm), so only the embedded
+        // terminal needs PTY refitting on layout changes.
         function resizeTerminals(options) {
             resizeTerminal(options);
-            resizeClaude(options);
         }
 
         // Live drag path: fitAddon.fit() reflows the whole xterm scrollback, which is
@@ -1558,56 +1604,294 @@ async function checkForUpdate({ background = false } = {}) {
             resizeTerminals({ settle: false });
         }
 
-async function writeClaudePrompt(prompt) {
-    // Any programmatic send focuses the terminal at the end, which would re-fire
-    // the focus->auto-context path. Suppress it for the duration of the send.
-    suppressClaudeFocusContext = true;
-    try {
-        await toggleClaude(true);
-        if (!claudeStarted) return;
-
-        claudeTerminal?.write(`\r\nSending prompt to Claude...\r\n`);
-        scheduleClaudeScrollToBottom();
-        await invoke('claude_write', { data: `\x1b[200~${prompt}\x1b[201~\r` });
-        claudeTerminal?.focus();
-    } finally {
-        lastClaudeContextPath = currentFilePath;
-        // Clear after the focus event settles so the handler sees the flag.
-        setTimeout(() => { suppressClaudeFocusContext = false; }, 0);
-    }
-}
-
-// Sends a user-composed message to the Claude PTY. Typing happens in a normal
-// textarea (no IME/reflow corruption from typing straight into xterm), then the
-// finished text is delivered as one bracketed paste so multi-line messages and
-// slash commands arrive intact, followed by Enter to submit.
-async function sendClaudeMessage(text) {
-    const message = text.replace(/\s+$/, '');
+// Core send: make sure the chat session is live, append the user turn to the
+// transcript, and hand it to the CLI over stream-json. A no-op for blank text or
+// while a reply is still streaming (use Stop to interrupt first).
+async function submitClaudeMessage(text) {
+    const message = String(text ?? '').replace(/\s+$/, '');
     if (!message.trim()) return;
+    if (claudeChatState && claudeChatState.busy) return;
     suppressClaudeFocusContext = true;
     try {
         await toggleClaude(true);
-        if (!claudeStarted) return;
-        await invoke('claude_write', { data: `\x1b[200~${message}\x1b[201~\r` });
-        scheduleClaudeScrollToBottom();
+        if (!claudeStarted || !claudeChatState) return;
+        appendUserTurn(claudeChatState, message);
+        renderClaudeChat();
+        updateClaudeBusyUI();
+        await invoke('claude_chat_send', { text: message });
     } catch (error) {
-        claudeTerminal?.write(`\r\nClaude write failed: ${error}\r\n`);
-        scheduleClaudeScrollToBottom();
+        if (claudeChatState) claudeChatState.error = `Send failed: ${error?.message || error}`;
+        renderClaudeChat();
     } finally {
         lastClaudeContextPath = currentFilePath;
         setTimeout(() => { suppressClaudeFocusContext = false; }, 0);
     }
 }
 
-// Grows the input box with its content up to the CSS max-height, then scrolls.
+// sendClaudeContext / presets funnel through here so a "prompt" is just a message.
+async function writeClaudePrompt(prompt) {
+    await submitClaudeMessage(prompt);
+}
+
+// Pasted-image tracking: the textarea shows `[Image #N]` placeholders while the
+// real file paths live here, keyed by N. Resolved into the message at send time.
+const claudePastedImagePaths = new Map();
+let claudePastedImageCounter = 0;
+
+function resolveClaudePastedImages(text) {
+    if (!claudePastedImagePaths.size) return text;
+    return text.replace(/\[Image #(\d+)\]/g, (match, n) => {
+        const path = claudePastedImagePaths.get(Number(n));
+        return path ? `[Image #${n}: ${path}]` : match;
+    });
+}
+
+// Composer send: resolve any pasted-image placeholders, then submit.
+async function sendClaudeMessage(text) {
+    const resolved = resolveClaudePastedImages(text);
+    claudePastedImagePaths.clear();
+    claudePastedImageCounter = 0;
+    await submitClaudeMessage(resolved);
+}
+
+// ----- Chat transcript rendering --------------------------------------------
+// Incremental renderer: each turn gets one element, built once and then frozen
+// ("finalized"). Only the live (last, still-streaming) turn re-renders per frame.
+// While streaming, text blocks use a fast synchronous markdown parse; on finalize
+// they get the full pipeline (highlight + mermaid + KaTeX) via renderMarkdownInto.
+let claudeTurnEls = [];
+
+function resetClaudeTranscript() {
+    claudeTurnEls = [];
+    if (claudeTranscript) {
+        claudeTranscript.innerHTML = '';
+        if (claudeEmpty) claudeTranscript.appendChild(claudeEmpty);
+    }
+    if (claudeEmpty) claudeEmpty.classList.remove('hidden');
+}
+
+function renderClaudeChat() {
+    if (claudeRenderRaf != null) return;
+    claudeRenderRaf = requestAnimationFrame(() => {
+        claudeRenderRaf = null;
+        flushClaudeChat();
+    });
+}
+
+function flushClaudeChat() {
+    if (!claudeTranscript || !claudeChatState) return;
+    const state = claudeChatState;
+    const stick = isClaudeTranscriptAtBottom();
+
+    if (claudeEmpty) claudeEmpty.classList.toggle('hidden', state.turns.length > 0);
+
+    for (let i = 0; i < state.turns.length; i += 1) {
+        const turn = state.turns[i];
+        let entry = claudeTurnEls[i];
+        if (!entry) {
+            entry = createTurnEl(turn);
+            claudeTurnEls[i] = entry;
+            claudeTranscript.appendChild(entry.root);
+        }
+        if (entry.finalized) continue;
+
+        // A turn stops changing once a newer turn exists or the run is idle.
+        const shouldFinalize = turn.role === 'user' || i < state.turns.length - 1 || !state.busy;
+        updateTurnEl(entry, turn, shouldFinalize);
+        if (shouldFinalize) entry.finalized = true;
+    }
+
+    renderClaudeFooter(state);
+    if (stick) scheduleClaudeScrollToBottom();
+}
+
+function createTurnEl(turn) {
+    const root = document.createElement('div');
+    root.className = `claude-msg claude-msg-${turn.role}`;
+    if (turn.role === 'user') {
+        const bubble = document.createElement('div');
+        bubble.className = 'claude-bubble';
+        root.appendChild(bubble);
+        return { root, bubble, finalized: false };
+    }
+    const blocks = document.createElement('div');
+    blocks.className = 'claude-blocks';
+    root.appendChild(blocks);
+    return { root, blocks, finalized: false };
+}
+
+function updateTurnEl(entry, turn, final) {
+    if (turn.role === 'user') {
+        entry.bubble.textContent = turn.text || '';
+        return;
+    }
+    const blocks = entry.blocks;
+    blocks.innerHTML = '';
+    for (const block of turn.blocks || []) {
+        if (!block) continue;
+        if (block.kind === 'thinking') {
+            blocks.appendChild(buildThinkingBlock(block));
+        } else if (block.kind === 'tool') {
+            blocks.appendChild(buildToolBlock(block));
+        } else {
+            blocks.appendChild(buildTextBlock(block, final));
+        }
+    }
+}
+
+function buildTextBlock(block, final) {
+    const el = document.createElement('div');
+    el.className = 'claude-text markdown-body';
+    const text = block.text || '';
+    if (final) {
+        // Full pipeline (async); fine to fire-and-forget into this stable element.
+        void renderMarkdownInto(el, text);
+    } else {
+        el.innerHTML = marked.parse(text);
+    }
+    return el;
+}
+
+function buildThinkingBlock(block) {
+    const details = document.createElement('details');
+    details.className = 'claude-think';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Thinking';
+    const body = document.createElement('div');
+    body.className = 'claude-think-body';
+    body.textContent = block.text || '';
+    details.appendChild(summary);
+    details.appendChild(body);
+    return details;
+}
+
+function buildToolBlock(block) {
+    const details = document.createElement('details');
+    details.className = 'claude-tool';
+    if (block.isError) details.classList.add('claude-tool-error');
+    const summary = document.createElement('summary');
+    const icon = block.result == null && !block.done ? '⚙️' : block.isError ? '⚠️' : '🔧';
+    summary.textContent = `${icon} ${describeTool(block)}`;
+    details.appendChild(summary);
+
+    const inputText = block.input != null ? safeStringify(block.input) : block.inputJson || '';
+    if (inputText) {
+        const pre = document.createElement('pre');
+        pre.className = 'claude-tool-input';
+        pre.textContent = inputText;
+        details.appendChild(pre);
+    }
+    if (block.result != null && block.result !== '') {
+        const pre = document.createElement('pre');
+        pre.className = 'claude-tool-result';
+        pre.textContent = block.result;
+        details.appendChild(pre);
+    }
+    return details;
+}
+
+function safeStringify(value) {
+    try {
+        return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    } catch {
+        return String(value);
+    }
+}
+
+function renderClaudeFooter(state) {
+    // Footer + error live after all turns; cheap to rebuild each flush.
+    if (claudeFooterEl && claudeFooterEl.parentNode) claudeFooterEl.remove();
+    claudeFooterEl = null;
+
+    const parts = [];
+    if (state.error) parts.push({ cls: 'claude-error', text: state.error });
+    if (state.result && !state.busy) {
+        const bits = [];
+        if (typeof state.result.durationMs === 'number') {
+            bits.push(`${(state.result.durationMs / 1000).toFixed(1)}s`);
+        }
+        if (typeof state.result.costUsd === 'number') {
+            bits.push(`$${state.result.costUsd.toFixed(4)}`);
+        }
+        if (state.result.isError) bits.unshift('error');
+        if (bits.length) parts.push({ cls: 'claude-result', text: bits.join(' · ') });
+    }
+    if (!parts.length) return;
+
+    claudeFooterEl = document.createElement('div');
+    claudeFooterEl.className = 'claude-footer';
+    for (const part of parts) {
+        const span = document.createElement('div');
+        span.className = part.cls;
+        span.textContent = part.text;
+        claudeFooterEl.appendChild(span);
+    }
+    claudeTranscript.appendChild(claudeFooterEl);
+}
+
+let claudeFooterEl = null;
+
+// Reflect run state in the header: status text, Stop button, composer hint.
+function updateClaudeBusyUI() {
+    const busy = Boolean(claudeChatState && claudeChatState.busy);
+    if (claudeStatus) claudeStatus.textContent = !claudeStarted ? 'Stopped' : busy ? 'Thinking…' : 'Ready';
+    if (claudeStopBtn) claudeStopBtn.classList.toggle('hidden', !busy);
+    if (claudeInput) claudeInput.classList.toggle('claude-input-busy', busy);
+}
+
+async function stopClaudeChat() {
+    try {
+        await invoke('claude_chat_stop');
+    } catch (_) {
+        /* ignore */
+    }
+    if (claudeChatState) {
+        claudeChatState.busy = false;
+        claudeChatState.exited = true;
+    }
+    renderClaudeChat();
+    updateClaudeBusyUI();
+}
+
+// Save a pasted-image File to disk via Tauri and insert an `[Image #N]` marker
+// at the cursor. The actual path is substituted in at send time so the visible
+// composer text stays short — matches the regular Claude CLI paste UX.
+async function handleClaudeImagePaste(file) {
+    if (!file || !claudeInput) return;
+    const buffer = await file.arrayBuffer();
+    const bytes = Array.from(new Uint8Array(buffer));
+    const mime = file.type || 'image/png';
+    const extension = mime.split('/')[1] || 'png';
+    let path;
+    try {
+        path = await invoke('claude_save_pasted_image', { bytes, extension });
+    } catch (error) {
+        setUpdateStatus(`Could not save pasted image: ${error}`);
+        return;
+    }
+    const n = ++claudePastedImageCounter;
+    claudePastedImagePaths.set(n, path);
+
+    const marker = `[Image #${n}]`;
+    const start = claudeInput.selectionStart ?? claudeInput.value.length;
+    const end = claudeInput.selectionEnd ?? claudeInput.value.length;
+    const before = claudeInput.value.slice(0, start);
+    const after = claudeInput.value.slice(end);
+    const needsLead = before.length > 0 && !/\s$/.test(before);
+    const needsTail = after.length > 0 && !/^\s/.test(after);
+    const insert = `${needsLead ? ' ' : ''}${marker}${needsTail ? ' ' : ''}`;
+    claudeInput.value = `${before}${insert}${after}`;
+    const caret = before.length + insert.length;
+    claudeInput.setSelectionRange(caret, caret);
+    autoSizeClaudeInput();
+}
+
+// Grows the input box with its content up to the CSS max-height. The transcript
+// above is a flex child, so it shrinks to make room automatically.
 function autoSizeClaudeInput() {
     if (!claudeInput) return;
     claudeInput.style.height = 'auto';
     claudeInput.style.height = `${claudeInput.scrollHeight}px`;
-    // The composer and xterm share a flex column; refit the terminal so growing
-    // the box doesn't clip Claude's output. resizeClaude is rAF-debounced and
-    // no-ops when the cell grid is unchanged, so this is cheap per keystroke.
-    resizeClaude();
 }
 
 function wireClaudeInputBar() {
@@ -1619,9 +1903,26 @@ function wireClaudeInputBar() {
         void maybeAutoSendClaudeContext();
     });
 
-    // Enter sends; Shift+Enter inserts a newline. Keys are composed locally, so
-    // arrow/history navigation never reaches Claude's TUI from here — click into
-    // the terminal itself to drive interactive prompts (permissions, menus).
+    claudeInput.addEventListener('paste', (event) => {
+        const items = event.clipboardData?.items;
+        if (!items) return;
+        const images = [];
+        for (const item of items) {
+            if (item.kind === 'file' && item.type.startsWith('image/')) {
+                const file = item.getAsFile();
+                if (file) images.push(file);
+            }
+        }
+        if (!images.length) return;
+        event.preventDefault();
+        (async () => {
+            for (const file of images) {
+                await handleClaudeImagePaste(file);
+            }
+        })();
+    });
+
+    // Enter sends; Shift+Enter inserts a newline.
     claudeInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
             event.preventDefault();
@@ -1804,76 +2105,62 @@ async function replaceSelectionFromClipboard() {
         async function ensureClaude() {
             if (claudeStarted) return;
 
-            claudeTerminal = new Terminal({
-                cursorBlink: true,
-                // No convertEol: the PTY already emits CRLF for cooked output, and
-                // full-screen TUIs (Claude Code) send bare \n as a same-column line
-                // feed plus their own cursor control. Converting \n→\r\n forces the
-                // cursor to column 0 mid-frame and corrupts the redraw (overlapping
-                // spinner frames, leftover characters from the previous frame).
-                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Apple Symbols", "Apple Color Emoji", monospace',
-                fontSize: 13,
-                // Required by the Unicode 11 addon below: without it xterm uses
-                // Unicode 6 character widths, so emoji/symbols in TUIs like Claude
-                // Code drift out of alignment and overdraw the input border.
-                allowProposedApi: true,
-                theme: terminalTheme()
-            });
-            claudeFitAddon = new FitAddon();
-            claudeTerminal.loadAddon(claudeFitAddon);
-            claudeTerminal.loadAddon(new Unicode11Addon());
-            claudeTerminal.unicode.activeVersion = '11';
-            claudeTerminal.open(claudeElement);
-            claudeTerminal.textarea?.addEventListener('focus', () => {
-                void maybeAutoSendClaudeContext();
-            });
-            claudeTerminal.onData((data) => {
-                invoke('claude_write', { data }).catch((error) => {
-                    claudeTerminal.write(`\r\nClaude write failed: ${error}\r\n`);
-                    scheduleClaudeScrollToBottom();
-                });
-            });
+            // Drop any listener left over from a prior (exited) session so a
+            // restart doesn't stack duplicate handlers onto `claude-chat`.
+            claudeChatUnlisten?.();
+            claudeChatUnlisten = null;
 
+            claudeChatState = createChatState();
+            resetClaudeTranscript();
             claudeStatus.textContent = 'Starting';
-            claudeTerminal.write('Starting Claude...\r\n');
-            scheduleClaudeScrollToBottom();
-            claudeOutputUnlisten = await listen('claude-output', (event) => {
-                const stick = isTermAtBottom(claudeTerminal);
-                claudeTerminal.write(event.payload);
-                if (stick) scheduleClaudeScrollToBottom();
+
+            // Subscribe before spawning so the init event isn't missed. The reader
+            // thread forwards one JSON line per event on `claude-chat`.
+            claudeChatUnlisten = await listen('claude-chat', (event) => {
+                const evt = parseChatLine(event.payload);
+                if (!evt) return;
+                reduceChatEvent(claudeChatState, evt);
+                renderClaudeChat();
+                updateClaudeBusyUI();
+                if (evt.type === '__exit') {
+                    claudeStarted = false;
+                    updateClaudeBusyUI();
+                }
             });
 
-            claudeFitAddon.fit();
-            scheduleClaudeScrollToBottom();
-            const spawnArgs = {
-                cols: claudeTerminal.cols,
-                rows: claudeTerminal.rows
-            };
+            const startArgs = { permissionMode: claudeModeSelect?.value || 'acceptEdits' };
             if (developLuminaMode && luminaSourceDir) {
-                claudeTerminal.write(`Editing Lumina source. Claude is opening:\r\n${luminaSourceDir}\r\nAsk Claude to make changes, then use the Rebuild & Install button when ready.\r\n`);
                 setUpdateStatus(`Claude is editing Lumina source at ${luminaSourceDir}.`);
-                spawnArgs.cwd = luminaSourceDir;
+                startArgs.cwd = luminaSourceDir;
             } else if (currentFilePath) {
                 const directory = currentFileDirectory();
-                const accessMessage = `Claude will open this file's folder so it can read and edit the current document:\r\n${directory}\r\nIf macOS asks for folder access, it is for this Claude editing session.\r\n`;
-                claudeTerminal.write(accessMessage);
-                setUpdateStatus(`Claude may ask macOS for access to ${directory}.`);
-                claudeTerminal.write(`Saving and opening Claude in the file directory:\r\n${currentFilePath}\r\n`);
+                setUpdateStatus(`Claude can read and edit files in ${directory}.`);
+                // Persist the buffer first so Claude reads the latest content, then
+                // keep the watcher live so its on-disk edits flow back to the editor.
                 const savedFile = await invoke('write_document', {
                     path: currentFilePath,
                     content: editor.value
                 });
                 currentFileMtime = savedFile.modifiedMs ?? currentFileMtime;
-                spawnArgs.filePath = currentFilePath;
-                spawnArgs.cwd = currentFileDirectory();
-                // Ensure the watcher is live so Claude's edits flow back into the
-                // editor and preview, even if this file was created via Save As.
+                startArgs.filePath = currentFilePath;
+                startArgs.cwd = currentFileDirectory();
                 startFileWatcher(currentFilePath, currentFileMtime);
-            } else {
-                claudeTerminal.write('No saved file path is open; starting Claude in the current terminal directory.\r\n');
             }
-            scheduleClaudeScrollToBottom();
-            const workspaceInfo = await invoke('claude_spawn', spawnArgs);
+
+            let workspaceInfo = null;
+            try {
+                workspaceInfo = await invoke('claude_chat_start', startArgs);
+            } catch (error) {
+                claudeStatus.textContent = 'Error';
+                if (claudeChatState) {
+                    claudeChatState.error = `Claude failed to start: ${error?.message || error}`;
+                }
+                renderClaudeChat();
+                claudeChatUnlisten?.();
+                claudeChatUnlisten = null;
+                throw error;
+            }
+
             if (developLuminaMode && luminaSourceDir) {
                 claudeWorkspaceFilePath = null;
                 claudeWorkspaceStatus.textContent = `Editing Lumina source · ${basename(luminaSourceDir)}`;
@@ -1886,9 +2173,9 @@ async function replaceSelectionFromClipboard() {
                 claudeWorkspaceStatus.title = claudeWorkspaceFilePath || 'Claude is using the current terminal directory';
             }
             claudeStarted = true;
-            claudeStatus.textContent = 'Running';
-            resizeClaude();
-            setTimeout(resizeClaude, 80);
+            // Suppress the focus auto-context for the file we just opened with.
+            lastClaudeContextPath = currentFilePath;
+            updateClaudeBusyUI();
         }
 
         // Run the Documents-touching source-checkout probes once, on first need.
@@ -1936,19 +2223,16 @@ async function replaceSelectionFromClipboard() {
                     : 'End the Lumina source Claude session and return to editing the open document?';
                 if (!window.confirm(message)) return;
                 try {
-                    await invoke('claude_kill');
+                    await invoke('claude_chat_stop');
                 } catch (_) {
                     // best effort
                 }
-                claudeOutputUnlisten?.();
-                claudeOutputUnlisten = null;
+                claudeChatUnlisten?.();
+                claudeChatUnlisten = null;
                 claudeStarted = false;
-                if (claudeTerminal) {
-                    claudeTerminal.dispose();
-                    claudeTerminal = null;
-                    claudeFitAddon = null;
-                }
-                claudeElement.innerHTML = '';
+                claudeChatState = null;
+                resetClaudeTranscript();
+                updateClaudeBusyUI();
             }
             developLuminaMode = turningOn;
             updateDevelopLuminaUi();
@@ -1989,16 +2273,24 @@ async function replaceSelectionFromClipboard() {
             setPaneToggleState(toggleTerminalBtn, terminalVisible, ['ring-1', 'ring-sky-500/40']);
             setPaneToggleState(toggleClaudeBtn, claudeVisible, ['bg-violet-700', 'ring-1', 'ring-violet-400/50']);
             setPaneToggleState(toggleGitBtn, gitVisible, ['ring-1', 'ring-emerald-500/40']);
+            setPaneToggleState(toggleFilesBtn, filesVisible, ['ring-1', 'ring-sky-500/40']);
             toggleSourceBtn.title = sourceCollapsed ? 'Show source pane' : 'Hide source pane';
             toggleTerminalBtn.title = terminalVisible ? 'Hide terminal' : 'Show terminal';
             toggleClaudeBtn.title = claudeVisible ? 'Hide Claude' : 'Show Claude';
             toggleGitBtn.title = gitVisible ? 'Hide Git' : 'Show Git';
+            toggleFilesBtn.title = filesVisible ? 'Hide Files' : 'Show Files';
             syncAppMenu();
         }
 
+        function visibleSidePaneCount() {
+            return (terminalVisible ? 1 : 0)
+                + (claudeVisible ? 1 : 0)
+                + (filesVisible ? 1 : 0)
+                + (gitVisible ? 1 : 0);
+        }
+
         function syncSidePaneLayout() {
-            const visibleCount =
-                (terminalVisible ? 1 : 0) + (claudeVisible ? 1 : 0) + (gitVisible ? 1 : 0);
+            const visibleCount = visibleSidePaneCount();
             const sidePaneVisible = visibleCount > 0;
             if (!sidePane) {
                 resizeTerminals();
@@ -2015,17 +2307,35 @@ async function replaceSelectionFromClipboard() {
         // Apply the relative flex weights to the visible stacked panes and show a
         // drag handle between each adjacent visible pair.
         function applyVerticalPaneSizing() {
-            const split = (terminalVisible ? 1 : 0) + (claudeVisible ? 1 : 0) + (gitVisible ? 1 : 0) > 1;
+            const split = visibleSidePaneCount() > 1;
             terminalPane.style.flex = split ? `${paneWeights.terminal} 1 0` : '';
             claudePane.style.flex = split ? `${paneWeights.claude} 1 0` : '';
+            filesPane.style.flex = split ? `${paneWeights.files} 1 0` : '';
             gitPane.style.flex = split ? `${paneWeights.git} 1 0` : '';
 
-            // Resizer 1 lives between the terminal and Claude panes; resizer 2 between
-            // Claude and git. A resizer is active only when the pane directly above it
-            // is visible and some pane below it is too, so each real gap gets one handle.
-            const firstBelow1 = claudeVisible ? 'claude' : (gitVisible ? 'git' : null);
-            configureSplitResizer(sideSplitResizers[0], terminalVisible && firstBelow1 ? 'terminal' : null, firstBelow1);
-            configureSplitResizer(sideSplitResizers[1], claudeVisible && gitVisible ? 'claude' : null, 'git');
+            // Stack order top→bottom: terminal, claude, files, git. Each resizer is
+            // active only when the pane directly above it is visible and at least
+            // one pane below it is, so each real gap gets one handle.
+            const order = [
+                ['terminal', terminalVisible],
+                ['claude', claudeVisible],
+                ['files', filesVisible],
+                ['git', gitVisible],
+            ];
+            let prevVisibleKey = null;
+            let resizerIndex = 0;
+            for (let i = 0; i < order.length; i += 1) {
+                const [key, visible] = order[i];
+                if (!visible) continue;
+                if (prevVisibleKey !== null) {
+                    configureSplitResizer(sideSplitResizers[resizerIndex], prevVisibleKey, key);
+                    resizerIndex += 1;
+                }
+                prevVisibleKey = key;
+            }
+            for (; resizerIndex < sideSplitResizers.length; resizerIndex += 1) {
+                configureSplitResizer(sideSplitResizers[resizerIndex], null, null);
+            }
         }
 
         function configureSplitResizer(resizer, aboveKey, belowKey) {
@@ -2070,15 +2380,13 @@ async function replaceSelectionFromClipboard() {
                 void ensureSourceCheckoutInfo();
                 try {
                     await ensureClaude();
-                    resizeClaude();
-                    // Land in the composer, not the xterm — typing belongs in the
-                    // textarea so it can't corrupt Claude's TUI input line.
-                    if (claudeInput) claudeInput.focus();
-                    else claudeTerminal.focus();
+                    claudeInput?.focus();
                 } catch (error) {
                     claudeStatus.textContent = 'Error';
-                    claudeTerminal?.write(`\r\nClaude failed to start: ${error}\r\n`);
-                    scheduleClaudeScrollToBottom();
+                    if (claudeChatState) {
+                        claudeChatState.error = `Claude failed to start: ${error?.message || error}`;
+                        renderClaudeChat();
+                    }
                 }
             }
         }
@@ -2090,6 +2398,217 @@ async function replaceSelectionFromClipboard() {
             syncPaneToggleButtons();
             if (gitVisible) {
                 await refreshGitStatus();
+            }
+        }
+
+        async function toggleFiles(forceVisible) {
+            filesVisible = typeof forceVisible === 'boolean' ? forceVisible : !filesVisible;
+            filesPane.classList.toggle('hidden', !filesVisible);
+            syncSidePaneLayout();
+            syncPaneToggleButtons();
+            if (filesVisible) {
+                await ensureFilesRoot();
+                await refreshFilesTree();
+            }
+        }
+
+        function setFilesMessage(text, isError = false) {
+            if (!filesMessage) return;
+            if (!text) {
+                filesMessage.classList.add('hidden');
+                filesMessage.textContent = '';
+                return;
+            }
+            filesMessage.textContent = text;
+            filesMessage.classList.remove('hidden');
+            filesMessage.classList.toggle('git-message-error', isError);
+        }
+
+        function readFilesExpanded() {
+            try {
+                const raw = localStorage.getItem(filesExpandedKey);
+                if (!raw) return new Set();
+                const list = JSON.parse(raw);
+                return Array.isArray(list) ? new Set(list) : new Set();
+            } catch (_) {
+                return new Set();
+            }
+        }
+
+        function persistFilesExpanded() {
+            try {
+                localStorage.setItem(filesExpandedKey, JSON.stringify([...filesExpanded]));
+            } catch (_) {}
+        }
+
+        async function ensureFilesRoot() {
+            if (filesRootPath) return;
+            const stored = localStorage.getItem(filesRootKey);
+            if (stored) {
+                filesRootPath = stored;
+                filesExpanded = readFilesExpanded();
+                return;
+            }
+            // Prefer the directory of the currently open file; fall back to $HOME.
+            const fileDir = currentFileDirectory();
+            if (fileDir) {
+                filesRootPath = fileDir;
+            } else {
+                try {
+                    filesRootPath = await invoke('home_dir_path');
+                } catch (_) {
+                    filesRootPath = null;
+                }
+            }
+            filesExpanded = readFilesExpanded();
+        }
+
+        async function listDir(path) {
+            return invoke('list_directory', { path });
+        }
+
+        async function setFilesRoot(path) {
+            filesRootPath = path;
+            filesExpanded = new Set();
+            persistFilesExpanded();
+            try {
+                localStorage.setItem(filesRootKey, path);
+            } catch (_) {}
+            await refreshFilesTree();
+        }
+
+        async function chooseFilesRoot() {
+            try {
+                const selected = await openDialog({
+                    directory: true,
+                    multiple: false,
+                    defaultPath: filesRootPath || currentFileDirectory() || undefined,
+                    title: 'Choose folder to browse'
+                });
+                if (!selected) return;
+                await setFilesRoot(selected);
+            } catch (error) {
+                setFilesMessage(`Unable to open folder: ${error?.message || error}`, true);
+            }
+        }
+
+        async function goUpFilesRoot() {
+            if (!filesRootPath) return;
+            try {
+                const listing = await listDir(filesRootPath);
+                if (!listing.parent) {
+                    setFilesMessage('Already at filesystem root.');
+                    return;
+                }
+                await setFilesRoot(listing.parent);
+            } catch (error) {
+                setFilesMessage(`Unable to go up: ${error?.message || error}`, true);
+            }
+        }
+
+        async function refreshFilesTree() {
+            if (!filesRootPath) {
+                filesTree.innerHTML = '';
+                filesRootLabel.textContent = 'No folder selected';
+                filesRootLabel.title = '';
+                setFilesMessage('Choose a folder to browse.');
+                return;
+            }
+            setFilesMessage('');
+            filesRootLabel.textContent = basename(filesRootPath) || filesRootPath;
+            filesRootLabel.title = filesRootPath;
+            try {
+                const listing = await listDir(filesRootPath);
+                filesRootPath = listing.path;
+                filesTree.innerHTML = '';
+                const children = await buildFilesTreeChildren(listing.entries, 0);
+                if (children.length === 0) {
+                    const empty = document.createElement('li');
+                    empty.className = 'files-empty';
+                    empty.textContent = 'No editable files in this folder.';
+                    filesTree.appendChild(empty);
+                } else {
+                    for (const node of children) filesTree.appendChild(node);
+                }
+                highlightCurrentFileRow();
+            } catch (error) {
+                filesTree.innerHTML = '';
+                setFilesMessage(error?.message || String(error), true);
+            }
+        }
+
+        async function buildFilesTreeChildren(entries, depth) {
+            const nodes = [];
+            for (const entry of entries) {
+                const li = document.createElement('li');
+                li.dataset.path = entry.path;
+                li.dataset.kind = entry.isDir ? 'dir' : 'file';
+
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'files-row';
+                row.dataset.path = entry.path;
+                row.dataset.kind = entry.isDir ? 'dir' : 'file';
+
+                const indent = document.createElement('span');
+                indent.className = 'files-row-indent';
+                indent.style.width = `${depth * 14}px`;
+                row.appendChild(indent);
+
+                const icon = document.createElement('span');
+                icon.className = 'files-row-icon';
+                icon.textContent = entry.isDir
+                    ? (filesExpanded.has(entry.path) ? '▾' : '▸')
+                    : '·';
+                row.appendChild(icon);
+
+                const name = document.createElement('span');
+                name.className = 'files-row-name';
+                name.textContent = entry.name;
+                row.appendChild(name);
+
+                row.addEventListener('click', () => handleFilesRowClick(entry, row));
+                li.appendChild(row);
+
+                if (entry.isDir && filesExpanded.has(entry.path)) {
+                    try {
+                        const sub = await listDir(entry.path);
+                        const subList = document.createElement('ul');
+                        subList.className = 'files-tree';
+                        const subNodes = await buildFilesTreeChildren(sub.entries, depth + 1);
+                        for (const n of subNodes) subList.appendChild(n);
+                        li.appendChild(subList);
+                    } catch (_) {
+                        // If the directory can't be read (perms etc.), collapse it
+                        // silently — the row stays visible at the parent level.
+                        filesExpanded.delete(entry.path);
+                    }
+                }
+
+                nodes.push(li);
+            }
+            return nodes;
+        }
+
+        async function handleFilesRowClick(entry, row) {
+            if (entry.isDir) {
+                if (filesExpanded.has(entry.path)) filesExpanded.delete(entry.path);
+                else filesExpanded.add(entry.path);
+                persistFilesExpanded();
+                await refreshFilesTree();
+                return;
+            }
+            try {
+                await openFilePath(entry.path);
+            } catch (error) {
+                setFilesMessage(`Unable to open ${entry.name}: ${error?.message || error}`, true);
+            }
+        }
+
+        function highlightCurrentFileRow() {
+            if (!filesTree) return;
+            for (const row of filesTree.querySelectorAll('.files-row')) {
+                row.setAttribute('aria-selected', String(row.dataset.path === currentFilePath));
             }
         }
 
@@ -2510,6 +3029,11 @@ installUpdateBadge.addEventListener('click', installDetectedUpdate);
         toggleClaudeBtn.addEventListener('click', () => toggleClaude());
         toggleGitBtn.addEventListener('click', () => { void toggleGit(); });
         closeGitBtn.addEventListener('click', () => { void toggleGit(false); });
+        toggleFilesBtn.addEventListener('click', () => { void toggleFiles(); });
+        closeFilesBtn.addEventListener('click', () => { void toggleFiles(false); });
+        filesChooseBtn.addEventListener('click', () => { void chooseFilesRoot(); });
+        filesUpBtn.addEventListener('click', () => { void goUpFilesRoot(); });
+        filesRefreshBtn.addEventListener('click', () => { void refreshFilesTree(); });
         gitRefreshBtn.addEventListener('click', () => { void refreshGitStatus(); });
         gitPullBtn.addEventListener('click', () => { void runGitSync('git_pull', 'Pulling…', 'Pulled.'); });
         gitPushBtn.addEventListener('click', () => { void runGitSync('git_push', 'Pushing…', 'Pushed.'); });
@@ -2533,6 +3057,15 @@ claudePullFileBtn.addEventListener('click', pullClaudeWorkspaceFile);
 claudeReplaceSelectionBtn.addEventListener('click', replaceSelectionFromClipboard);
 claudeDevelopLuminaBtn.addEventListener('click', () => { void toggleDevelopLuminaMode(); });
 claudeRebuildLuminaBtn.addEventListener('click', () => { void rebuildLumina(); });
+claudeStopBtn?.addEventListener('click', () => { void stopClaudeChat(); });
+// Switching permission mode restarts on the next message; tell the user.
+claudeModeSelect?.addEventListener('change', () => {
+    if (claudeStarted) {
+        void stopClaudeChat().then(() => {
+            setUpdateStatus(`Claude permission mode set to ${claudeModeSelect.value}. It applies on your next message.`);
+        });
+    }
+});
 fixLatexBtn.addEventListener('click', () => {
     const fixed = normalizeEscapedLatexDelimiters(normalizeMathBlocks(editor.value));
     if (fixed === editor.value) {
@@ -2594,14 +3127,14 @@ document.addEventListener('click', (event) => {
         });
 
         sidePaneResizer?.addEventListener('mousedown', () => {
-            if (!terminalVisible && !claudeVisible) return;
+            if (visibleSidePaneCount() === 0) return;
             isResizingSidePane = true;
             sidePaneResizer.classList.add('dragging');
             document.body.style.userSelect = 'none';
         });
 
         document.addEventListener('mousemove', (event) => {
-            if (!sidePane || !isResizingSidePane || (!terminalVisible && !claudeVisible)) return;
+            if (!sidePane || !isResizingSidePane || visibleSidePaneCount() === 0) return;
             const rect = editorContainer.getBoundingClientRect();
             const rawPercent = ((rect.right - event.clientX) / rect.width) * 100;
             sidePanePercent = Math.min(65, Math.max(24, rawPercent));
@@ -2611,7 +3144,7 @@ document.addEventListener('click', (event) => {
 
         // Vertical drag between stacked side panes: shift weight from one neighbor to
         // the other while keeping their combined weight (and the panes below) fixed.
-        const sidePaneElements = { terminal: terminalPane, claude: claudePane, git: gitPane };
+        const sidePaneElements = { terminal: terminalPane, claude: claudePane, files: filesPane, git: gitPane };
         const MIN_PANE_PX = 60;
         let splitDrag = null;
 
@@ -2671,6 +3204,7 @@ document.addEventListener('click', (event) => {
                 editor.value = event.target.result;
                 setFilenameLabel(`Editing: ${file.name}`);
                 resetEditorHistory();
+                notifyActiveFileChanged();
                 void updatePreview();
             };
             reader.readAsText(file);
@@ -3216,9 +3750,9 @@ document.addEventListener('click', (event) => {
             if (terminalStarted) {
                 invoke('terminal_kill').catch(() => {});
             }
-            claudeOutputUnlisten?.();
+            claudeChatUnlisten?.();
             if (claudeStarted) {
-                invoke('claude_kill').catch(() => {});
+                invoke('claude_chat_stop').catch(() => {});
             }
         });
 
