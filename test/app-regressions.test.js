@@ -93,7 +93,9 @@ test("macOS folder permission prompts explain Claude and file access", () => {
   }
 
   assert.match(plist, /Claude pane edits the current file's folder/);
-  assert.match(main, /If macOS asks for folder access, it is for this Claude editing session\./);
+  // The chat pane starts Claude in the open file's folder and tells the user it
+  // can read/edit there (folder access is requested on first read/write).
+  assert.match(main, /Claude can read and edit files in \$\{directory\}/);
 });
 
 test("macOS bundle plist does not request legacy Carbon launch mode", () => {
@@ -115,20 +117,24 @@ test("app top chrome and pane layout are locked in app CSS, not only Tailwind", 
   assert.match(css, /\.workspace-panes[^}]*min-height:\s*0/);
 });
 
-test("editor metadata bar shows full paths with marquee, toast, and path navigator", () => {
+test("editor metadata bar leads with the filename, then dimmed dir, with toast and path navigator", () => {
   const html = fs.readFileSync("index.html", "utf8");
   const css = fs.readFileSync("src/styles.css", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
   const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
 
   assert.match(html, /filename-display-wrap/);
-  assert.match(html, /id="filename-display-text"/);
+  assert.match(html, /id="filename-name"/);
+  assert.match(html, /id="filename-dir"/);
   assert.match(html, /id="filename-copy-btn"/);
   assert.match(html, /id="filename-path-input"/);
   assert.match(html, /id="filename-path-toast"/);
-  assert.match(css, /@keyframes filename-marquee/);
+  // Filename leads bold and never shrinks; the directory is what truncates.
+  assert.match(css, /\.filename-name\s*\{[\s\S]*flex:\s*0 0 auto;/);
+  assert.match(css, /\.filename-dir\s*\{[\s\S]*text-overflow:\s*ellipsis;/);
   assert.match(css, /\.filename-path-toast\s*\{[\s\S]*word-break:\s*break-all;/);
   assert.match(css, /\.filename-display-btn\s*\{[\s\S]*text-transform:\s*none;/);
+  assert.match(main, /filenameName\.textContent = basename\(path\)/);
   assert.match(main, /function openFilenamePathNavigator/);
   assert.match(main, /complete_file_path/);
   assert.match(main, /showFilenamePathToast/);

@@ -212,14 +212,14 @@ body > header {
 }
 
 .filename-display-btn {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45rem;
     flex: 1 1 auto;
     min-width: 0;
     border: none;
     background: transparent;
-    color: #cbd5e1;
     font-family: 'Fira Code', monospace;
-    font-size: 0.78rem;
-    font-weight: 500;
     letter-spacing: normal;
     text-transform: none;
     text-align: left;
@@ -227,44 +227,39 @@ body > header {
     cursor: pointer;
 }
 
-.filename-display-btn:hover {
-    color: #f8fafc;
-}
-
-.filename-marquee-track {
-    display: block;
-    overflow: hidden;
+/* Filename leads, bold and bright, and never shrinks — so the open file is
+   obvious at a glance. The directory trails, dimmed, and is what truncates. */
+.filename-name {
+    flex: 0 0 auto;
     max-width: 100%;
-}
-
-.filename-display-text {
-    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
-    padding-right: 0.25rem;
+    color: #f1f5f9;
+    font-size: 0.85rem;
+    font-weight: 600;
 }
 
-.filename-display-text.is-overflowing {
-    animation: filename-marquee 10s linear infinite;
+.filename-dir {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #64748b;
+    font-size: 0.72rem;
 }
 
-.filename-display-btn:hover .filename-display-text.is-overflowing,
-.filename-display-btn:focus-visible .filename-display-text.is-overflowing {
-    animation-play-state: running;
+.filename-dir:empty {
+    display: none;
 }
 
-.filename-display-text.is-overflowing {
-    animation-play-state: paused;
+.filename-display-btn:hover .filename-name {
+    color: #ffffff;
 }
 
-@keyframes filename-marquee {
-    0%,
-    12% {
-        transform: translateX(0);
-    }
-    88%,
-    100% {
-        transform: translateX(var(--filename-marquee-shift, 0));
-    }
+.filename-display-btn:hover .filename-dir {
+    color: #94a3b8;
 }
 
 .filename-copy-btn {
@@ -497,6 +492,77 @@ body > header {
     box-sizing: border-box;
     overflow: hidden;
     padding: 0.5rem;
+}
+
+/* Files pane */
+.files-pane {
+    color: #cbd5e1;
+    font-size: 12px;
+}
+
+.files-body {
+    background: #070b16;
+}
+
+.files-tree {
+    list-style: none;
+    margin: 0;
+    padding: 4px 0;
+}
+
+.files-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 3px 12px;
+    background: none;
+    border: none;
+    color: #cbd5e1;
+    cursor: pointer;
+    font-size: 12px;
+    text-align: left;
+    font-family: inherit;
+}
+
+.files-row:hover {
+    background: #0f1a30;
+    color: #f1f5f9;
+}
+
+.files-row[aria-selected="true"] {
+    background: #1e293b;
+    color: #f1f5f9;
+}
+
+.files-row-indent {
+    flex: 0 0 auto;
+    display: inline-block;
+}
+
+.files-row-icon {
+    flex: 0 0 auto;
+    width: 14px;
+    text-align: center;
+    color: #64748b;
+}
+
+.files-row[data-kind="dir"] .files-row-icon {
+    color: #60a5fa;
+}
+
+.files-row-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.files-empty {
+    padding: 16px 12px;
+    color: #64748b;
+    font-style: italic;
 }
 
 /* Git pane */
@@ -777,6 +843,7 @@ body > header {
 }
 
 .claude-action-button {
+    flex: 0 0 auto;
     border-radius: 0.375rem;
     padding: 0.35rem 0.55rem;
     color: rgba(237, 233, 254, 0.78);
@@ -784,6 +851,7 @@ body > header {
     font-size: 0.75rem;
     font-weight: 500;
     line-height: 1;
+    white-space: nowrap;
     transition: background-color 120ms ease, color 120ms ease;
 }
 
@@ -900,6 +968,227 @@ body > header {
 .claude-action-menu button:hover {
     color: #ffffff;
     background: rgba(109, 40, 217, 0.55);
+}
+
+.claude-mode-select {
+    flex: 0 0 auto;
+    border-radius: 0.375rem;
+    padding: 0.3rem 0.4rem;
+    color: rgba(237, 233, 254, 0.82);
+    background: rgba(91, 33, 182, 0.28);
+    border: 1px solid rgba(124, 58, 237, 0.45);
+    font-size: 0.72rem;
+    line-height: 1;
+    outline: none;
+}
+
+.claude-action-stop {
+    color: #ffffff;
+    background: rgba(190, 50, 90, 0.85);
+}
+
+.claude-action-stop:hover {
+    background: rgba(225, 70, 110, 0.95);
+}
+
+/* ----- Chat transcript ----- */
+.claude-transcript {
+    overflow-y: auto;
+    padding: 0.75rem 0.85rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    background: rgba(23, 12, 56, 0.55);
+    color: rgba(237, 233, 254, 0.92);
+    font-size: 0.82rem;
+    line-height: 1.5;
+    scroll-behavior: smooth;
+}
+
+.claude-empty {
+    margin: auto;
+    max-width: 22rem;
+    text-align: center;
+    color: rgba(196, 181, 253, 0.5);
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+.claude-msg {
+    display: flex;
+    flex-direction: column;
+}
+
+.claude-msg-user {
+    align-items: flex-end;
+}
+
+.claude-bubble {
+    max-width: 85%;
+    padding: 0.5rem 0.7rem;
+    border-radius: 0.7rem 0.7rem 0.2rem 0.7rem;
+    background: rgba(124, 58, 237, 0.85);
+    color: #ffffff;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.claude-blocks {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-width: 95%;
+}
+
+/* Markdown rendering inside an assistant turn (dark theme). */
+.claude-text {
+    overflow-wrap: anywhere;
+}
+
+.claude-text > :first-child { margin-top: 0; }
+.claude-text > :last-child { margin-bottom: 0; }
+.claude-text p { margin: 0.5rem 0; }
+.claude-text h1,
+.claude-text h2,
+.claude-text h3,
+.claude-text h4 {
+    margin: 0.9rem 0 0.4rem;
+    font-weight: 650;
+    line-height: 1.25;
+    color: #ffffff;
+}
+.claude-text h1 { font-size: 1.25rem; }
+.claude-text h2 { font-size: 1.12rem; }
+.claude-text h3 { font-size: 1rem; }
+.claude-text ul,
+.claude-text ol {
+    margin: 0.45rem 0;
+    padding-left: 1.3rem;
+}
+.claude-text li { margin: 0.2rem 0; }
+.claude-text a {
+    color: #c4b5fd;
+    text-decoration: underline;
+}
+.claude-text code {
+    font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.78em;
+    padding: 0.1rem 0.3rem;
+    border-radius: 0.3rem;
+    background: rgba(15, 8, 38, 0.7);
+}
+.claude-text pre {
+    margin: 0.5rem 0;
+    padding: 0.65rem 0.75rem;
+    border-radius: 0.5rem;
+    background: rgba(12, 6, 30, 0.85);
+    border: 1px solid rgba(124, 58, 237, 0.3);
+    overflow-x: auto;
+}
+.claude-text pre code {
+    padding: 0;
+    background: none;
+    font-size: 0.78rem;
+}
+.claude-text blockquote {
+    margin: 0.5rem 0;
+    padding-left: 0.75rem;
+    border-left: 3px solid rgba(167, 139, 250, 0.5);
+    color: rgba(221, 214, 254, 0.78);
+}
+.claude-text table {
+    border-collapse: collapse;
+    margin: 0.5rem 0;
+    font-size: 0.78rem;
+}
+.claude-text th,
+.claude-text td {
+    border: 1px solid rgba(124, 58, 237, 0.35);
+    padding: 0.3rem 0.5rem;
+}
+.claude-text .katex { color: #f5f3ff; }
+
+/* Collapsible "Thinking" block */
+.claude-think {
+    border-left: 2px solid rgba(148, 130, 220, 0.4);
+    padding-left: 0.6rem;
+}
+.claude-think > summary {
+    cursor: pointer;
+    color: rgba(196, 181, 253, 0.6);
+    font-size: 0.72rem;
+    font-style: italic;
+    list-style: none;
+}
+.claude-think > summary::-webkit-details-marker { display: none; }
+.claude-think > summary::before { content: "▸ "; }
+.claude-think[open] > summary::before { content: "▾ "; }
+.claude-think-body {
+    margin-top: 0.35rem;
+    color: rgba(196, 181, 253, 0.62);
+    font-size: 0.76rem;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+/* Tool-use chips */
+.claude-tool {
+    border: 1px solid rgba(124, 58, 237, 0.4);
+    border-radius: 0.5rem;
+    background: rgba(46, 16, 101, 0.45);
+    padding: 0.35rem 0.5rem;
+}
+.claude-tool.claude-tool-error {
+    border-color: rgba(225, 90, 120, 0.6);
+}
+.claude-tool > summary {
+    cursor: pointer;
+    color: rgba(221, 214, 254, 0.9);
+    font-size: 0.76rem;
+    font-weight: 500;
+    list-style: none;
+}
+.claude-tool > summary::-webkit-details-marker { display: none; }
+.claude-tool-input,
+.claude-tool-result {
+    margin: 0.4rem 0 0;
+    padding: 0.5rem 0.6rem;
+    border-radius: 0.4rem;
+    background: rgba(12, 6, 30, 0.8);
+    color: rgba(221, 214, 254, 0.82);
+    font-family: "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    max-height: 16rem;
+    overflow-y: auto;
+}
+.claude-tool-result { color: rgba(190, 242, 200, 0.82); }
+.claude-tool-error .claude-tool-result { color: rgba(252, 165, 165, 0.85); }
+
+/* Footer: result cost/duration + errors */
+.claude-footer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    margin-top: 0.1rem;
+}
+.claude-result {
+    color: rgba(196, 181, 253, 0.45);
+    font-size: 0.7rem;
+}
+.claude-error {
+    color: rgba(252, 165, 165, 0.92);
+    font-size: 0.75rem;
+    padding: 0.4rem 0.55rem;
+    border-radius: 0.4rem;
+    background: rgba(127, 29, 29, 0.35);
+    border: 1px solid rgba(225, 90, 120, 0.4);
+    white-space: pre-wrap;
+}
+
+.claude-input-busy {
+    opacity: 0.65;
 }
 
 .prose h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; margin-top: 1.5rem; font-weight: 700; font-size: 2.1rem; letter-spacing: -0.02em; }
