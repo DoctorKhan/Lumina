@@ -143,7 +143,9 @@ const claudeAutoRebuildCheckbox = document.getElementById('claude-auto-rebuild-c
         const closeTerminalBtn = document.getElementById('close-terminal-btn');
         const closeClaudeBtn = document.getElementById('close-claude-btn');
         const terminalPane = document.getElementById('terminal-pane');
-        const terminalElement = document.getElementById('terminal');
+        const terminalHost = document.getElementById('terminal-host');
+        const terminalTabBar = document.getElementById('terminal-tab-bar');
+        const terminalNewTabBtn = document.getElementById('terminal-new-tab-btn');
         const terminalStatus = document.getElementById('terminal-status');
         const claudePane = document.getElementById('claude-pane');
         const claudeTranscript = document.getElementById('claude-transcript');
@@ -224,16 +226,13 @@ const claudeWorkspaceStatus = document.getElementById('claude-workspace-status')
         const paneWeights = { terminal: 1, claude: 1, agent: 1, files: 1, git: 1 };
         let terminal = null;
         let fitAddon = null;
+        const terminalTabs = new Map();
+        let activeTerminalTabId = null;
+        let terminalTabCounter = 0;
         let terminalVisible = false;
-        let terminalStarted = false;
         let terminalOutputUnlisten = null;
         let terminalResizeFrame = null;
-        let terminalScrollBottomRaf = null;
-        let terminalLastFitCols = 0;
-        let terminalLastFitRows = 0;
-        let terminalInputBuffer = '';
         let terminalPtyHangupUnlisten = null;
-        let terminalShellRespawnPromise = null;
         let installProgressTracking = false;
         let installProgressState = null;
         let installProgressLineBuffer = '';
@@ -2147,46 +2146,242 @@ function hideInstallUpdateBadge() {
             );
         }
 
-        async function respawnShellProcess() {
-            if (terminalShellRespawnPromise) {
-                return terminalShellRespawnPromise;
-            }
-            terminalShellRespawnPromise = (async () => {
-                try {
-                    if (!terminal) {
-                        return;
-                    }
-                    await invoke('terminal_kill');
-                    await invoke('terminal_spawn', { cols: terminal.cols, rows: terminal.rows });
-                    terminalStarted = true;
-                    terminalStatus.textContent = 'Running';
-                    terminal.write(
-                        '\r\n\x1b[33m[Shell restarted: previous process ended or the PTY closed (common after Ctrl+C or EIO).]\x1b[0m\r\n'
-                    );
-                    scheduleTerminalScrollToBottom();
-                } catch (e) {
-                    terminalStarted = false;
-                    const msg = e?.message || String(e);
-                    terminal?.write(`\r\n\x1b[31mFailed to start shell: ${msg}\x1b[0m\r\n`);
-                    scheduleTerminalScrollToBottom();
-                    terminalStatus.textContent = 'Error';
-                } finally {
-                    terminalShellRespawnPromise = null;
-                }
-            })();
-            return terminalShellRespawnPromise;
+        function nextTerminalTabId() {
+            terminalTabCounter += 1;
+            return `tab-${terminalTabCounter}`;
         }
 
-        async function writeToTerminalPtyWithRetry(data) {
+        function getTerminalTab(tabId) {
+            return terminalTabs.get(tabId) ?? null;
+        }
+
+        function getActiveTerminalTab() {
+            return activeTerminalTabId ? terminalTabs.get(activeTerminalTabId) ?? null : null;
+        }
+
+        function syncActiveTerminalRefs() {
+            const tab = getActiveTerminalTab();
+            terminal = tab?.terminal ?? null;
+            fitAddon = tab?.fitAddon ?? null;
+        }
+
+        function updateTerminalStatusLabel() {
+            const tab = getActiveTerminalTab();
+            if (!tab) {
+                terminalStatus.textContent = 'Stopped';
+                return;
+            }
+            if (tab.started) {
+                terminalStatus.textContent = 'Running';
+            } else if (tab.spawnError) {
+                terminalStatus.textContent = 'Error';
+            } else {
+                terminalStatus.textContent = 'Starting';
+            }
+        }
+
+        function activateTerminalTab(tabId) {
+            const tab = getTerminalTab(tabId);
+            if (!tab) return;
+            activeTerminalTabId = tabId;
+            for (const [id, entry] of terminalTabs) {
+                const active = id === tabId;
+                entry.hostEl.classList.toggle('hidden', !active);
+                entry.tabButtonEl.classList.toggle('terminal-tab-active', active);
+            }
+            syncActiveTerminalRefs();
+            updateTerminalStatusLabel();
+            resizeTerminal();
+            terminal?.focus();
+        }
+
+        async function ensureTerminalListeners() {
+            if (terminalPtyHangupUnlisten == null) {
+                terminalPtyHangupUnlisten = await listen('terminal-pty-hangup', (event) => {
+                    const tabId = event.payload?.tabId;
+                    if (tabId) {
+                        void respawnShellProcess(tabId);
+                    }
+                });
+            }
+            if (terminalOutputUnlisten == null) {
+                terminalOutputUnlisten = await listen('terminal-output', (event) => {
+                    const payload = event.payload ?? {};
+                    const tabId = payload.tabId;
+                    const data = payload.data ?? '';
+                    const tab = tabId ? getTerminalTab(tabId) : null;
+                    if (!tab) return;
+                    if (tab.trackInstall) {
+                        feedInstallProgressFromTerminal(data);
+                    }
+                    const stick = tabId === activeTerminalTabId && isTermAtBottom(tab.terminal);
+                    tab.terminal.write(data);
+                    if (stick) {
+                        scheduleTerminalScrollToBottom(tab);
+                    }
+                });
+            }
+        }
+
+        function createTerminalXterm(tab) {
+            const xterm = new Terminal({
+                cursorBlink: true,
+                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Apple Symbols", "Apple Color Emoji", monospace',
+                fontSize: 13,
+                allowProposedApi: true,
+                theme: terminalTheme()
+            });
+            const tabFitAddon = new FitAddon();
+            xterm.loadAddon(tabFitAddon);
+            xterm.loadAddon(new Unicode11Addon());
+            xterm.unicode.activeVersion = '11';
+            xterm.open(tab.hostEl);
+            xterm.registerLinkProvider({ provideLinks: provideTerminalFileLinks });
+            xterm.onData((data) => {
+                handleTerminalCommandInput(tab.id, data);
+                void writeToTerminalPtyWithRetry(tab.id, data).catch((error) => {
+                    xterm.write(`\r\nTerminal write failed: ${error?.message || error}\r\n`);
+                    scheduleTerminalScrollToBottom(tab);
+                });
+            });
+            tab.terminal = xterm;
+            tab.fitAddon = tabFitAddon;
+        }
+
+        async function spawnTerminalTabShell(tab) {
+            tab.spawnError = null;
+            tab.terminal.write('Starting shell...\r\n');
+            scheduleTerminalScrollToBottom(tab);
+            tab.fitAddon.fit();
+            await invoke('terminal_spawn', {
+                tabId: tab.id,
+                cols: tab.terminal.cols,
+                rows: tab.terminal.rows
+            });
+            tab.started = true;
+            updateTerminalStatusLabel();
+        }
+
+        async function createTerminalTab({ title = 'Shell', activate = true, trackInstall = false } = {}) {
+            await ensureTerminalListeners();
+            const id = nextTerminalTabId();
+            const hostEl = document.createElement('div');
+            hostEl.className = 'terminal-tab-panel hidden';
+            hostEl.dataset.tabId = id;
+            terminalHost.appendChild(hostEl);
+
+            const tabButtonEl = document.createElement('button');
+            tabButtonEl.type = 'button';
+            tabButtonEl.className = 'terminal-tab';
+            tabButtonEl.dataset.tabId = id;
+            tabButtonEl.innerHTML =
+                '<span class="terminal-tab-title"></span><span class="terminal-tab-close" aria-label="Close tab">×</span>';
+            tabButtonEl.querySelector('.terminal-tab-title').textContent = title;
+            tabButtonEl.addEventListener('click', (event) => {
+                if (event.target.closest('.terminal-tab-close')) {
+                    event.stopPropagation();
+                    void closeTerminalTab(id);
+                    return;
+                }
+                activateTerminalTab(id);
+            });
+            terminalTabBar.appendChild(tabButtonEl);
+
+            const tab = {
+                id,
+                title,
+                hostEl,
+                tabButtonEl,
+                terminal: null,
+                fitAddon: null,
+                started: false,
+                spawnError: null,
+                inputBuffer: '',
+                trackInstall,
+                lastFitCols: 0,
+                lastFitRows: 0,
+                scrollBottomRaf: null,
+                respawnPromise: null
+            };
+            createTerminalXterm(tab);
+            terminalTabs.set(id, tab);
+            if (activate) {
+                activateTerminalTab(id);
+            }
+            await spawnTerminalTabShell(tab);
+            return tab;
+        }
+
+        async function closeTerminalTab(tabId) {
+            const tab = getTerminalTab(tabId);
+            if (!tab) return;
+            if (terminalTabs.size === 1) {
+                await invoke('terminal_kill', { tabId }).catch(() => {});
+                tab.started = false;
+                tab.terminal.clear();
+                await spawnTerminalTabShell(tab);
+                return;
+            }
+            await invoke('terminal_kill', { tabId }).catch(() => {});
+            tab.hostEl.remove();
+            tab.tabButtonEl.remove();
+            terminalTabs.delete(tabId);
+            if (activeTerminalTabId === tabId) {
+                activateTerminalTab(terminalTabs.keys().next().value);
+            } else {
+                updateTerminalStatusLabel();
+            }
+        }
+
+        async function respawnShellProcess(tabId) {
+            const tab = getTerminalTab(tabId);
+            if (!tab) {
+                return;
+            }
+            if (tab.respawnPromise) {
+                return tab.respawnPromise;
+            }
+            tab.respawnPromise = (async () => {
+                try {
+                    if (!tab.terminal) {
+                        return;
+                    }
+                    await invoke('terminal_kill', { tabId });
+                    await invoke('terminal_spawn', {
+                        tabId,
+                        cols: tab.terminal.cols,
+                        rows: tab.terminal.rows
+                    });
+                    tab.started = true;
+                    tab.spawnError = null;
+                    updateTerminalStatusLabel();
+                    tab.terminal.write(
+                        '\r\n\x1b[33m[Shell restarted: previous process ended or the PTY closed (common after Ctrl+C or EIO).]\x1b[0m\r\n'
+                    );
+                    scheduleTerminalScrollToBottom(tab);
+                } catch (e) {
+                    tab.started = false;
+                    tab.spawnError = e?.message || String(e);
+                    tab.terminal?.write(`\r\n\x1b[31mFailed to start shell: ${tab.spawnError}\x1b[0m\r\n`);
+                    scheduleTerminalScrollToBottom(tab);
+                    updateTerminalStatusLabel();
+                } finally {
+                    tab.respawnPromise = null;
+                }
+            })();
+            return tab.respawnPromise;
+        }
+
+        async function writeToTerminalPtyWithRetry(tabId, data) {
             try {
-                await invoke('terminal_write', { data });
+                await invoke('terminal_write', { tabId, data });
             } catch (error) {
                 const message = error?.message || String(error);
                 if (!isPtyOrShellWriteErrorMessage(message)) {
                     throw error;
                 }
-                await respawnShellProcess();
-                await invoke('terminal_write', { data });
+                await respawnShellProcess(tabId);
+                await invoke('terminal_write', { tabId, data });
             }
         }
 
@@ -2203,30 +2398,33 @@ function hideInstallUpdateBadge() {
             label,
             { trackInstallProgress: trackInstall = false } = {}
         ) {
-            const shellReadyBefore = terminalStarted;
             await toggleTerminal(true);
+            const tab = await createTerminalTab({
+                title: label || 'Command',
+                activate: true,
+                trackInstall
+            });
             if (trackInstall) {
                 beginInstallProgressSession();
             }
-            terminalInputBuffer = '';
-            terminal?.write(`\r\n\x1b[1m${label}\x1b[0m\r\n`);
-            terminal?.write(`\x1b[2m${command}\x1b[0m\r\n`);
-            scheduleTerminalScrollToBottom();
+            tab.inputBuffer = '';
+            tab.terminal.write(`\r\n\x1b[1m${label}\x1b[0m\r\n`);
+            tab.terminal.write(`\x1b[2m${command}\x1b[0m\r\n`);
+            scheduleTerminalScrollToBottom(tab);
 
-            const settleMs = shellReadyBefore && terminalStarted ? 180 : 600;
-            await waitForTerminalToSettle(settleMs);
+            await waitForTerminalToSettle(tab.started ? 180 : 600);
 
             try {
-                await writeToTerminalPtyWithRetry(`${command}\r`);
+                await writeToTerminalPtyWithRetry(tab.id, `${command}\r`);
             } catch (e) {
                 if (trackInstall) {
                     endInstallProgressSession();
                 }
                 setUpdateStatus(`Terminal: ${e?.message || e}`);
-                terminal?.write(`\r\n\x1b[31m${e?.message || e}\x1b[0m\r\n`);
-                scheduleTerminalScrollToBottom();
+                tab.terminal.write(`\r\n\x1b[31m${e?.message || e}\x1b[0m\r\n`);
+                scheduleTerminalScrollToBottom(tab);
             }
-            terminal?.focus();
+            tab.terminal.focus();
         }
 
 async function resolveLatestUpdateTag() {
@@ -2361,10 +2559,7 @@ async function checkForUpdate({ background = false, force = false } = {}) {
         async function handleVersionBadgeClick() {
             appVersionBadge.disabled = true;
             try {
-                const updateAvailable = await checkForUpdate({ background: false, force: true });
-                if (updateAvailable && latestReleaseTag) {
-                    await installDetectedUpdate();
-                }
+                await checkForUpdate({ background: false, force: true });
             } finally {
                 appVersionBadge.disabled = false;
             }
@@ -2427,20 +2622,23 @@ async function checkForUpdate({ background = false, force = false } = {}) {
                 .replace(/[>)"'`,;.]+$/, '');
         }
 
-        function handleTerminalCommandInput(data) {
+        function handleTerminalCommandInput(tabId, data) {
+            const tab = getTerminalTab(tabId);
+            if (!tab) return;
+
             if (data === '\u0003') {
-                terminalInputBuffer = '';
+                tab.inputBuffer = '';
                 return;
             }
 
             if (data === '\u007f') {
-                terminalInputBuffer = terminalInputBuffer.slice(0, -1);
+                tab.inputBuffer = tab.inputBuffer.slice(0, -1);
                 return;
             }
 
             if (data === '\r') {
-                const command = terminalInputBuffer.trim();
-                terminalInputBuffer = '';
+                const command = tab.inputBuffer.trim();
+                tab.inputBuffer = '';
                 const cdMatch = command.match(/^cd(?:\s+(.+))?$/);
                 if (cdMatch) {
                     const target = cdMatch[1]?.trim() || '~';
@@ -2450,7 +2648,7 @@ async function checkForUpdate({ background = false, force = false } = {}) {
             }
 
             if (/^[\x20-\x7e]+$/.test(data)) {
-                terminalInputBuffer += data;
+                tab.inputBuffer += data;
             }
         }
 
@@ -2534,15 +2732,14 @@ async function checkForUpdate({ background = false, force = false } = {}) {
             callback(links.length > 0 ? links : undefined);
         }
 
-        function scheduleTerminalScrollToBottom() {
-            if (!terminal) return;
-            if (terminalScrollBottomRaf != null) return;
-            terminalScrollBottomRaf = requestAnimationFrame(() => {
-                terminalScrollBottomRaf = null;
-                terminal.scrollToBottom();
-                // Second frame: xterm viewport height can settle after FitAddon / flex layout.
+        function scheduleTerminalScrollToBottom(tab = getActiveTerminalTab()) {
+            if (!tab?.terminal) return;
+            if (tab.scrollBottomRaf != null) return;
+            tab.scrollBottomRaf = requestAnimationFrame(() => {
+                tab.scrollBottomRaf = null;
+                tab.terminal.scrollToBottom();
                 requestAnimationFrame(() => {
-                    terminal.scrollToBottom();
+                    tab.terminal.scrollToBottom();
                 });
             });
         }
@@ -2578,16 +2775,18 @@ async function checkForUpdate({ background = false, force = false } = {}) {
         }
 
         function applyTerminalFit() {
-            if (!terminalVisible || !fitAddon || !terminal) return;
-            fitAddon.fit();
-            scheduleTerminalScrollToBottom();
-            if (!terminal.cols || !terminal.rows) return;
-            if (terminal.cols === terminalLastFitCols && terminal.rows === terminalLastFitRows) return;
-            terminalLastFitCols = terminal.cols;
-            terminalLastFitRows = terminal.rows;
+            const tab = getActiveTerminalTab();
+            if (!terminalVisible || !tab?.fitAddon || !tab.terminal) return;
+            tab.fitAddon.fit();
+            scheduleTerminalScrollToBottom(tab);
+            if (!tab.terminal.cols || !tab.terminal.rows) return;
+            if (tab.terminal.cols === tab.lastFitCols && tab.terminal.rows === tab.lastFitRows) return;
+            tab.lastFitCols = tab.terminal.cols;
+            tab.lastFitRows = tab.terminal.rows;
             invoke('terminal_resize', {
-                cols: terminal.cols,
-                rows: terminal.rows
+                tabId: tab.id,
+                cols: tab.terminal.cols,
+                rows: tab.terminal.rows
             }).catch(() => {});
         }
 
@@ -3487,61 +3686,8 @@ async function replaceSelectionFromClipboard() {
         }
 
         async function ensureTerminal() {
-            if (terminalStarted) return;
-
-            terminal = new Terminal({
-                cursorBlink: true,
-                // No convertEol: the PTY already emits CRLF for cooked output, and
-                // full-screen TUIs (Claude Code) send bare \n as a same-column line
-                // feed plus their own cursor control. Converting \n→\r\n forces the
-                // cursor to column 0 mid-frame and corrupts the redraw (overlapping
-                // spinner frames, leftover characters from the previous frame).
-                fontFamily: '"Fira Code", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Apple Symbols", "Apple Color Emoji", monospace',
-                fontSize: 13,
-                // Required by the Unicode 11 addon below: without it xterm uses
-                // Unicode 6 character widths, so emoji/symbols in TUIs like Claude
-                // Code drift out of alignment and overdraw the input border.
-                allowProposedApi: true,
-                theme: terminalTheme()
-            });
-            fitAddon = new FitAddon();
-            terminal.loadAddon(fitAddon);
-            terminal.loadAddon(new Unicode11Addon());
-            terminal.unicode.activeVersion = '11';
-            terminal.open(terminalElement);
-            terminal.registerLinkProvider({ provideLinks: provideTerminalFileLinks });
-            terminal.onData((data) => {
-                handleTerminalCommandInput(data);
-                void writeToTerminalPtyWithRetry(data).catch((error) => {
-                    terminal.write(`\r\nTerminal write failed: ${error?.message || error}\r\n`);
-                    scheduleTerminalScrollToBottom();
-                });
-            });
-
-            if (terminalPtyHangupUnlisten == null) {
-                terminalPtyHangupUnlisten = await listen('terminal-pty-hangup', () => {
-                    void respawnShellProcess();
-                });
-            }
-
-            terminalStatus.textContent = 'Starting';
-            terminal.write('Starting shell...\r\n');
-            scheduleTerminalScrollToBottom();
-            terminalOutputUnlisten = await listen('terminal-output', (event) => {
-                const payload = event.payload;
-                feedInstallProgressFromTerminal(payload);
-                const stick = isTermAtBottom(terminal);
-                terminal.write(payload);
-                if (stick) scheduleTerminalScrollToBottom();
-            });
-
-            fitAddon.fit();
-            await invoke('terminal_spawn', {
-                cols: terminal.cols,
-                rows: terminal.rows
-            });
-            terminalStarted = true;
-            terminalStatus.textContent = 'Running';
+            if (terminalTabs.size > 0) return;
+            await createTerminalTab({ title: 'Shell', activate: true });
             resizeTerminal();
             setTimeout(resizeTerminal, 80);
         }
@@ -4737,6 +4883,9 @@ shareRepoLink?.addEventListener('click', (event) => {
         });
         toggleSourceBtn.addEventListener('click', toggleSource);
         toggleTerminalBtn.addEventListener('click', () => toggleTerminal());
+        terminalNewTabBtn?.addEventListener('click', () => {
+            void createTerminalTab({ title: 'Shell', activate: true });
+        });
         toggleAiBtn?.addEventListener('click', () => toggleActiveAiPane());
         toggleAiBtn?.addEventListener('contextmenu', (event) => {
             event.preventDefault();
@@ -5955,9 +6104,7 @@ document.addEventListener('click', (event) => {
             terminalOutputUnlisten?.();
             sourceWatchUnlisten?.();
             invoke('unwatch_source_checkout').catch(() => {});
-            if (terminalStarted) {
-                invoke('terminal_kill').catch(() => {});
-            }
+            invoke('terminal_kill_all').catch(() => {});
             claudeChatUnlisten?.();
             if (claudeStarted) {
                 invoke('claude_chat_stop').catch(() => {});

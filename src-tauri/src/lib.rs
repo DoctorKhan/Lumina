@@ -13,7 +13,7 @@ use notify_debouncer_full::{
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env, fs,
     hash::{Hash, Hasher},
     io::{BufRead, BufReader, Read, Write},
@@ -90,10 +90,23 @@ struct CursorAgentChat {
 
 #[derive(Default)]
 struct TerminalState {
-    terminal: PtySession,
+    tabs: Mutex<HashMap<String, PtySession>>,
     claude_chat: ClaudeChat,
     cursor_agent: CursorAgentChat,
     cwd: Mutex<Option<PathBuf>>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TerminalOutputEvent {
+    tab_id: String,
+    data: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TerminalHangupEvent {
+    tab_id: String,
 }
 
 /// Paths passed in from the OS (`open -a Lumina.app file.md` on macOS, argv elsewhere)
@@ -585,8 +598,12 @@ fn session_live_cwd(session: &PtySession) -> Option<PathBuf> {
 /// *actual* working directory (read from the OS), falling back to the cwd we
 /// track from `cd` keystrokes when that lookup is unavailable.
 fn resolve_relative_base(state: &TerminalState) -> Option<PathBuf> {
-    if let Some(cwd) = session_live_cwd(&state.terminal) {
-        return Some(cwd);
+    if let Ok(tabs) = state.tabs.lock() {
+        for session in tabs.values() {
+            if let Some(cwd) = session_live_cwd(session) {
+                return Some(cwd);
+            }
+        }
     }
     state.cwd.lock().ok().and_then(|cwd| cwd.clone())
 }
@@ -670,7 +687,7 @@ fn default_cwd() -> PathBuf {
 fn spawn_pty_session(
     app: AppHandle,
     session: &PtySession,
-    event_name: &'static str,
+    tab_id: String,
     mut command: CommandBuilder,
     cwd: PathBuf,
     rows: u16,
@@ -728,7 +745,7 @@ fn spawn_pty_session(
         .map_err(|_| "PTY state is unavailable.".to_string())? = Some(writer);
 
     let app_hangup = app.clone();
-    let hangup_name = "terminal-pty-hangup";
+    let hangup_tab_id = tab_id.clone();
     thread::spawn(move || {
         let mut buffer = [0_u8; 8192];
         loop {
@@ -736,17 +753,34 @@ fn spawn_pty_session(
                 Ok(0) => break,
                 Ok(count) => {
                     let output = String::from_utf8_lossy(&buffer[..count]).to_string();
-                    let _ = app.emit(event_name, output);
+                    let _ = app.emit(
+                        "terminal-output",
+                        TerminalOutputEvent {
+                            tab_id: tab_id.clone(),
+                            data: output,
+                        },
+                    );
                 }
                 Err(error) => {
-                    let _ = app.emit(event_name, format!("\r\nTerminal closed: {error}\r\n"));
+                    let _ = app.emit(
+                        "terminal-output",
+                        TerminalOutputEvent {
+                            tab_id: tab_id.clone(),
+                            data: format!("\r\nTerminal closed: {error}\r\n"),
+                        },
+                    );
                     break;
                 }
             }
         }
         // Read side of the master closed (shell usually exited). Front end
         // should call `terminal_kill` + `terminal_spawn` to attach a new shell.
-        let _ = app_hangup.emit(hangup_name, true);
+        let _ = app_hangup.emit(
+            "terminal-pty-hangup",
+            TerminalHangupEvent {
+                tab_id: hangup_tab_id,
+            },
+        );
     });
 
     Ok(())
@@ -831,13 +865,36 @@ fn kill_pty_session(session: &PtySession) -> Result<(), String> {
     Ok(())
 }
 
+fn terminal_tab_session<'a>(
+    state: &'a TerminalState,
+) -> Result<std::sync::MutexGuard<'a, HashMap<String, PtySession>>, String> {
+    state
+        .tabs
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())
+}
+
+fn get_pty_tab_mut<'a>(
+    tabs: &'a mut HashMap<String, PtySession>,
+    tab_id: &str,
+) -> Result<&'a mut PtySession, String> {
+    tabs.get_mut(tab_id)
+        .ok_or_else(|| format!("Terminal tab '{tab_id}' is not running."))
+}
+
 #[tauri::command(async)]
 fn terminal_spawn(
     app: AppHandle,
     state: State<'_, TerminalState>,
+    tab_id: String,
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
+    let tab_id = tab_id.trim().to_string();
+    if tab_id.is_empty() {
+        return Err("Terminal tab id is required.".to_string());
+    }
+
     let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
     let command = CommandBuilder::new(shell);
     let cwd = state
@@ -851,10 +908,18 @@ fn terminal_spawn(
         *state_cwd = Some(cwd.clone());
     }
 
+    let mut tabs = terminal_tab_session(&state)?;
+    if !tabs.contains_key(&tab_id) {
+        tabs.insert(tab_id.clone(), PtySession::default());
+    }
+    let session = tabs
+        .get(&tab_id)
+        .ok_or_else(|| "Unable to create terminal tab.".to_string())?;
+
     spawn_pty_session(
         app,
-        &state.terminal,
-        "terminal-output",
+        session,
+        tab_id,
         command,
         cwd,
         rows,
@@ -1083,18 +1148,51 @@ fn terminal_set_cwd(state: State<'_, TerminalState>, path: String) -> Result<(),
 }
 
 #[tauri::command]
-fn terminal_write(state: State<'_, TerminalState>, data: String) -> Result<(), String> {
-    write_pty_session(&state.terminal, data)
+fn terminal_write(
+    state: State<'_, TerminalState>,
+    tab_id: String,
+    data: String,
+) -> Result<(), String> {
+    let tab_id = tab_id.trim().to_string();
+    let mut tabs = terminal_tab_session(&state)?;
+    let session = get_pty_tab_mut(&mut tabs, &tab_id)?;
+    write_pty_session(session, data)
 }
 
 #[tauri::command]
-fn terminal_resize(state: State<'_, TerminalState>, rows: u16, cols: u16) -> Result<(), String> {
-    resize_pty_session(&state.terminal, rows, cols)
+fn terminal_resize(
+    state: State<'_, TerminalState>,
+    tab_id: String,
+    rows: u16,
+    cols: u16,
+) -> Result<(), String> {
+    let tab_id = tab_id.trim().to_string();
+    let mut tabs = terminal_tab_session(&state)?;
+    let session = get_pty_tab_mut(&mut tabs, &tab_id)?;
+    resize_pty_session(session, rows, cols)
 }
 
 #[tauri::command]
-fn terminal_kill(state: State<'_, TerminalState>) -> Result<(), String> {
-    kill_pty_session(&state.terminal)
+fn terminal_kill(state: State<'_, TerminalState>, tab_id: String) -> Result<(), String> {
+    let tab_id = tab_id.trim().to_string();
+    let mut tabs = terminal_tab_session(&state)?;
+    if let Some(session) = tabs.get(&tab_id) {
+        kill_pty_session(session)?;
+    }
+    tabs.remove(&tab_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn terminal_kill_all(state: State<'_, TerminalState>) -> Result<(), String> {
+    let mut tabs = state
+        .tabs
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?;
+    for (_, session) in tabs.drain() {
+        let _ = kill_pty_session(&session);
+    }
+    Ok(())
 }
 
 /// Sends one user turn to the running Claude chat as a `stream-json` line.
@@ -2928,6 +3026,7 @@ pub fn run() {
             terminal_write,
             terminal_resize,
             terminal_kill,
+            terminal_kill_all,
             terminal_set_cwd,
             claude_chat_start,
             claude_chat_send,

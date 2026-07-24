@@ -661,6 +661,13 @@ git_ref_resolves() {
   git -C "$1" rev-parse -q --verify "$GIT_REF^{commit}" >/dev/null 2>&1
 }
 
+fetch_managed_checkout() {
+  local dir="$1"
+  # Managed ~/.lumina may keep tags from before an upstream history rewrite; without
+  # --force, `git fetch --tags` exits 1 ("would clobber existing tag") under set -e.
+  git -C "$dir" fetch --all --force --tags --prune --progress
+}
+
 if [[ -n "$LUMINA_LOCAL_BUILD" ]]; then
   # Build the current checkout as-is (including uncommitted changes); skip all
   # clone/fetch/reset steps so the user's local work is what gets installed.
@@ -673,7 +680,7 @@ if [[ -n "$LUMINA_LOCAL_BUILD" ]]; then
 else
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     start_step "checkout_update" "Updating existing checkout in $INSTALL_DIR"
-    git -C "$INSTALL_DIR" fetch --all --tags --progress
+    fetch_managed_checkout "$INSTALL_DIR"
     if ! git_ref_resolves "$INSTALL_DIR"; then
       echo "error: $GIT_REF is not a valid git ref in $INSTALL_DIR after fetch."
       echo "If you are installing a release, ensure the tag exists on the remote (e.g. push the tag to GitHub)."
@@ -702,7 +709,7 @@ else
     echo "Installing Lumina from $GIT_REF"
   fi
   start_step "fetch_refs" "Fetching refs"
-  git fetch --all --tags --progress
+  fetch_managed_checkout "$INSTALL_DIR"
   finish_step "Fetched refs"
   if ! git rev-parse -q --verify "$GIT_REF^{commit}" >/dev/null 2>&1; then
     echo "error: $GIT_REF is not a valid git ref after fetch."

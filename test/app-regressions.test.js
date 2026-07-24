@@ -82,6 +82,9 @@ test("startup update check is quiet and exposes an install badge", () => {
   assert.match(main, /runInstallUpdateFromMenu/);
   assert.match(rust, /emit_lumina_menu_command/);
   assert.match(main, /handleVersionBadgeClick/);
+  const versionBadgeClickFn = main.match(/async function handleVersionBadgeClick\(\) \{[\s\S]*?\n\s*\}/);
+  assert.ok(versionBadgeClickFn, 'handleVersionBadgeClick should be defined');
+  assert.doesNotMatch(versionBadgeClickFn[0], /installDetectedUpdate/);
   assert.match(main, /latest_lumina_repo_tag/);
   assert.match(main, /resolveLatestUpdateTag/);
   assert.match(html, /id="app-version-badge"/);
@@ -98,6 +101,14 @@ test("startup update check is quiet and exposes an install badge", () => {
   assert.match(html, /id="install-progress"/);
   assert.match(main, /feedInstallProgressFromTerminal/);
   assert.match(main, /trackInstallProgress: true/);
+});
+
+test("install.sh force-fetches managed checkout so rewritten tags do not abort", () => {
+  const install = fs.readFileSync("install.sh", "utf8");
+  assert.match(install, /fetch_managed_checkout\(\)/);
+  assert.match(install, /fetch --all --force --tags --prune --progress/);
+  assert.doesNotMatch(install, /git -C "\$INSTALL_DIR" fetch --all --tags --progress/);
+  assert.doesNotMatch(install, /git fetch --all --tags --progress/);
 });
 
 test("macOS folder permission prompts explain Claude and file access", () => {
@@ -211,8 +222,13 @@ test("terminal and Claude share a resizable right-side rail", () => {
   assert.match(main, /sidePane\.classList\.toggle\('side-pane-split', visibleCount > 1\)/);
   assert.match(main, /sidePanePercent = Math\.min\(65, Math\.max\(24, rawPercent\)\)/);
   assert.match(main, /editorPane\.style\.flex = `1 1 \$\{editorPercent\}%`/);
-  assert.match(main, /terminalLastFitCols/);
-  assert.match(main, /terminal\.cols === terminalLastFitCols && terminal\.rows === terminalLastFitRows/);
+  assert.match(html, /id="terminal-tab-bar"/);
+  assert.match(html, /id="terminal-new-tab-btn"/);
+  assert.match(html, /id="terminal-host"/);
+  assert.match(main, /createTerminalTab\(/);
+  assert.match(main, /runCommandInTerminal\([\s\S]*createTerminalTab/);
+  assert.match(main, /tab\.lastFitCols/);
+  assert.match(main, /tab\.terminal\.cols === tab\.lastFitCols && tab\.terminal\.rows === tab\.lastFitRows/);
   assert.match(main, /resizeTerminals\(\{ settle: false \}\)/);
   assert.match(main, /sidePaneResizer\?\.addEventListener/);
   assert.match(main, /\(workspacePanes \|\| editorContainer\)\.getBoundingClientRect\(\)/);
