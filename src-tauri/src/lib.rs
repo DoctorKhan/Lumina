@@ -1,22 +1,26 @@
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashSet,
-    env, fs,
-    io::{BufRead, BufReader, Read, Write},
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::{Mutex, PoisonError},
-    thread,
-    time::Duration,
-};
 use notify_debouncer_full::{
     new_debouncer,
     notify::{EventKind, RecursiveMode, Watcher},
     DebounceEventResult,
 };
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashSet,
+    env, fs,
+    hash::{Hash, Hasher},
+    io::{BufRead, BufReader, Read, Write},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::{Mutex, PoisonError},
+    thread,
+    time::{Duration, Instant},
+};
+use std::collections::hash_map::DefaultHasher;
 use tauri::{
-    menu::{AboutMetadata, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
+    menu::{
+        AboutMetadata, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
+    },
     AppHandle, Emitter, Manager, Runtime, State, Wry,
 };
 
@@ -27,6 +31,8 @@ const MENU_OPEN_RECENT_FILE_PREFIX: &str = "lumina_open_recent_file:";
 const MENU_NO_RECENT_FILES: &str = "lumina_no_recent_files";
 const MENU_SAVE: &str = "lumina_save";
 const MENU_SAVE_AS: &str = "lumina_save_as";
+const MENU_EXPORT_PDF: &str = "lumina_export_pdf";
+const MENU_EXPORT_PDF_AS: &str = "lumina_export_pdf_as";
 const MENU_UNDO: &str = "lumina_undo";
 const MENU_REDO: &str = "lumina_redo";
 const MENU_FIND: &str = "lumina_find";
@@ -38,12 +44,16 @@ const MENU_INSTALL_CHECKOUT: &str = "lumina_install_checkout";
 const MENU_TOGGLE_SOURCE: &str = "lumina_toggle_source";
 const MENU_TOGGLE_TERMINAL: &str = "lumina_toggle_terminal";
 const MENU_TOGGLE_CLAUDE: &str = "lumina_toggle_claude";
-const MENU_CLAUDE_CONTEXT: &str = "lumina_claude_context";
-const MENU_CLAUDE_PROMPTS: &str = "lumina_claude_prompts";
-const MENU_CLAUDE_PULL_FILE: &str = "lumina_claude_pull_file";
-const MENU_CLAUDE_APPLY_CLIPBOARD: &str = "lumina_claude_apply_clipboard";
+const MENU_TOGGLE_AGENT: &str = "lumina_toggle_agent";
+// One "Assistant" menu covers Claude, Cursor Agent, and Hermes; the webview
+// routes each action to whichever provider is active.
+const MENU_AI_CONTEXT: &str = "lumina_ai_context";
+const MENU_AI_PROMPTS: &str = "lumina_ai_prompts";
+const MENU_AI_PULL_FILE: &str = "lumina_ai_pull_file";
+const MENU_AI_APPLY_CLIPBOARD: &str = "lumina_ai_apply_clipboard";
 const MENU_OPEN_EXAMPLE_GUIDE: &str = "lumina_open_example_guide";
 const MENU_OPEN_GITHUB: &str = "lumina_open_github";
+const PDF_RENDER_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct PtySession {
@@ -63,10 +73,19 @@ struct ClaudeChat {
     stdin: Mutex<Option<std::process::ChildStdin>>,
 }
 
+/// One-shot `cursor agent --print` invocations per user turn. Follow-up turns use
+/// `--continue` so the CLI keeps conversation context without a long-lived stdin.
+#[derive(Default)]
+struct CursorAgentChat {
+    child: Mutex<Option<std::process::Child>>,
+    has_session: Mutex<bool>,
+}
+
 #[derive(Default)]
 struct TerminalState {
     terminal: PtySession,
     claude_chat: ClaudeChat,
+    cursor_agent: CursorAgentChat,
     cwd: Mutex<Option<PathBuf>>,
 }
 
@@ -81,6 +100,14 @@ struct PendingOpenPaths(Mutex<Vec<String>>);
 /// or clearing it stops the previous watch.
 #[derive(Default)]
 struct FileWatchState {
+    debouncer: Mutex<Option<Box<dyn std::any::Any + Send>>>,
+}
+
+/// Recursive watch on the Lumina source checkout for auto-rebuild. Kept separate
+/// from [`FileWatchState`] so document watches and source watches do not clobber
+/// each other.
+#[derive(Default)]
+struct SourceWatchState {
     debouncer: Mutex<Option<Box<dyn std::any::Any + Send>>>,
 }
 
@@ -123,10 +150,7 @@ fn notify_open_paths_pending(app: &AppHandle<Wry>, mut paths: Vec<String>) {
 
     {
         let pending = app.state::<PendingOpenPaths>();
-        let mut guard = pending
-            .0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut guard = pending.0.lock().unwrap_or_else(PoisonError::into_inner);
         guard.append(&mut paths);
     }
 
@@ -185,6 +209,7 @@ struct AppMenuParams {
     source_shown: bool,
     terminal_shown: bool,
     claude_shown: bool,
+    agent_shown: bool,
 }
 
 #[derive(Serialize)]
@@ -313,22 +338,25 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
     source_shown: bool,
     terminal_shown: bool,
     claude_shown: bool,
+    agent_shown: bool,
 ) -> tauri::Result<Menu<R>> {
     let new_file = menu_item(manager, MENU_NEW_FILE, "New", Some("CmdOrCtrl+N"))?;
     let open_file = menu_item(manager, MENU_OPEN_FILE, "Open…", Some("CmdOrCtrl+O"))?;
-    let open_last_file = menu_item(
-        manager,
-        MENU_OPEN_LAST_FILE,
-        "Reopen Last File",
-        None,
-    )?;
+    let open_last_file = menu_item(manager, MENU_OPEN_LAST_FILE, "Reopen Last File", None)?;
     let recent_files_menu = build_recent_files_menu(manager, recent_file_paths)?;
     let save = menu_item(manager, MENU_SAVE, "Save", Some("CmdOrCtrl+S"))?;
-    let save_as = menu_item(
+    let save_as = menu_item(manager, MENU_SAVE_AS, "Save As…", Some("CmdOrCtrl+Shift+S"))?;
+    let export_pdf = menu_item(
         manager,
-        MENU_SAVE_AS,
-        "Save As…",
-        Some("CmdOrCtrl+Shift+S"),
+        MENU_EXPORT_PDF,
+        "Export to PDF…",
+        Some("CmdOrCtrl+P"),
+    )?;
+    let export_pdf_as = menu_item(
+        manager,
+        MENU_EXPORT_PDF_AS,
+        "Export PDF As…",
+        Some("CmdOrCtrl+Shift+P"),
     )?;
     let undo = menu_item(manager, MENU_UNDO, "Undo", Some("CmdOrCtrl+Z"))?;
     let redo = menu_item(manager, MENU_REDO, "Redo", Some("CmdOrCtrl+Shift+Z"))?;
@@ -362,22 +390,13 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         Some("CmdOrCtrl+`"),
     )?;
     let toggle_claude = check_menu_item(manager, MENU_TOGGLE_CLAUDE, "Claude", claude_shown, None)?;
-    let claude_context = menu_item(manager, MENU_CLAUDE_CONTEXT, "Send Context to Claude", None)?;
-    let claude_prompts = menu_item(
+    let toggle_agent = check_menu_item(manager, MENU_TOGGLE_AGENT, "Agent", agent_shown, None)?;
+    let ai_context = menu_item(manager, MENU_AI_CONTEXT, "Send Context", None)?;
+    let ai_prompts = menu_item(manager, MENU_AI_PROMPTS, "Prompt Presets…", None)?;
+    let ai_pull_file = menu_item(manager, MENU_AI_PULL_FILE, "Open Edited File", None)?;
+    let ai_apply_clipboard = menu_item(
         manager,
-        MENU_CLAUDE_PROMPTS,
-        "Prompt Presets…",
-        None,
-    )?;
-    let claude_pull_file = menu_item(
-        manager,
-        MENU_CLAUDE_PULL_FILE,
-        "Open Claude-Edited File",
-        None,
-    )?;
-    let claude_apply_clipboard = menu_item(
-        manager,
-        MENU_CLAUDE_APPLY_CLIPBOARD,
+        MENU_AI_APPLY_CLIPBOARD,
         "Replace Selection with Clipboard",
         None,
     )?;
@@ -411,6 +430,9 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .separator()
         .item(&save)
         .item(&save_as)
+        .separator()
+        .item(&export_pdf)
+        .item(&export_pdf_as)
         .build()?;
 
     let edit_menu = SubmenuBuilder::new(manager, "Edit")
@@ -432,14 +454,17 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .item(&toggle_source)
         .item(&toggle_terminal)
         .item(&toggle_claude)
+        .item(&toggle_agent)
         .build()?;
 
-    let claude_menu = SubmenuBuilder::new(manager, "Claude")
-        .item(&claude_context)
-        .item(&claude_prompts)
+    // Actions apply to whichever assistant is active (Claude, Cursor Agent, or
+    // Hermes); the webview routes them, so one menu serves all three.
+    let assistant_menu = SubmenuBuilder::new(manager, "Assistant")
+        .item(&ai_context)
+        .item(&ai_prompts)
         .separator()
-        .item(&claude_pull_file)
-        .item(&claude_apply_clipboard)
+        .item(&ai_pull_file)
+        .item(&ai_apply_clipboard)
         .build()?;
 
     let help_menu = SubmenuBuilder::new(manager, "Help")
@@ -451,7 +476,7 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .item(&file_menu)
         .item(&edit_menu)
         .item(&view_menu)
-        .item(&claude_menu)
+        .item(&assistant_menu)
         .item(&help_menu)
         .build()
 }
@@ -465,6 +490,8 @@ fn is_lumina_menu_id(id: &str) -> bool {
                 | MENU_OPEN_LAST_FILE
                 | MENU_SAVE
                 | MENU_SAVE_AS
+                | MENU_EXPORT_PDF
+                | MENU_EXPORT_PDF_AS
                 | MENU_UNDO
                 | MENU_REDO
                 | MENU_FIND
@@ -476,10 +503,11 @@ fn is_lumina_menu_id(id: &str) -> bool {
                 | MENU_TOGGLE_SOURCE
                 | MENU_TOGGLE_TERMINAL
                 | MENU_TOGGLE_CLAUDE
-                | MENU_CLAUDE_CONTEXT
-                | MENU_CLAUDE_PROMPTS
-                | MENU_CLAUDE_PULL_FILE
-                | MENU_CLAUDE_APPLY_CLIPBOARD
+                | MENU_TOGGLE_AGENT
+                | MENU_AI_CONTEXT
+                | MENU_AI_PROMPTS
+                | MENU_AI_PULL_FILE
+                | MENU_AI_APPLY_CLIPBOARD
                 | MENU_OPEN_EXAMPLE_GUIDE
                 | MENU_OPEN_GITHUB
         )
@@ -551,11 +579,7 @@ fn resolve_relative_base(state: &TerminalState) -> Option<PathBuf> {
     if let Some(cwd) = session_live_cwd(&state.terminal) {
         return Some(cwd);
     }
-    state
-        .cwd
-        .lock()
-        .ok()
-        .and_then(|cwd| cwd.clone())
+    state.cwd.lock().ok().and_then(|cwd| cwd.clone())
 }
 
 fn expand_user_path(path: &str, base_dir: Option<&PathBuf>) -> PathBuf {
@@ -736,10 +760,9 @@ fn should_reap_pty_on_write_error(err: &std::io::Error) -> bool {
 
 fn write_pty_session(session: &PtySession, data: String) -> Result<(), String> {
     let io_result: std::io::Result<()> = (|| {
-        let mut writer = session
-            .writer
-            .lock()
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "PTY state is unavailable"))?;
+        let mut writer = session.writer.lock().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::Other, "PTY state is unavailable")
+        })?;
         let writer = writer.as_mut().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "Terminal is not running")
         })?;
@@ -799,7 +822,7 @@ fn kill_pty_session(session: &PtySession) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn terminal_spawn(
     app: AppHandle,
     state: State<'_, TerminalState>,
@@ -877,12 +900,13 @@ fn resolve_claude_cwd(
 /// thread forwards each newline-delimited JSON event to the webview on the
 /// `claude-chat` event; user turns are written via `claude_chat_send`. A no-op
 /// if a session is already running.
-#[tauri::command]
+#[tauri::command(async)]
 fn claude_chat_start(
     app: AppHandle,
     state: State<'_, TerminalState>,
     file_path: Option<String>,
     cwd: Option<String>,
+    open_file_path: Option<String>,
     permission_mode: Option<String>,
     model: Option<String>,
 ) -> Result<Option<ClaudeWorkspaceInfo>, String> {
@@ -897,6 +921,16 @@ fn claude_chat_start(
     }
 
     let (cwd, workspace_info) = resolve_claude_cwd(&state, file_path, cwd)?;
+
+    // In "Develop Lumina" mode the cwd is the Lumina source tree, so `file_path`
+    // is not set and `workspace_info` is None — yet the user may have an unrelated
+    // document (e.g. a Markdown file with diagrams) open in the editor. Thread that
+    // path through here so Claude can read it even though it lives outside cwd.
+    let open_doc = open_file_path
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .and_then(|p| fs::canonicalize(expand_user_path(&p, None)).ok())
+        .filter(|p| p.is_file());
     let mode = permission_mode
         .map(|m| m.trim().to_string())
         .filter(|m| !m.is_empty())
@@ -930,6 +964,27 @@ When they say \"this file\", \"this document\", \"the doc\", or give an \
 instruction without naming a file, they mean that file. Read and edit it \
 directly on disk and keep it valid Markdown.",
             info.file_path
+        ));
+    }
+    // Pasted images are saved under `~/.lumina/image-cache/` (see
+    // `claude_save_pasted_image`), which lives outside the project `cwd`. Grant
+    // read access to that dir so Claude can open pasted-image paths without a
+    // permission prompt.
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        let image_cache = home.join(".lumina").join("image-cache");
+        command.arg("--add-dir").arg(&image_cache);
+    }
+    // Grant read access to the open document's directory and tell Claude what
+    // "this file" means, for the Develop-Lumina case where it sits outside cwd.
+    if let Some(doc) = open_doc.as_ref() {
+        if let Some(dir) = doc.parent() {
+            command.arg("--add-dir").arg(dir);
+        }
+        command.arg("--append-system-prompt").arg(format!(
+            "The user has the document `{}` open in the Lumina editor. When they \
+say \"this file\", \"this document\", \"the doc\", or paste content without \
+naming a file, they mean that document — read it directly from disk.",
+            doc.to_string_lossy()
         ));
     }
     command.current_dir(&cwd);
@@ -1072,7 +1127,7 @@ fn claude_chat_stop(state: State<'_, TerminalState>) -> Result<(), String> {
 
 /// Persists clipboard image bytes under `~/.lumina/image-cache/` so the path can
 /// be referenced in a Claude prompt. Returns the absolute file path.
-#[tauri::command]
+#[tauri::command(async)]
 fn claude_save_pasted_image(bytes: Vec<u8>, extension: String) -> Result<String, String> {
     if bytes.is_empty() {
         return Err("Pasted image is empty.".to_string());
@@ -1090,7 +1145,11 @@ fn claude_save_pasted_image(bytes: Vec<u8>, extension: String) -> Result<String,
         .filter(|c| c.is_ascii_alphanumeric())
         .collect::<String>()
         .to_lowercase();
-    let ext = if ext.is_empty() { "png".to_string() } else { ext };
+    let ext = if ext.is_empty() {
+        "png".to_string()
+    } else {
+        ext
+    };
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1101,6 +1160,202 @@ fn claude_save_pasted_image(bytes: Vec<u8>, extension: String) -> Result<String,
 
     fs::write(&path, &bytes).map_err(|error| error.to_string())?;
     Ok(path.to_string_lossy().to_string())
+}
+
+fn kill_cursor_agent_turn(state: &TerminalState) {
+    if let Ok(mut guard) = state.cursor_agent.child.lock() {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn cursor_agent_cwd(
+    state: &State<'_, TerminalState>,
+    file_path: Option<String>,
+    cwd: Option<String>,
+) -> Result<PathBuf, String> {
+    if let Some(cwd) = cwd {
+        let cwd = fs::canonicalize(expand_user_path(cwd.trim(), None))
+            .map_err(|error| error.to_string())?;
+        if !cwd.is_dir() {
+            return Err("Agent cwd is not a directory.".to_string());
+        }
+        return Ok(cwd);
+    }
+    if let Some(file_path) = file_path {
+        let file_path = fs::canonicalize(expand_user_path(file_path.trim(), None))
+            .map_err(|error| error.to_string())?;
+        if file_path.is_file() {
+            if let Some(dir) = file_path.parent() {
+                return fs::canonicalize(dir).map_err(|error| error.to_string());
+            }
+        }
+    }
+    let cwd = state
+        .cwd
+        .lock()
+        .map_err(|_| "Terminal state is unavailable.".to_string())?
+        .clone()
+        .unwrap_or_else(default_cwd);
+    fs::canonicalize(&cwd).map_err(|error| error.to_string())
+}
+
+/// Runs one Cursor Agent turn via `cursor agent --print --output-format stream-json`.
+/// The first turn starts a fresh session; later turns pass `--continue`.
+#[tauri::command(async)]
+fn cursor_agent_send(
+    app: AppHandle,
+    state: State<'_, TerminalState>,
+    text: String,
+    file_path: Option<String>,
+    mode: Option<String>,
+    force: Option<bool>,
+    provider: Option<String>,
+    cwd: Option<String>,
+) -> Result<(), String> {
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("Message is empty.".to_string());
+    }
+
+    let is_hermes = provider.as_deref() == Some("hermes");
+
+    kill_cursor_agent_turn(&state);
+
+    let cwd = cursor_agent_cwd(&state, file_path, cwd)?;
+    let continue_session = *state
+        .cursor_agent
+        .has_session
+        .lock()
+        .map_err(|_| "Cursor Agent state is unavailable.".to_string())?;
+
+    let mut command;
+    if is_hermes {
+        command = Command::new("hermes");
+        // `hermes chat` takes no positional message (argparse rejects one with
+        // "unrecognized arguments"); it reads the message from stdin, and end of
+        // input ends the turn.
+        command.arg("chat");
+        command.stdin(Stdio::piped());
+    } else {
+        command = Command::new("cursor");
+        command
+            .arg("agent")
+            .arg("--print")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--trust")
+            .arg("--stream-partial-output")
+            .arg("--workspace")
+            .arg(&cwd);
+        if let Some(mode) = mode {
+            let mode = mode.trim();
+            if mode == "plan" || mode == "ask" {
+                command.arg("--mode").arg(mode);
+            }
+        }
+        if force.unwrap_or(false) {
+            command.arg("--force");
+        }
+        if continue_session {
+            command.arg("--continue");
+        }
+        command.arg(&text);
+    }
+    command.current_dir(&cwd);
+    command.env("PATH", terminal_path());
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = command.spawn().map_err(|error| {
+        if is_hermes {
+            format!("Unable to run hermes: {error}. Install the Hermes CLI to use the Agent pane.")
+        } else {
+            format!(
+                "Unable to run cursor agent: {error}. Install the Cursor CLI to use the Agent pane."
+            )
+        }
+    })?;
+    if is_hermes {
+        // Deliver the message on stdin and close it so hermes ends the turn at EOF.
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "Hermes stdin is unavailable.".to_string())?;
+        let message = text.clone();
+        thread::spawn(move || {
+            let _ = stdin.write_all(message.as_bytes());
+            let _ = stdin.write_all(b"\n");
+        });
+    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Cursor Agent stdout is unavailable.".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Cursor Agent stderr is unavailable.".to_string())?;
+
+    let app_out = app.clone();
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines() {
+            match line {
+                Ok(line) if !line.trim().is_empty() => {
+                    let _ = app_out.emit("cursor-agent-chat", line);
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        // `--continue` only exists for the cursor CLI, so a Hermes run must not
+        // mark the session as resumable.
+        if !is_hermes {
+            if let Ok(mut guard) = app_out
+                .state::<TerminalState>()
+                .cursor_agent
+                .has_session
+                .lock()
+            {
+                *guard = true;
+            }
+        }
+        let _ = app_out.emit("cursor-agent-chat", "{\"type\":\"__exit\"}".to_string());
+    });
+
+    let app_err = app.clone();
+    thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let payload = serde_json::json!({ "type": "__stderr", "text": line }).to_string();
+            let _ = app_err.emit("cursor-agent-chat", payload);
+        }
+    });
+
+    *state
+        .cursor_agent
+        .child
+        .lock()
+        .map_err(|_| "Cursor Agent state is unavailable.".to_string())? = Some(child);
+
+    Ok(())
+}
+
+/// Stops the in-flight Cursor Agent turn and clears conversation context.
+#[tauri::command]
+fn cursor_agent_stop(state: State<'_, TerminalState>) -> Result<(), String> {
+    kill_cursor_agent_turn(&state);
+    if let Ok(mut guard) = state.cursor_agent.has_session.lock() {
+        *guard = false;
+    }
+    Ok(())
 }
 
 /// Strips a trailing `:line` or `:line:col` (compiler / ripgrep style) only when it
@@ -1153,7 +1408,7 @@ fn home_dir_path() -> Result<String, String> {
         .ok_or_else(|| "HOME is not set.".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn complete_file_path(
     state: State<'_, TerminalState>,
     query: String,
@@ -1230,13 +1485,13 @@ struct DirListing {
 /// as common heavyweight folders (`node_modules`, `.git`, `target`, `dist`), are
 /// filtered out. Files are limited to supported document extensions so the Files
 /// pane only shows things the editor can actually open.
-#[tauri::command]
-fn list_directory(state: State<'_, TerminalState>, path: Option<String>) -> Result<DirListing, String> {
+#[tauri::command(async)]
+fn list_directory(
+    state: State<'_, TerminalState>,
+    path: Option<String>,
+) -> Result<DirListing, String> {
     let base = resolve_relative_base(&state);
-    let raw = path
-        .as_deref()
-        .map(|p| p.trim())
-        .filter(|p| !p.is_empty());
+    let raw = path.as_deref().map(|p| p.trim()).filter(|p| !p.is_empty());
 
     let target = match raw {
         Some(p) => expand_user_path(p, base.as_ref()),
@@ -1280,15 +1535,13 @@ fn list_directory(state: State<'_, TerminalState>, path: Option<String>) -> Resu
     });
 
     Ok(DirListing {
-        parent: target
-            .parent()
-            .map(|p| p.to_string_lossy().to_string()),
+        parent: target.parent().map(|p| p.to_string_lossy().to_string()),
         path: target.to_string_lossy().to_string(),
         entries,
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<OpenedFile, String> {
     let path = path
         .trim()
@@ -1320,7 +1573,7 @@ fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<Opene
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn save_file_path(path: String, content: String) -> Result<OpenedFile, String> {
     let path = expand_user_path(path.trim(), None);
     let path = fs::canonicalize(&path).map_err(|error| error.to_string())?;
@@ -1347,8 +1600,94 @@ fn save_file_path(path: String, content: String) -> Result<OpenedFile, String> {
     })
 }
 
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct RecoverySnapshot {
+    path: String,
+    content: String,
+    updated_ms: u64,
+    disk_mtime_ms: u64,
+}
+
+const UNTITLED_RECOVERY_ID: &str = "__lumina_untitled__";
+
+fn recovery_storage_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("recovery");
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    Ok(dir)
+}
+
+fn recovery_id_for_path(path: &str) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == UNTITLED_RECOVERY_ID {
+        return Ok(UNTITLED_RECOVERY_ID.to_string());
+    }
+    let expanded = expand_user_path(trimmed, None);
+    let canonical = fs::canonicalize(&expanded).map_err(|error| error.to_string())?;
+    let mut hasher = DefaultHasher::new();
+    canonical.to_string_lossy().hash(&mut hasher);
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
+fn recovery_file_path(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
+    let id = recovery_id_for_path(path)?;
+    Ok(recovery_storage_dir(app)?.join(format!("{id}.json")))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Persists unsaved editor content to app data so a crash or external overwrite
+/// can be recovered without relying on the user pressing Save.
+#[tauri::command(async)]
+fn write_recovery_snapshot(
+    app: AppHandle,
+    path: String,
+    content: String,
+    disk_mtime_ms: u64,
+) -> Result<(), String> {
+    let snapshot = RecoverySnapshot {
+        path: path.trim().to_string(),
+        content,
+        updated_ms: now_ms(),
+        disk_mtime_ms,
+    };
+    let file_path = recovery_file_path(&app, &path)?;
+    let json = serde_json::to_string_pretty(&snapshot).map_err(|error| error.to_string())?;
+    fs::write(file_path, json).map_err(|error| error.to_string())
+}
+
+#[tauri::command(async)]
+fn read_recovery_snapshot(app: AppHandle, path: String) -> Result<Option<RecoverySnapshot>, String> {
+    let file_path = recovery_file_path(&app, &path)?;
+    if !file_path.is_file() {
+        return Ok(None);
+    }
+    let json = fs::read_to_string(&file_path).map_err(|error| error.to_string())?;
+    let snapshot: RecoverySnapshot =
+        serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    Ok(Some(snapshot))
+}
+
+#[tauri::command(async)]
+fn delete_recovery_snapshot(app: AppHandle, path: String) -> Result<(), String> {
+    let file_path = recovery_file_path(&app, &path)?;
+    if file_path.is_file() {
+        fs::remove_file(file_path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 /// Writes the document to the given path, creating the file and parent directories if needed.
-#[tauri::command]
+#[tauri::command(async)]
 fn write_document(path: String, content: String) -> Result<OpenedFile, String> {
     let path = expand_user_path(path.trim(), None);
     if let Some(parent) = path.parent() {
@@ -1372,7 +1711,139 @@ fn write_document(path: String, content: String) -> Result<OpenedFile, String> {
     })
 }
 
-#[tauri::command]
+/// Finds the first Chromium-based browser usable for headless PDF rendering.
+/// Honors a `LUMINA_PDF_BROWSER` override, then probes the usual install
+/// locations (Chrome, Chromium, Edge, Brave). Returns `None` if none is found,
+/// which lets the frontend fall back to the OS print panel.
+fn find_chromium_browser() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("LUMINA_PDF_BROWSER").map(PathBuf::from) {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    let candidates: &[&str] = &[
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    ];
+    #[cfg(not(target_os = "macos"))]
+    let candidates: &[&str] = &[
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+        "microsoft-edge",
+        "brave-browser",
+    ];
+
+    for candidate in candidates {
+        let path = PathBuf::from(candidate);
+        if path.is_absolute() {
+            if path.is_file() {
+                return Some(path);
+            }
+        } else if let Some(found) = which_in_path(candidate) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Resolves a bare executable name against `PATH` (used on non-macOS where the
+/// browser candidates are command names rather than absolute app paths).
+fn which_in_path(name: &str) -> Option<PathBuf> {
+    let path_var = env::var_os("PATH")?;
+    for dir in env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Renders a self-contained HTML document to a PDF at `out_path` using a headless
+/// Chromium browser. The frontend builds the HTML from the live preview with all
+/// styles and fonts inlined, so the PDF matches what's on screen — no print
+/// dialog, written straight to the given path. Returns the final PDF path.
+#[tauri::command(async)]
+fn export_pdf(html: String, out_path: String) -> Result<String, String> {
+    let browser = find_chromium_browser().ok_or_else(|| {
+        "No Chromium-based browser (Chrome, Edge, Brave, Chromium) was found for PDF export."
+            .to_string()
+    })?;
+
+    let out = expand_user_path(out_path.trim(), None);
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    // Chrome loads the document over file://, so stage the HTML in a temp file.
+    let tmp_html = env::temp_dir().join(format!("lumina-export-{stamp}-{pid}.html"));
+    fs::write(&tmp_html, html.as_bytes()).map_err(|error| error.to_string())?;
+    // A throwaway profile avoids colliding with a running browser instance, which
+    // would otherwise make --print-to-pdf a no-op.
+    let user_data = env::temp_dir().join(format!("lumina-export-profile-{stamp}-{pid}"));
+
+    let render = (|| -> Result<(), String> {
+        let mut child = Command::new(&browser)
+            .arg("--headless=new")
+            .arg("--disable-gpu")
+            .arg("--disable-background-networking")
+            .arg("--disable-extensions")
+            .arg("--no-pdf-header-footer")
+            .arg("--no-first-run")
+            .arg(format!("--user-data-dir={}", user_data.to_string_lossy()))
+            .arg("--virtual-time-budget=10000")
+            .arg(format!("--print-to-pdf={}", out.to_string_lossy()))
+            .arg(format!("file://{}", tmp_html.to_string_lossy()))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("Unable to run {}: {error}", browser.display()))?;
+
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| format!("Unable to wait for PDF renderer: {error}"))?
+            {
+                break status;
+            }
+            if started.elapsed() >= PDF_RENDER_TIMEOUT {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "PDF renderer timed out after {} seconds.",
+                    PDF_RENDER_TIMEOUT.as_secs()
+                ));
+            }
+            thread::sleep(Duration::from_millis(100));
+        };
+        if !status.success() {
+            return Err(format!("PDF renderer exited with {status}."));
+        }
+        if !out.is_file() {
+            return Err("PDF renderer produced no output file.".to_string());
+        }
+        Ok(())
+    })();
+
+    let _ = fs::remove_file(&tmp_html);
+    let _ = fs::remove_dir_all(&user_data);
+
+    render.map(|_| out.to_string_lossy().to_string())
+}
+
+#[tauri::command(async)]
 fn current_checkout_install_info() -> CheckoutInstallInfo {
     let Some(root_dir) = find_lumina_source_dir() else {
         return CheckoutInstallInfo {
@@ -1393,7 +1864,7 @@ fn current_checkout_install_info() -> CheckoutInstallInfo {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn source_dir_info() -> SourceDirInfo {
     match find_lumina_source_dir() {
         Some(dir) => {
@@ -1412,15 +1883,19 @@ fn source_dir_info() -> SourceDirInfo {
     }
 }
 
-#[tauri::command]
-fn poll_file_for_changes(path: String, known_modified_ms: u64) -> Result<Option<OpenedFile>, String> {
+#[tauri::command(async)]
+fn poll_file_for_changes(
+    path: String,
+    known_modified_ms: u64,
+) -> Result<Option<OpenedFile>, String> {
     let path = PathBuf::from(path.trim());
     let path = fs::canonicalize(&path).map_err(|e| e.to_string())?;
     let mtime = file_modified_ms(&path);
     if mtime <= known_modified_ms {
         return Ok(None);
     }
-    let content = fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
+    let content =
+        fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -1442,7 +1917,7 @@ fn poll_file_for_changes(path: String, known_modified_ms: u64) -> Result<Option<
 /// atomically by writing a temp file and renaming it over the target, which would
 /// silently break an inode-level watch. Matching by name in the parent dir keeps
 /// the watch alive across those rename-replace saves, like VS Code does.
-#[tauri::command]
+#[tauri::command(async)]
 fn watch_file(
     app: AppHandle<Wry>,
     state: State<'_, FileWatchState>,
@@ -1505,6 +1980,92 @@ fn unwatch_file(state: State<'_, FileWatchState>) -> Result<(), String> {
     Ok(())
 }
 
+fn source_watch_skip_dir(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | "target" | "dist" | ".DS_Store" | "gen"
+    )
+}
+
+fn is_relevant_source_change(root: &Path, changed: &Path) -> bool {
+    let Ok(relative) = changed.strip_prefix(root) else {
+        return false;
+    };
+    for component in relative.components() {
+        if let std::path::Component::Normal(name) = component {
+            if source_watch_skip_dir(name.to_str().unwrap_or("")) {
+                return false;
+            }
+        }
+    }
+    if changed
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "Cargo.lock" | "pnpm-lock.yaml"))
+    {
+        return false;
+    }
+    changed.is_file()
+}
+
+/// Watches a Lumina source checkout recursively and emits `lumina-source-changed`
+/// when relevant files change (build artifacts and dependency dirs are ignored).
+#[tauri::command(async)]
+fn watch_source_checkout(
+    app: AppHandle<Wry>,
+    state: State<'_, SourceWatchState>,
+    path: String,
+) -> Result<(), String> {
+    let root = fs::canonicalize(PathBuf::from(path.trim())).map_err(|error| error.to_string())?;
+    if !looks_like_lumina_source(&root) {
+        return Err("Path does not look like a Lumina source checkout.".to_string());
+    }
+
+    let app_handle = app.clone();
+    let watched_root = root.clone();
+    let mut debouncer = new_debouncer(
+        Duration::from_millis(1200),
+        None,
+        move |result: DebounceEventResult| {
+            let Ok(events) = result else {
+                return;
+            };
+            let changed = events.iter().any(|event| {
+                matches!(event.kind, EventKind::Create(_) | EventKind::Modify(_))
+                    && event.paths.iter().any(|path| {
+                        is_relevant_source_change(&watched_root, path)
+                    })
+            });
+            if changed {
+                let _ = app_handle.emit("lumina-source-changed", ());
+            }
+        },
+    )
+    .map_err(|error| error.to_string())?;
+
+    debouncer
+        .watcher()
+        .watch(&root, RecursiveMode::Recursive)
+        .map_err(|error| error.to_string())?;
+
+    let mut guard = state
+        .debouncer
+        .lock()
+        .map_err(|_| "Source watch state is unavailable.".to_string())?;
+    *guard = Some(Box::new(debouncer));
+    Ok(())
+}
+
+#[tauri::command]
+fn unwatch_source_checkout(state: State<'_, SourceWatchState>) -> Result<(), String> {
+    let mut guard = state
+        .debouncer
+        .lock()
+        .map_err(|_| "Source watch state is unavailable.".to_string())?;
+    *guard = None;
+    Ok(())
+}
+
 #[tauri::command]
 fn sync_app_menu(app: AppHandle<Wry>, params: AppMenuParams) -> Result<(), String> {
     let menu = build_app_menu(
@@ -1513,6 +2074,7 @@ fn sync_app_menu(app: AppHandle<Wry>, params: AppMenuParams) -> Result<(), Strin
         params.source_shown,
         params.terminal_shown,
         params.claude_shown,
+        params.agent_shown,
     )
     .map_err(|error| error.to_string())?;
     app.set_menu(menu)
@@ -1612,9 +2174,7 @@ fn run_git(
                 .map_err(|error| error.to_string())?;
         }
     }
-    child
-        .wait_with_output()
-        .map_err(|error| error.to_string())
+    child.wait_with_output().map_err(|error| error.to_string())
 }
 
 fn ok_git_output(output: std::process::Output) -> Result<String, String> {
@@ -1672,7 +2232,11 @@ async fn git_status(
     cwd: Option<String>,
 ) -> Result<GitStatusInfo, String> {
     let repo = resolve_git_root(&state, cwd.as_deref())?;
-    let output = run_git(&repo, &["status", "--porcelain=v1", "--branch", "-uall"], None)?;
+    let output = run_git(
+        &repo,
+        &["status", "--porcelain=v1", "--branch", "-uall"],
+        None,
+    )?;
     let text = ok_git_output(output)?;
 
     let mut branch = String::from("(unknown)");
@@ -1865,10 +2429,13 @@ async fn git_generate_commit_message(
     let mut prompt = String::new();
     prompt.push_str("Write a git commit message for the following staged changes.\n");
     prompt.push_str("Rules:\n");
-    prompt.push_str("- Return ONLY the commit message text, with no markdown fences or preamble.\n");
+    prompt
+        .push_str("- Return ONLY the commit message text, with no markdown fences or preamble.\n");
     prompt.push_str("- First line must be <= 72 chars and in imperative mood.\n");
     prompt.push_str("- Add a blank line then optional body bullets only when useful.\n");
-    prompt.push_str("- Focus on why the change exists. Do not invent changes absent from the diff.\n\n");
+    prompt.push_str(
+        "- Focus on why the change exists. Do not invent changes absent from the diff.\n\n",
+    );
     prompt.push_str("Recent commit style:\n");
     prompt.push_str(&recent);
     prompt.push_str("\nStaged diff:\n");
@@ -1902,7 +2469,7 @@ async fn git_generate_commit_message(
     Ok(message)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_external_url(url: String) -> Result<(), String> {
     if url != "https://github.com/DoctorKhan/Lumina" {
         return Err("External URL is not allowed.".to_string());
@@ -1928,16 +2495,54 @@ fn open_external_url(url: String) -> Result<(), String> {
         })
 }
 
+/// Reveals a file in the OS file manager with the item selected (Finder on
+/// macOS, Explorer on Windows, the containing folder via `xdg-open` elsewhere).
+#[tauri::command(async)]
+fn reveal_in_file_manager(path: String) -> Result<(), String> {
+    let path = expand_user_path(path.trim(), None);
+    if !path.exists() {
+        return Err("File does not exist.".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg("-R").arg(&path).status();
+
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer")
+        .arg(format!("/select,{}", path.to_string_lossy()))
+        .status();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = {
+        // No portable "select the file" flag; open the containing directory.
+        let target = path.parent().unwrap_or(&path).to_path_buf();
+        Command::new("xdg-open").arg(&target).status()
+    };
+
+    status
+        .map_err(|error| error.to_string())
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Unable to reveal file; command exited with {status}"
+                ))
+            }
+        })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(TerminalState::default())
         .manage(PendingOpenPaths::default())
         .manage(FileWatchState::default())
+        .manage(SourceWatchState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
-            let menu = build_app_menu(app, &[], true, false, false)?;
+            let menu = build_app_menu(app, &[], true, false, false, false)?;
             app.set_menu(menu)?;
             notify_open_paths_pending(app.handle(), collect_cli_document_paths());
             Ok(())
@@ -1958,17 +2563,26 @@ pub fn run() {
             claude_chat_send,
             claude_chat_stop,
             claude_save_pasted_image,
+            cursor_agent_send,
+            cursor_agent_stop,
             home_dir_path,
             complete_file_path,
             list_directory,
             open_file_path,
             save_file_path,
             write_document,
+            write_recovery_snapshot,
+            read_recovery_snapshot,
+            delete_recovery_snapshot,
+            export_pdf,
+            reveal_in_file_manager,
             sync_app_menu,
             drain_pending_open_paths,
             poll_file_for_changes,
             watch_file,
             unwatch_file,
+            watch_source_checkout,
+            unwatch_source_checkout,
             open_external_url,
             current_checkout_install_info,
             source_dir_info,

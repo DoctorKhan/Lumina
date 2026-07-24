@@ -118,6 +118,18 @@ export async function renderMermaidInPreview(preview) {
         mermaidApi = (await import('mermaid')).default;
         mermaidApi.initialize(MERMAID_INIT);
     }
+    // Mermaid sizes each node box by measuring its label text. If the Inter
+    // font hasn't actually loaded yet, it measures with a fallback font and the
+    // wider Inter glyphs later overflow the boxes (text gets clipped). Awaiting
+    // fonts.ready is not enough: it resolves immediately when Inter was never
+    // requested. Explicitly request the weights Mermaid uses, then wait.
+    if (document.fonts?.load) {
+        await Promise.all([
+            document.fonts.load('400 16px Inter'),
+            document.fonts.load('600 16px Inter'),
+            document.fonts.load('700 16px Inter')
+        ]).catch(() => {});
+    }
     if (document.fonts?.ready) {
         await document.fonts.ready;
     }

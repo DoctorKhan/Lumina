@@ -64,7 +64,15 @@
                 <button id="toggle-git-btn" type="button" class="pane-toggle-btn rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors" title="Show Git" aria-label="Toggle Git pane" aria-pressed="false">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
                 </button>
-                <button id="toggle-claude-btn" type="button" class="pane-toggle-btn rounded-md px-2 py-1.5 text-sm font-semibold text-violet-300 hover:text-white hover:bg-violet-900/70 transition-colors" title="Show Claude" aria-label="Toggle Claude pane" aria-pressed="false">C</button>
+                <div id="ai-toggle-wrap" class="ai-toggle-wrap relative flex items-stretch">
+                    <button id="toggle-ai-btn" type="button" class="ai-toggle-main pane-toggle-btn rounded-l-md px-2 py-1.5 text-sm font-semibold text-violet-300 hover:text-white hover:bg-violet-900/70 transition-colors" title="Show Hermes" aria-label="Toggle AI assistant pane" aria-pressed="false">H</button>
+                    <button id="toggle-ai-menu-btn" type="button" class="ai-toggle-chevron pane-toggle-btn rounded-r-md px-1 py-1.5 text-[10px] text-violet-300/80 hover:text-white hover:bg-violet-900/70 border-l border-violet-800/60 transition-colors" title="Switch assistant (Claude / Cursor Agent / Hermes)" aria-label="Switch AI assistant" aria-haspopup="menu" aria-expanded="false">▾</button>
+                    <div id="toggle-ai-menu" class="ai-toggle-menu hidden" role="menu">
+                        <button type="button" class="ai-toggle-menu-item" data-ai-provider="claude" role="menuitemradio" aria-checked="false">Claude</button>
+                        <button type="button" class="ai-toggle-menu-item" data-ai-provider="agent" role="menuitemradio" aria-checked="false">Cursor Agent</button>
+                        <button type="button" class="ai-toggle-menu-item" data-ai-provider="hermes" role="menuitemradio" aria-checked="true">Hermes</button>
+                    </div>
+                </div>
                 <button id="toggle-files-btn" type="button" class="pane-toggle-btn rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors" title="Show Files" aria-label="Toggle Files pane" aria-pressed="false">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
                 </button>
@@ -93,6 +101,7 @@
                         </div>
                         <ul id="filename-path-suggestions" class="filename-path-suggestions hidden" role="listbox" aria-label="Path suggestions"></ul>
                     </div>
+                    <button id="reload-file-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Reload this file from disk, discarding unsaved changes">Reload</button>
                     <button id="fix-latex-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors" title="Normalize LaTeX delimiters in source (converts \[…\] and \(…\) to $$ and $)">Fix LaTeX</button>
                     <span id="char-count" class="shrink-0 whitespace-nowrap text-right normal-case tracking-normal">0 chars</span>
                     </div>
@@ -101,7 +110,14 @@
                 <div id="find-replace-bar" class="find-replace-bar hidden" role="search" aria-label="Find and replace">
                     <div class="find-replace-row">
                         <label class="find-replace-label" for="find-input">Find</label>
-                        <input id="find-input" type="search" class="find-replace-input" placeholder="Find…" autocomplete="off" spellcheck="false" />
+                        <div class="find-input-wrap">
+                            <input id="find-input" type="search" class="find-replace-input" placeholder="Find…" autocomplete="off" spellcheck="false" />
+                            <div class="find-options" role="group" aria-label="Search options">
+                                <button id="find-opt-case" type="button" class="find-option-btn" aria-pressed="false" title="Match case (⌥⌘C)">Aa</button>
+                                <button id="find-opt-word" type="button" class="find-option-btn" aria-pressed="false" title="Match whole word (⌥⌘W)"><span class="find-option-word">ab</span></button>
+                                <button id="find-opt-regex" type="button" class="find-option-btn" aria-pressed="false" title="Use regular expression (⌥⌘R)">.*</button>
+                            </div>
+                        </div>
                         <span id="find-match-status" class="find-match-status" aria-live="polite"></span>
                         <div class="find-replace-actions">
                             <button id="find-prev-btn" type="button" class="find-replace-btn" title="Previous match (⌘⇧G)">↑</button>
@@ -118,7 +134,18 @@
                     </div>
                     <button id="find-replace-close-btn" type="button" class="find-replace-close-btn" title="Close (Esc)" aria-label="Close find and replace">×</button>
                 </div>
-                <textarea id="editor" class="flex-1 p-6 leading-relaxed" spellcheck="false" placeholder="Start typing your masterpiece..."></textarea>
+                <div id="document-alert-banner" class="document-alert-banner hidden" role="alert" aria-live="assertive">
+                    <p id="document-alert-message" class="document-alert-message"></p>
+                    <div class="document-alert-actions">
+                        <button id="document-alert-primary-btn" type="button" class="document-alert-btn document-alert-btn-primary"></button>
+                        <button id="document-alert-secondary-btn" type="button" class="document-alert-btn"></button>
+                        <button id="document-alert-dismiss-btn" type="button" class="document-alert-btn document-alert-btn-ghost" title="Dismiss">Dismiss</button>
+                    </div>
+                </div>
+                <div class="editor-input-wrap flex-1 min-h-0">
+                    <div id="editor-highlight-layer" class="editor-highlight-layer p-6 leading-relaxed" aria-hidden="true"></div>
+                    <textarea id="editor" class="p-6 leading-relaxed" spellcheck="false" placeholder="Start typing your masterpiece..."></textarea>
+                </div>
             </div>
 
             <div id="pane-resizer" class="pane-resizer" aria-hidden="true"></div>
@@ -151,17 +178,20 @@
             <div id="side-split-resizer-1" class="side-split-resizer hidden" aria-hidden="true"></div>
 
             <aside id="claude-pane" class="terminal-pane hidden flex flex-col min-w-0">
-                <div class="h-10 bg-violet-950 flex items-center gap-3 px-4 text-xs font-medium text-violet-200 border-b border-violet-900 shrink-0">
-                    <div class="min-w-0 flex-1">
-                        <div class="flex items-center gap-2">
-                            <span class="uppercase tracking-wider">Claude</span>
-                            <span id="claude-status" class="normal-case tracking-normal text-violet-300/70">Stopped</span>
-                        </div>
-                        <div id="claude-workspace-status" class="truncate text-[11px] font-normal normal-case tracking-normal text-violet-200/45" title="">No file attached</div>
+                <div class="bg-violet-950 flex flex-col gap-1.5 px-3 py-2 text-xs font-medium text-violet-200 border-b border-violet-900 shrink-0">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span class="uppercase tracking-wider shrink-0">Claude</span>
+                        <span id="claude-status" class="normal-case tracking-normal text-violet-300/70 shrink-0">Stopped</span>
+                        <div id="claude-workspace-status" class="truncate text-[11px] font-normal normal-case tracking-normal text-violet-200/45 flex-1 min-w-0" title="">No file attached</div>
+                        <button id="close-claude-btn" class="claude-icon-button shrink-0" title="Hide Claude" aria-label="Hide Claude">×</button>
                     </div>
-                    <div class="flex items-center gap-1.5">
+                    <div class="flex items-center flex-wrap gap-1.5">
                         <button id="claude-develop-lumina-btn" class="claude-action-button hidden" title="Edit Lumina's own source code with Claude" aria-pressed="false">Lumina src</button>
                         <button id="claude-rebuild-lumina-btn" class="claude-action-button claude-action-primary hidden" title="Rebuild Lumina from the source checkout and reinstall">Rebuild &amp; Install</button>
+                        <label id="claude-auto-rebuild-wrap" class="claude-auto-rebuild-label hidden" title="After source edits settle, rebuild and reinstall automatically">
+                            <input id="claude-auto-rebuild-checkbox" type="checkbox" class="claude-auto-rebuild-checkbox" />
+                            Auto rebuild
+                        </label>
                         <select id="claude-mode" class="claude-mode-select" title="Tool permission mode for this Claude session">
                             <option value="acceptEdits" selected>Auto-edit</option>
                             <option value="plan">Plan (read-only)</option>
@@ -177,7 +207,6 @@
                             </div>
                         </div>
                         <button id="claude-stop-btn" class="claude-action-button claude-action-stop hidden" title="Stop the current Claude session">Stop</button>
-                        <button id="close-claude-btn" class="claude-icon-button" title="Hide Claude" aria-label="Hide Claude">×</button>
                     </div>
                 </div>
                 <div class="flex-1 min-h-0 min-w-0 flex flex-col">
@@ -192,6 +221,56 @@
             </aside>
 
             <div id="side-split-resizer-2" class="side-split-resizer hidden" aria-hidden="true"></div>
+
+            <aside id="agent-pane" class="terminal-pane hidden flex flex-col min-w-0">
+                <div class="bg-cyan-950 flex flex-col gap-1.5 px-3 py-2 text-xs font-medium text-cyan-200 border-b border-cyan-900 shrink-0">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span id="agent-provider-name" class="uppercase tracking-wider shrink-0">Cursor Agent</span>
+                        <span id="agent-status" class="normal-case tracking-normal text-cyan-300/70 shrink-0">Idle</span>
+                        <div id="agent-workspace-status" class="truncate text-[11px] font-normal normal-case tracking-normal text-cyan-200/45 flex-1 min-w-0" title="">No file attached</div>
+                        <button id="close-agent-btn" class="claude-icon-button shrink-0" title="Hide Cursor Agent" aria-label="Hide Cursor Agent">×</button>
+                    </div>
+                    <div class="flex items-center flex-wrap gap-1.5">
+                        <button id="agent-develop-lumina-btn" class="claude-action-button hidden" title="Edit Lumina's own source code with this agent" aria-pressed="false">Lumina src</button>
+                        <button id="agent-rebuild-lumina-btn" class="claude-action-button claude-action-primary hidden" title="Rebuild Lumina from the source checkout and reinstall">Rebuild &amp; Install</button>
+                        <label id="agent-auto-rebuild-wrap" class="claude-auto-rebuild-label hidden" title="After source edits settle, rebuild and reinstall automatically">
+                            <input id="agent-auto-rebuild-checkbox" type="checkbox" class="claude-auto-rebuild-checkbox" />
+                            Auto rebuild
+                        </label>
+                        <select id="agent-mode" class="claude-mode-select" title="Execution mode for Cursor Agent">
+                            <option value="" selected>Agent</option>
+                            <option value="plan">Plan</option>
+                            <option value="ask">Ask</option>
+                        </select>
+                        <label id="agent-force-label" class="agent-force-label" title="Run commands without approval prompts">
+                            <input id="agent-force" type="checkbox" class="agent-force-checkbox" />
+                            Force
+                        </label>
+                        <button id="agent-send-context-btn" class="claude-action-button claude-action-primary" title="Send file, cursor, and selected text context to Cursor Agent">Send Context</button>
+                        <button id="agent-presets-btn" class="claude-action-button" title="Choose a preset Agent prompt">Prompt...</button>
+                        <div class="relative">
+                            <button id="agent-apply-menu-btn" class="claude-action-button" title="Apply Agent changes back to Lumina">Apply</button>
+                            <div id="agent-apply-menu" class="claude-action-menu hidden">
+                                <button id="agent-pull-file-btn" title="Load the edited file into the editor">Pull edited file</button>
+                                <button id="agent-replace-selection-btn" title="Replace the current selection with clipboard text">Replace selection from clipboard</button>
+                            </div>
+                        </div>
+                        <button id="agent-new-btn" class="claude-action-button" title="Start a new Cursor Agent conversation">New chat</button>
+                        <button id="agent-stop-btn" class="claude-action-button claude-action-stop hidden" title="Stop the current Cursor Agent run">Stop</button>
+                    </div>
+                </div>
+                <div class="flex-1 min-h-0 min-w-0 flex flex-col">
+                    <div id="agent-transcript" class="claude-transcript flex-1 min-h-0 min-w-0">
+                        <div id="agent-empty" class="claude-empty">Ask Cursor Agent about your project — replies render as formatted chat.</div>
+                    </div>
+                    <form id="agent-input-bar" class="claude-input-bar shrink-0">
+                        <textarea id="agent-input" class="claude-input" rows="1" spellcheck="false" placeholder="Message Cursor Agent…  (Enter to send · Shift+Enter for newline)"></textarea>
+                        <button id="agent-input-send" type="submit" class="claude-input-send" title="Send to Cursor Agent (Enter)" aria-label="Send to Cursor Agent">Send</button>
+                    </form>
+                </div>
+            </aside>
+
+            <div id="side-split-resizer-3" class="side-split-resizer hidden" aria-hidden="true"></div>
 
             <aside id="files-pane" class="terminal-pane files-pane hidden flex flex-col min-w-0">
                 <div class="h-10 bg-slate-950 flex items-center gap-3 px-4 text-xs font-medium text-slate-300 border-b border-slate-800 shrink-0">
@@ -212,7 +291,7 @@
                 </div>
             </aside>
 
-            <div id="side-split-resizer-3" class="side-split-resizer hidden" aria-hidden="true"></div>
+            <div id="side-split-resizer-4" class="side-split-resizer hidden" aria-hidden="true"></div>
 
             <aside id="git-pane" class="terminal-pane git-pane hidden flex flex-col min-w-0">
                 <div class="h-10 bg-slate-950 flex items-center gap-3 px-4 text-xs font-medium text-slate-300 border-b border-slate-800 shrink-0">

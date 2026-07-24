@@ -121,6 +121,69 @@ body > header {
     box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.35);
 }
 
+/* Input + inline option toggles share one bordered field, VSCode-style. */
+.find-input-wrap {
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.find-input-wrap .find-replace-input {
+    padding-right: 5.4rem;
+}
+
+.find-input-wrap.is-invalid .find-replace-input {
+    border-color: #b91c1c;
+    box-shadow: 0 0 0 1px rgba(248, 113, 113, 0.4);
+}
+
+.find-options {
+    position: absolute;
+    right: 0.25rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: 0.12rem;
+}
+
+.find-option-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.5rem;
+    height: 1.5rem;
+    padding: 0 0.25rem;
+    border: 1px solid transparent;
+    border-radius: 0.3rem;
+    background: transparent;
+    color: #8595ad;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.find-option-btn:hover {
+    background: #28344b;
+    color: #e2e8f0;
+}
+
+.find-option-btn[aria-pressed="true"] {
+    background: rgba(99, 102, 241, 0.28);
+    border-color: #6366f1;
+    color: #c7d2fe;
+}
+
+.find-option-word {
+    text-decoration: underline;
+    text-underline-offset: 0.18em;
+}
+
 .find-match-status {
     flex: 0 0 auto;
     min-width: 3.5rem;
@@ -379,6 +442,75 @@ body > header {
     display: none;
 }
 
+.document-alert-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.55rem 1rem;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    color: #fde68a;
+    background: #422006;
+    border-bottom: 1px solid #92400e;
+}
+
+.document-alert-banner.hidden {
+    display: none;
+}
+
+.document-alert-message {
+    margin: 0;
+    flex: 1;
+    min-width: 0;
+}
+
+.document-alert-actions {
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.document-alert-btn {
+    border: 1px solid #92400e;
+    border-radius: 0.35rem;
+    padding: 0.25rem 0.55rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #fde68a;
+    background: #78350f;
+    cursor: pointer;
+}
+
+.document-alert-btn:hover {
+    background: #92400e;
+    color: #fff7ed;
+}
+
+.document-alert-btn-primary {
+    color: #0f172a;
+    background: #fbbf24;
+    border-color: #f59e0b;
+}
+
+.document-alert-btn-primary:hover {
+    background: #f59e0b;
+    color: #0f172a;
+}
+
+.document-alert-btn-ghost {
+    background: transparent;
+    border-color: transparent;
+    color: #fcd34d;
+    font-weight: 500;
+}
+
+.document-alert-btn-ghost:hover {
+    background: rgba(251, 191, 36, 0.12);
+    color: #fff7ed;
+}
+
 #char-count {
     white-space: nowrap;
 }
@@ -402,15 +534,111 @@ body > header {
     transform: translateY(-1px);
 }
 
+/* The textarea and its highlight mirror stack inside one positioned wrap so
+   match highlights line up exactly under the caret/text. */
+.editor-input-wrap {
+    position: relative;
+    display: flex;
+    min-width: 0;
+    background: linear-gradient(180deg, #172036 0%, #141c30 100%);
+}
+
 #editor {
     font-family: 'Fira Code', monospace;
     resize: none;
     outline: none;
-    background: linear-gradient(180deg, #172036 0%, #141c30 100%);
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    width: 100%;
+    position: relative;
+    z-index: 1;
+    background: transparent;
     color: #d9e2ef;
+    line-height: 1.625;
     scrollbar-width: thin;
     scrollbar-color: #475569 transparent;
     font-size: 0.97rem;
+    box-sizing: border-box;
+}
+
+/* While find is active the textarea text goes transparent so the mirror layer
+   underneath (which renders the same glyphs + match marks) stays visible. */
+.editor-input-wrap.find-active #editor {
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    caret-color: #d9e2ef;
+}
+
+.editor-input-wrap.find-active #editor::selection {
+    background: rgba(249, 115, 22, 0.55);
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+}
+
+/* Mirror of the editor text, behind the textarea. Holds the full source text
+   plus <mark> spans for find matches. Typography MUST match #editor exactly. */
+.editor-highlight-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    margin: 0;
+    overflow: hidden;
+    pointer-events: none;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.97rem;
+    line-height: 1.625;
+    color: #d9e2ef;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    box-sizing: border-box;
+}
+
+.editor-highlight-layer:empty {
+    display: none;
+}
+
+.editor-scroll-measure {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    margin: 0;
+    overflow: hidden;
+    pointer-events: none;
+    visibility: hidden;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.97rem;
+    line-height: 1.625;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+    box-sizing: border-box;
+}
+
+.editor-highlight-layer mark {
+    background: rgba(250, 204, 21, 0.45);
+    color: inherit;
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.5);
+}
+
+.editor-highlight-layer mark.find-current {
+    background: rgba(249, 115, 22, 0.65);
+    box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.95);
+}
+
+#preview mark.preview-find-match {
+    background: rgba(250, 204, 21, 0.45);
+    color: inherit;
+    border-radius: 2px;
+    box-shadow: inset 0 -2px 0 rgba(250, 204, 21, 0.75);
+    padding: 0 0.05em;
+}
+
+#preview mark.preview-find-current {
+    background: rgba(249, 115, 22, 0.55);
+    box-shadow: inset 0 -2px 0 rgba(251, 146, 60, 0.95);
 }
 
 .pane-resizer {
@@ -428,6 +656,9 @@ body > header {
 }
 
 #preview {
+    /* Positioned so child blocks' offsetTop is measured relative to #preview
+       (its scroll content), not <body>. Scroll sync reads those offsets. */
+    position: relative;
     background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
     color: #1f2937;
     scrollbar-width: thin;
@@ -991,6 +1222,162 @@ body > header {
     background: rgba(225, 70, 110, 0.95);
 }
 
+/* Unified Claude / Cursor Agent toolbar toggle */
+.ai-toggle-wrap {
+    flex: 0 0 auto;
+}
+
+.ai-toggle-main {
+    min-width: 1.75rem;
+    line-height: 1;
+}
+
+.ai-toggle-chevron {
+    line-height: 1;
+}
+
+.ai-toggle-wrap.ai-provider-agent .ai-toggle-main,
+.ai-toggle-wrap.ai-provider-agent .ai-toggle-chevron {
+    color: rgba(165, 243, 252, 0.95);
+    border-color: rgba(14, 116, 144, 0.55);
+}
+
+.ai-toggle-wrap.ai-provider-agent .ai-toggle-main:hover,
+.ai-toggle-wrap.ai-provider-agent .ai-toggle-chevron:hover {
+    color: #ffffff;
+    background: rgba(14, 116, 144, 0.72);
+}
+
+.ai-toggle-wrap.ai-provider-agent .ai-toggle-main.ai-toggle-active,
+.ai-toggle-wrap.ai-provider-agent .ai-toggle-chevron.ai-toggle-active {
+    background: rgba(14, 116, 144, 0.85);
+    color: #ffffff;
+    box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.45);
+}
+
+.ai-toggle-wrap.ai-provider-claude .ai-toggle-main.ai-toggle-active,
+.ai-toggle-wrap.ai-provider-claude .ai-toggle-chevron.ai-toggle-active {
+    background: rgba(109, 40, 217, 0.85);
+    color: #ffffff;
+    box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.45);
+}
+
+.ai-toggle-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 0.35rem);
+    z-index: 30;
+    min-width: 9.5rem;
+    overflow: hidden;
+    border: 1px solid rgba(100, 116, 139, 0.45);
+    border-radius: 0.6rem;
+    background: #0f172a;
+    box-shadow: 0 18px 38px rgba(2, 6, 23, 0.45);
+}
+
+.ai-toggle-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    width: 100%;
+    padding: 0.55rem 0.75rem;
+    text-align: left;
+    color: rgba(226, 232, 240, 0.9);
+    font-size: 0.78rem;
+    line-height: 1.25;
+}
+
+.ai-toggle-menu-item::before {
+    content: '';
+    width: 0.65rem;
+    flex-shrink: 0;
+}
+
+.ai-toggle-menu-item[aria-checked="true"]::before {
+    content: '✓';
+    color: #38bdf8;
+}
+
+.ai-toggle-menu-item:hover {
+    color: #ffffff;
+    background: rgba(51, 65, 85, 0.65);
+}
+
+.claude-auto-rebuild-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex: 0 0 auto;
+    color: rgba(221, 214, 254, 0.78);
+    font-size: 0.72rem;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+
+.claude-auto-rebuild-checkbox {
+    accent-color: rgb(167, 139, 250);
+}
+
+.agent-force-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    flex: 0 0 auto;
+    color: rgba(207, 250, 254, 0.78);
+    font-size: 0.72rem;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+
+.agent-force-checkbox {
+    accent-color: rgb(34, 211, 238);
+}
+
+#agent-pane .claude-input-bar {
+    border-top-color: rgba(14, 116, 144, 0.5);
+    background: rgba(8, 51, 68, 0.55);
+}
+
+#agent-pane .claude-input {
+    border-color: rgba(34, 211, 238, 0.45);
+    background: rgba(8, 47, 73, 0.75);
+    color: rgba(224, 242, 254, 0.95);
+}
+
+#agent-pane .claude-input::placeholder {
+    color: rgba(103, 232, 249, 0.45);
+}
+
+#agent-pane .claude-input:focus {
+    border-color: rgba(34, 211, 238, 0.9);
+    box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.4);
+}
+
+#agent-pane .claude-input-send {
+    background: rgba(8, 145, 178, 0.85);
+}
+
+#agent-pane .claude-input-send:hover {
+    background: rgba(14, 165, 233, 0.95);
+}
+
+#agent-pane .claude-transcript {
+    background: rgba(8, 47, 73, 0.55);
+    color: rgba(224, 242, 254, 0.92);
+}
+
+#agent-pane .claude-empty {
+    color: rgba(103, 232, 249, 0.5);
+}
+
+#agent-pane .claude-bubble {
+    background: rgba(8, 145, 178, 0.85);
+}
+
 /* ----- Chat transcript ----- */
 .claude-transcript {
     overflow-y: auto;
@@ -1031,6 +1418,18 @@ body > header {
     color: #ffffff;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
+}
+
+.claude-bubble-queued {
+    opacity: 0.62;
+    border: 1px dashed rgba(196, 181, 253, 0.45);
+}
+
+.claude-bubble-queued::after {
+    content: " · queued";
+    font-size: 0.68rem;
+    font-style: italic;
+    opacity: 0.85;
 }
 
 .claude-blocks {
@@ -1130,6 +1529,23 @@ body > header {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
 }
+.claude-think-live > summary {
+    color: rgba(196, 181, 253, 0.82);
+}
+
+#agent-status.agent-status-busy {
+    color: rgba(103, 232, 249, 0.92);
+}
+#agent-status.agent-status-stalled {
+    color: rgba(251, 191, 36, 0.92);
+}
+
+.claude-live {
+    font-size: 0.72rem;
+    font-style: italic;
+    color: rgba(196, 181, 253, 0.72);
+    padding: 0.25rem 0.1rem;
+}
 
 /* Tool-use chips */
 .claude-tool {
@@ -1189,6 +1605,36 @@ body > header {
 
 .claude-input-busy {
     opacity: 0.65;
+}
+
+.document-frontmatter {
+    margin: 0 0 2rem;
+    padding-bottom: 1.25rem;
+    border-bottom: 2px solid #e2e8f0;
+    text-align: center;
+}
+
+.document-frontmatter-title {
+    margin: 0 0 0.75rem;
+    font-weight: 700;
+    font-size: 2.1rem;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+    color: #0f172a;
+}
+
+.document-frontmatter-subtitle {
+    margin: 0 0 0.65rem;
+    font-size: 1.2rem;
+    line-height: 1.45;
+    color: #475569;
+}
+
+.document-frontmatter-meta {
+    margin: 0;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    color: #64748b;
 }
 
 .prose h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 0.5rem; margin-top: 1.5rem; font-weight: 700; font-size: 2.1rem; letter-spacing: -0.02em; }
@@ -1289,7 +1735,14 @@ body > header {
 .mermaid svg {
     max-width: 100%;
     height: auto;
+    overflow: visible;
     filter: drop-shadow(0 14px 24px rgba(15, 23, 42, 0.12));
+}
+
+/* Safety net: never clip node/edge labels if measurement is slightly off. */
+.mermaid svg foreignObject,
+.mermaid svg foreignObject > div {
+    overflow: visible;
 }
 
 #file-input {
@@ -1478,5 +1931,52 @@ body > header {
     }
     50% {
         opacity: 0.55;
+    }
+}
+
+/* Export to PDF: print only the rendered preview. The "Save as PDF" entry in
+   the OS print panel turns this into a PDF. Everything else (header, editor,
+   side panes, resizers, the preview's own label bar) is hidden, and the
+   normally-clipped preview is unlocked so its full content flows across pages. */
+@media print {
+    html,
+    body {
+        height: auto !important;
+        max-height: none !important;
+        min-height: 0 !important;
+        overflow: visible !important;
+        display: block !important;
+        background: #fff !important;
+        color: #000 !important;
+    }
+
+    body > header,
+    #workspace-panes > .editor-pane,
+    #pane-resizer,
+    #side-pane,
+    #side-pane-resizer,
+    .preview-pane > div:first-child {
+        display: none !important;
+    }
+
+    #workspace-panes,
+    .preview-pane,
+    #preview {
+        display: block !important;
+        height: auto !important;
+        max-height: none !important;
+        overflow: visible !important;
+        border: 0 !important;
+        flex: none !important;
+    }
+
+    #preview {
+        padding: 0 !important;
+        color: #000 !important;
+        background: #fff !important;
+    }
+
+    @page {
+        margin: 16mm;
     }
 }

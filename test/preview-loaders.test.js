@@ -4,6 +4,7 @@ import { mayNeedKatex } from "../src/previewMathHeuristic.js";
 import { marked } from "../src/previewLoaders.js";
 import {
     extractMathForMarkdown,
+    LITERAL_DOLLAR_TOKEN,
     normalizeEscapedLatexDelimiters,
     restoreMathFromMarkdownHtml
 } from "../src/previewMath.js";
@@ -66,6 +67,45 @@ A \cdot \dfrac{p}{10{,}000} & \text{otherwise},
     assert.match(html, /\\begin\{cases\}/);
     assert.match(html, /\\dfrac\{p\}\{10\{,\}000\}/);
     assert.match(html, /\\\\\n/);
+});
+
+test("escaped dollar amounts are not paired into math by KaTeX auto-render", () => {
+    const source = String.raw`QED-C reported \$4.9 billion in 2025; Crunchbase counted \$1.2 billion through May.`;
+    const protectedValue = extractMathForMarkdown(source);
+
+    // No real math should be stashed.
+    assert.equal(protectedValue.math.length, 0);
+    // The escaped dollars are replaced with a sentinel that carries no `$`, so
+    // marked cannot strip an escape and KaTeX cannot pair them.
+    assert.doesNotMatch(protectedValue.markdown, /\$/);
+    assert.equal(
+        (protectedValue.markdown.match(new RegExp(LITERAL_DOLLAR_TOKEN, "g")) || []).length,
+        2
+    );
+
+    const html = restoreMathFromMarkdownHtml(
+        marked.parse(protectedValue.markdown),
+        protectedValue.math
+    );
+    // Sentinels survive markdown parsing intact (restored to `$` later, after KaTeX).
+    assert.match(html, new RegExp(`${LITERAL_DOLLAR_TOKEN}4\\.9 billion`));
+    assert.match(html, new RegExp(`${LITERAL_DOLLAR_TOKEN}1\\.2 billion`));
+});
+
+test("real inline math still renders when escaped dollars are present", () => {
+    const source = String.raw`Order $r$ of $a$ costs \$5.`;
+    const protectedValue = extractMathForMarkdown(source);
+
+    assert.deepEqual(protectedValue.math, ["$r$", "$a$"]);
+    assert.match(protectedValue.markdown, new RegExp(`${LITERAL_DOLLAR_TOKEN}5`));
+});
+
+test("an escaped backslash before math is not treated as a literal dollar", () => {
+    const source = String.raw`\\$x$`;
+    const protectedValue = extractMathForMarkdown(source);
+
+    assert.deepEqual(protectedValue.math, ["$x$"]);
+    assert.doesNotMatch(protectedValue.markdown, new RegExp(LITERAL_DOLLAR_TOKEN));
 });
 
 test("math placeholders do not collide after the tenth equation", () => {

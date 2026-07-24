@@ -41,6 +41,7 @@
  * @property {{isError:boolean,durationMs:number|null,costUsd:number|null,text:string|null}|null} result
  * @property {string|null} error
  * @property {boolean} exited
+ * @property {boolean} stalled
  */
 
 /** @returns {ChatState} */
@@ -51,12 +52,26 @@ export function createChatState() {
         busy: false,
         result: null,
         error: null,
-        exited: false
+        exited: false,
+        stalled: false
     };
+}
+
+/**
+ * The header status label for the chat pane, derived purely from run state.
+ * Pure so it is unit-testable; the webview reads it in `updateClaudeBusyUI`.
+ * @param {{started:boolean, busy:boolean, stalled:boolean}} flags
+ */
+export function chatStatusLabel({ started, busy, stalled }) {
+    if (!started) return "Stopped";
+    if (stalled) return "Stalled — press Stop to reset";
+    if (busy) return "Thinking…";
+    return "Ready";
 }
 
 /** Safe JSON.parse for one stdout line; returns null on malformed input. */
 export function parseChatLine(line) {
+    if (line && typeof line === "object") return line;
     if (typeof line !== "string") return null;
     const trimmed = line.trim();
     if (!trimmed) return null;
@@ -75,6 +90,7 @@ export function parseChatLine(line) {
 export function appendUserTurn(state, text) {
     state.turns.push({ role: "user", text: String(text ?? "") });
     state.busy = true;
+    state.stalled = false;
     state.result = null;
     state.error = null;
     return state;
@@ -88,6 +104,9 @@ export function appendUserTurn(state, text) {
  */
 export function reduceChatEvent(state, evt) {
     if (!evt || typeof evt !== "object") return state;
+    // Any real event means the run is alive again, so clear a prior stall. The
+    // watchdog (in the webview) re-arms from here whenever events keep flowing.
+    state.stalled = false;
     switch (evt.type) {
         case "system":
             if (evt.subtype === "init") {

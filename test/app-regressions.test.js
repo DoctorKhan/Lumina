@@ -37,6 +37,20 @@ test("app menu sync and native save are wired for standard File menu", () => {
   assert.match(main, /'lumina_save_as'/);
 });
 
+test("PDF export avoids the native print panel and times out hung renderers", () => {
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  assert.doesNotMatch(main, /window\.print\(/);
+  assert.match(main, /await exportToPdfAs\(\)/);
+  assert.match(main, /Export to PDF failed:/);
+  assert.match(rust, /PDF_RENDER_TIMEOUT/);
+  assert.match(rust, /\.spawn\(\)/);
+  assert.match(rust, /try_wait\(\)/);
+  assert.match(rust, /child\.kill\(\)/);
+  assert.match(rust, /PDF renderer timed out/);
+});
+
 test("CLI and Open With pass file paths into the editor via pending open queue", () => {
   const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
@@ -145,14 +159,39 @@ test("terminal and Claude share a resizable right-side rail", () => {
   const html = fs.readFileSync("index.html", "utf8");
   const css = fs.readFileSync("src/styles.css", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
 
   assert.match(html, /id="workspace-panes"/);
   assert.match(html, /id="side-pane-resizer"/);
-  assert.match(html, /id="side-pane"[\s\S]*id="terminal-pane"[\s\S]*id="claude-pane"/);
+  assert.match(html, /id="side-pane"[\s\S]*id="terminal-pane"[\s\S]*id="claude-pane"[\s\S]*id="agent-pane"/);
+  assert.match(html, /id="toggle-ai-btn"/);
+  assert.match(html, /id="toggle-ai-menu"/);
+  assert.match(main, /function setActiveAiProvider\(/);
+  assert.match(main, /function toggleActiveAiPane\(/);
+  assert.match(main, /cursor-agent-chat/);
+  assert.match(main, /reduceAgentChatEvent/);
+  assert.match(rust, /cursor_agent_send/);
+  assert.match(rust, /--continue/);
+  assert.match(main, /case 'lumina_toggle_agent':/);
+  // One "Assistant" menu serves Claude, Cursor Agent, and Hermes; the webview
+  // routes each action to the active provider.
+  assert.match(rust, /SubmenuBuilder::new\(manager, "Assistant"\)/);
+  assert.match(main, /case 'lumina_ai_context':/);
+  assert.doesNotMatch(rust, /lumina_claude_context|lumina_agent_context/);
+  assert.match(main, /submitAgentMessage/);
   assert.match(css, /\.side-pane\s*\{[\s\S]*flex:\s*0 0 34%;[\s\S]*min-width:/);
   assert.match(css, /\.side-pane-split \.terminal-pane\s*\{[\s\S]*flex-basis:\s*50%;/);
   assert.match(css, /\.editor-collapsed #pane-resizer/);
   assert.match(main, /function syncSidePaneLayout\(\)/);
+  // Hermes rides the same Agent pane as Cursor Agent, selected from the AI menu,
+  // and is the default assistant when no last-used choice is stored.
+  assert.match(html, /data-ai-provider="hermes"/);
+  assert.match(main, /storedAiProvider === 'agent' \|\| storedAiProvider === 'claude' \? storedAiProvider : 'hermes'/);
+  assert.match(html, /id="agent-provider-name"/);
+  assert.match(main, /function isAgentPaneProvider\(/);
+  assert.match(main, /function syncAgentPaneLabels\(/);
+  assert.match(main, /type: 'plain_text'/);
+  assert.match(rust, /Command::new\("hermes"\)/);
   assert.match(main, /sidePane\.classList\.toggle\('side-pane-split', visibleCount > 1\)/);
   assert.match(main, /sidePanePercent = Math\.min\(65, Math\.max\(24, rawPercent\)\)/);
   assert.match(main, /editorPane\.style\.flex = `1 1 \$\{editorPercent\}%`/);
@@ -165,6 +204,7 @@ test("terminal and Claude share a resizable right-side rail", () => {
 
 test("editor find and replace is wired with hotkeys and Edit menu items", () => {
   const html = fs.readFileSync("index.html", "utf8");
+  const css = fs.readFileSync("src/styles.css", "utf8");
   const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
 
@@ -185,6 +225,32 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /event\.key\.toLowerCase\(\) === 'g'/);
   assert.match(main, /function shouldFocusEditorForFind/);
   assert.match(main, /function syncPreviewScrollToEditor/);
+  // Preview scroll sync maps source lines to rendered blocks via the lexer
+  // rather than estimating a block index proportionally (which drifted on
+  // documents with unevenly sized blocks).
+  assert.match(main, /function rebuildPreviewLineMap/);
+  assert.match(main, /splitYamlFrontmatter\(editor\.value\)/);
+  assert.match(main, /marked\.lexer\(markdownBody\)/);
+  assert.match(main, /function rebuildEditorVisualLineMapIfNeeded/);
+  // Preview edits patch only the changed top-level blocks (diffing lexer
+  // tokens) instead of rebuilding the whole document on every keystroke.
+  assert.match(main, /function tryIncrementalPreviewRender/);
+  assert.match(main, /from '\.\/previewIncremental\.js'/);
+  assert.match(main, /diffTokenRange/);
+  // The incremental fast path must keep a correct full-render fallback.
+  assert.match(main, /handledIncrementally/);
+  assert.match(css, /\.editor-scroll-measure/);
+  assert.doesNotMatch(main, /lineRatio \* \(blocks\.length - 1\)/);
+  assert.doesNotMatch(main, /editor\.scrollTop \/ lineHeight/);
+  assert.match(main, /function revealMatchAtCursor/);
+  assert.match(main, /function measureEditorOffsetTop/);
+  assert.match(main, /function applyPreviewFindHighlights/);
+  assert.match(main, /function updateFindActiveVisual/);
+  assert.match(main, /find-active/);
+  assert.match(css, /\.editor-input-wrap\.find-active #editor/);
+  assert.match(css, /preview-find-match/);
+  assert.match(main, /function toggleFindOption/);
+  assert.match(main, /find-opt-case/);
   assert.match(main, /focusEditor: false/);
 });
 
@@ -195,9 +261,13 @@ test("develop-Lumina mode lets Claude edit the source checkout and rebuild from 
 
   assert.match(html, /id="claude-develop-lumina-btn"/);
   assert.match(html, /id="claude-rebuild-lumina-btn"/);
+  assert.match(html, /id="claude-auto-rebuild-checkbox"/);
 
   assert.match(rust, /fn source_dir_info/);
   assert.match(rust, /fn find_lumina_source_dir/);
+  assert.match(rust, /fn watch_source_checkout/);
+  assert.match(rust, /fn unwatch_source_checkout/);
+  assert.match(rust, /lumina-source-changed/);
   assert.match(rust, /fn looks_like_lumina_source/);
   assert.match(rust, /"Documents\/Projects\/Lumina"/);
   assert.doesNotMatch(rust, /Local checkout install is only shown in development builds/);
@@ -205,10 +275,25 @@ test("develop-Lumina mode lets Claude edit the source checkout and rebuild from 
   assert.match(main, /invoke\('source_dir_info'\)/);
   assert.match(main, /function toggleDevelopLuminaMode/);
   assert.match(main, /async function rebuildLumina/);
+  assert.match(main, /function syncAutoRebuildWatch/);
+  assert.match(main, /function scheduleAutoRebuild/);
+  assert.match(main, /autoRebuildLuminaKey/);
   assert.match(main, /developLuminaMode/);
   assert.match(main, /luminaSourceDir/);
   assert.match(main, /claudeDevelopLuminaBtn\.addEventListener\('click'/);
   assert.match(main, /claudeRebuildLuminaBtn\.addEventListener\('click'/);
+
+  // The Agent pane (Cursor Agent / Hermes) shares the same develop-Lumina mode:
+  // its own "Lumina src" button, and each turn runs in the source checkout.
+  assert.match(html, /id="agent-develop-lumina-btn"/);
+  assert.match(html, /id="agent-rebuild-lumina-btn"/);
+  assert.match(html, /id="agent-auto-rebuild-checkbox"/);
+  assert.match(main, /agentDevelopLuminaBtn\?\.addEventListener\('click'/);
+  assert.match(main, /agentRebuildLuminaBtn\?\.addEventListener\('click'/);
+  assert.match(main, /agentAutoRebuildCheckbox\?\.addEventListener\('change'/);
+  assert.match(main, /toggleDevelopLuminaMode\(\{ pane: 'agent' \}\)/);
+  assert.match(main, /cwd: developLuminaMode && luminaSourceDir \? luminaSourceDir : null/);
+  assert.match(rust, /Agent cwd is not a directory/);
 });
 
 test("example guide documents the app features that have regressed before", () => {
@@ -223,4 +308,20 @@ test("example guide documents the app features that have regressed before", () =
   ]) {
     assert.match(guide, new RegExp(`## \\d+\\. ${requiredSection}`));
   }
+});
+
+test("autosave, recovery snapshots, and safe external reload are wired", () => {
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const main = fs.readFileSync("src/main.js", "utf8");
+  const html = fs.readFileSync("index.html", "utf8");
+
+  assert.match(rust, /fn write_recovery_snapshot/);
+  assert.match(rust, /fn read_recovery_snapshot/);
+  assert.match(rust, /fn delete_recovery_snapshot/);
+  assert.match(main, /from '\.\/documentRecovery\.js'/);
+  assert.match(main, /scheduleDocumentPersistence\(\)/);
+  assert.match(main, /shouldBlockExternalReload\(/);
+  assert.match(main, /flushDocumentPersistence\(\)/);
+  assert.match(main, /maybeOfferRecoveryRestore\(/);
+  assert.match(html, /id="document-alert-banner"/);
 });

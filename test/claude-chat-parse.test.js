@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     appendUserTurn,
+    chatStatusLabel,
     createChatState,
     describeTool,
     parseChatLine,
@@ -180,6 +181,33 @@ test("stderr and exit surface as state", () => {
     reduceChatEvent(state, { type: "__exit" });
     assert.equal(state.exited, true);
     assert.equal(state.busy, false);
+});
+
+test("chatStatusLabel reflects started/busy/stalled", () => {
+    assert.equal(chatStatusLabel({ started: false, busy: false, stalled: false }), "Stopped");
+    assert.equal(chatStatusLabel({ started: true, busy: false, stalled: false }), "Ready");
+    assert.equal(chatStatusLabel({ started: true, busy: true, stalled: false }), "Thinking…");
+    // Stalled wins over busy so the user is told they can recover.
+    assert.equal(
+        chatStatusLabel({ started: true, busy: true, stalled: true }),
+        "Stalled — press Stop to reset"
+    );
+});
+
+test("a fresh user turn and any later event clear a stall", () => {
+    const state = createChatState();
+    appendUserTurn(state, "go");
+    assert.equal(state.stalled, false);
+
+    // Simulate the watchdog marking the run stalled, then a late event arriving.
+    state.stalled = true;
+    reduceChatEvent(state, { type: "stream_event", event: { type: "message_start", message: { id: "m1" } } });
+    assert.equal(state.stalled, false);
+
+    // A new user turn also clears a leftover stall.
+    state.stalled = true;
+    appendUserTurn(state, "again");
+    assert.equal(state.stalled, false);
 });
 
 test("describeTool prefers file basename", () => {

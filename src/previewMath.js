@@ -1,3 +1,10 @@
+// Sentinel for an escaped dollar sign (`\$`). The author meant a literal `$`,
+// not a math delimiter. Markdown parsing strips the backslash (`\$` -> `$`),
+// which would otherwise let KaTeX's auto-render pass pair it with another `$`
+// and render the text between as math. We swap escaped dollars for this token
+// so they survive both marked and KaTeX, then restore them to `$` afterwards.
+export const LITERAL_DOLLAR_TOKEN = 'LUMINALITERALDOLLARX';
+
 export function looksLikeLatexBlock(lines) {
     const body = lines.join('\n').trim();
     if (!body) return false;
@@ -146,6 +153,13 @@ export function extractMathForMarkdown(input) {
                 lineStart = false;
                 continue;
             }
+        }
+
+        if (!inCodeFence && input.startsWith('\\$', cursor) && !isEscaped(input, cursor)) {
+            output += LITERAL_DOLLAR_TOKEN;
+            cursor += 2;
+            lineStart = false;
+            continue;
         }
 
         if (!inCodeFence && input[cursor] === '$' && !isEscaped(input, cursor)) {

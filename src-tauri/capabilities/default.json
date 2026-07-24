@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default app permissions",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open", "process:default"]
+  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save", "process:default"]
 }
