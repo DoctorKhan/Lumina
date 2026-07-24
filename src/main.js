@@ -93,6 +93,7 @@ const findPrevBtn = document.getElementById('find-prev-btn');
 const replaceBtn = document.getElementById('replace-btn');
 const replaceAllBtn = document.getElementById('replace-all-btn');
 const findReplaceCloseBtn = document.getElementById('find-replace-close-btn');
+const findReplaceToggleBtn = document.getElementById('find-replace-toggle-btn');
 const findInputWrap = findInput.closest('.find-input-wrap');
 const findOptCaseBtn = document.getElementById('find-opt-case');
 const findOptWordBtn = document.getElementById('find-opt-word');
@@ -4526,16 +4527,20 @@ async function replaceSelectionFromClipboard() {
             gitGenerateBtn.disabled = true;
             const previousLabel = gitGenerateBtn.textContent;
             gitGenerateBtn.textContent = 'Generating…';
-            setGitMessage('Asking Claude to draft a commit message…');
+            setGitMessage('Asking Hermes to draft a commit message…');
             try {
-                const message = await invoke('git_generate_commit_message', { cwd: gitCwd() });
-                const trimmed = String(message ?? '').trim();
-                if (!trimmed) {
+                const result = await invoke('git_generate_commit_message', { cwd: gitCwd() });
+                const message = String(result?.message ?? result ?? '').trim();
+                if (!message) {
                     throw new Error('Claude returned an empty commit message.');
                 }
-                gitCommitMessage.value = trimmed;
+                gitCommitMessage.value = message;
                 gitCommitMessage.focus();
-                setGitMessage('');
+                if (result?.notice) {
+                    setGitMessage(String(result.notice));
+                } else {
+                    setGitMessage('');
+                }
             } catch (error) {
                 setGitMessage(gitErrorText(error), true);
             } finally {
@@ -5118,13 +5123,20 @@ document.addEventListener('click', (event) => {
             return marker;
         }
 
+        function notifyEditorContentChanged(selectionStart, selectionEnd = selectionStart) {
+            editor.setSelectionRange(selectionStart, selectionEnd);
+            markEditorVisualLineMapDirty();
+            updateEditorMetrics();
+            scheduleInputPreviewRender();
+            scheduleDocumentPersistence();
+        }
+
         function replaceEditorRange(start, end, text, selectionStart, selectionEnd = selectionStart) {
             const value = editor.value;
             pushEditorHistory();
             editor.value = value.slice(0, start) + text + value.slice(end);
-            editor.setSelectionRange(selectionStart, selectionEnd);
             pushEditorHistory();
-            schedulePreviewUpdate();
+            notifyEditorContentChanged(selectionStart, selectionEnd);
         }
 
         let findBarVisible = false;
@@ -5154,6 +5166,40 @@ document.addEventListener('click', (event) => {
 
         function escapeRegExp(value) {
             return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        // VS Code / JavaScript-style $ expansions when regex replace is enabled.
+        function expandReplaceText(replacement, match, haystack) {
+            if (!findOptions.regex || !match) return replacement;
+            return replacement.replace(/\$\$|\$&|\$`|\$'|\$\d+/g, (token) => {
+                switch (token) {
+                    case '$$':
+                        return '$';
+                    case '$&':
+                        return match[0];
+                    case '$`':
+                        return haystack.slice(0, match.index);
+                    case "$'":
+                        return haystack.slice(match.index + match[0].length);
+                    default: {
+                        const group = Number(token.slice(1));
+                        return match[group] ?? '';
+                    }
+                }
+            });
+        }
+
+        function execFindMatchAt(needle, haystack, offset) {
+            const regex = buildFindRegex(needle);
+            if (!regex) return null;
+
+            let match;
+            while ((match = regex.exec(haystack)) !== null) {
+                if (match.index === offset) return match;
+                const end = match.index + match[0].length;
+                regex.lastIndex = Math.max(end, match.index + 1);
+            }
+            return null;
         }
 
         function collectFindMatches(needle = findNeedle(), haystack = editor.value) {
@@ -5539,11 +5585,28 @@ document.addEventListener('click', (event) => {
             return selectFindMatch(matches[targetIndex], { focusEditor });
         }
 
+        function syncFindReplaceRowVisibility() {
+            findReplaceReplaceRow.classList.toggle('hidden', !findBarShowsReplace);
+            findReplaceToggleBtn?.setAttribute('aria-expanded', String(findBarShowsReplace));
+            findReplaceToggleBtn?.classList.toggle('is-expanded', findBarShowsReplace);
+        }
+
+        function toggleFindReplaceRow(force) {
+            findBarShowsReplace = typeof force === 'boolean' ? force : !findBarShowsReplace;
+            syncFindReplaceRowVisibility();
+            if (findBarShowsReplace) replaceInput.focus();
+        }
+
         function openFindBar({ replace = false, seedFromSelection = true } = {}) {
+            const wasVisible = findBarVisible;
             findBarVisible = true;
-            findBarShowsReplace = replace;
+            if (replace) {
+                findBarShowsReplace = true;
+            } else if (!wasVisible) {
+                findBarShowsReplace = false;
+            }
             findReplaceBar.classList.remove('hidden');
-            findReplaceReplaceRow.classList.toggle('hidden', !replace);
+            syncFindReplaceRowVisibility();
 
             if (seedFromSelection && editor.selectionStart !== editor.selectionEnd) {
                 suppressFindInputHandler = true;
@@ -5551,10 +5614,9 @@ document.addEventListener('click', (event) => {
                 suppressFindInputHandler = false;
             }
 
-            const focusTarget = replace && findBarShowsReplace ? replaceInput : findInput;
             requestAnimationFrame(() => {
-                focusTarget.focus();
-                focusTarget.select();
+                findInput.focus();
+                findInput.select();
                 if (findInput.value) {
                     revealMatchAtCursor({ focusEditor: false });
                 } else {
@@ -5570,7 +5632,7 @@ document.addEventListener('click', (event) => {
             findBarShowsReplace = false;
             findMatchIndex = -1;
             findReplaceBar.classList.add('hidden');
-            findReplaceReplaceRow.classList.add('hidden');
+            syncFindReplaceRowVisibility();
             findMatchStatus.textContent = '';
             findMatchStatus.classList.remove('is-error');
             findInputWrap.classList.remove('is-invalid');
@@ -5603,7 +5665,10 @@ document.addEventListener('click', (event) => {
 
             const start = editor.selectionStart;
             const end = editor.selectionEnd;
-            replaceEditorRange(start, end, replacement, start + replacement.length);
+            const haystack = editor.value;
+            const match = execFindMatchAt(needle, haystack, start);
+            const text = match ? expandReplaceText(replacement, match, haystack) : replacement;
+            replaceEditorRange(start, end, text, start + text.length);
             findMatchIndex = -1;
             findNextMatch({ focusEditor: !keepFindFocus });
             if (keepFindFocus) {
@@ -5617,7 +5682,8 @@ document.addEventListener('click', (event) => {
             const replacement = replaceInput.value;
             if (!needle) return 0;
 
-            const matches = collectFindMatches(needle);
+            const haystack = editor.value;
+            const matches = collectFindMatches(needle, haystack);
             if (!matches.length) {
                 updateFindMatchStatus();
                 return 0;
@@ -5625,17 +5691,20 @@ document.addEventListener('click', (event) => {
 
             let rebuilt = '';
             let lastIndex = 0;
-            for (const match of matches) {
-                rebuilt += editor.value.slice(lastIndex, match.start) + replacement;
-                lastIndex = match.end;
+            for (const { start, end } of matches) {
+                const match = execFindMatchAt(needle, haystack, start);
+                const text = match
+                    ? expandReplaceText(replacement, match, haystack)
+                    : haystack.slice(start, end);
+                rebuilt += haystack.slice(lastIndex, start) + text;
+                lastIndex = end;
             }
-            rebuilt += editor.value.slice(lastIndex);
+            rebuilt += haystack.slice(lastIndex);
 
             pushEditorHistory();
             editor.value = rebuilt;
-            editor.setSelectionRange(0, 0);
             pushEditorHistory();
-            schedulePreviewUpdate();
+            notifyEditorContentChanged(0, 0);
             findMatchIndex = -1;
             updateFindMatchStatus();
             return matches.length;
@@ -5667,6 +5736,7 @@ document.addEventListener('click', (event) => {
                 target === replaceBtn ||
                 target === replaceAllBtn ||
                 target === findReplaceCloseBtn ||
+                target === findReplaceToggleBtn ||
                 target === findOptCaseBtn ||
                 target === findOptWordBtn ||
                 target === findOptRegexBtn
@@ -5691,6 +5761,7 @@ document.addEventListener('click', (event) => {
             setUpdateStatus(count ? `Replaced ${count} matches.` : 'No matches to replace.');
         });
         findReplaceCloseBtn.addEventListener('click', closeFindBar);
+        findReplaceToggleBtn?.addEventListener('click', () => toggleFindReplaceRow());
 
         findOptCaseBtn.addEventListener('click', () => {
             toggleFindOption('caseSensitive');

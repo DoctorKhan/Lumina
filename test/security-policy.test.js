@@ -41,16 +41,21 @@ test("preview HTML is sanitized before innerHTML assignment", () => {
   assert.doesNotMatch(main, /el\.innerHTML = marked\.parse/);
 });
 
-test("git commit message generation uses headless Claude print mode", () => {
+test("git commit message generation uses Hermes one-shot chat mode", () => {
   const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
 
   assert.match(rust, /fn git_generate_commit_message/);
-  assert.match(rust, /fn claude_print_text/);
-  assert.match(rust, /\.arg\("--tools"\)/);
-  assert.match(rust, /\.arg\("--output-format"\)/);
+  assert.match(rust, /fn hermes_print_text/);
+  assert.match(rust, /fn infer_local_commit_message/);
+  assert.match(rust, /GeneratedCommitMessage/);
+  assert.match(rust, /Command::new\("hermes"\)/);
+  assert.match(rust, /\.arg\("-q"\)/);
+  assert.match(rust, /\.arg\("-Q"\)/);
   assert.match(rust, /fn normalize_commit_message/);
   assert.match(main, /git_generate_commit_message/);
+  assert.match(main, /Asking Hermes to draft a commit message/);
+  assert.match(main, /result\?\.notice/);
   assert.match(main, /scheduleAutoCommitMessage/);
 });
 

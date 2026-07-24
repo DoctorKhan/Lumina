@@ -235,6 +235,9 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(rust, /CmdOrCtrl\+Alt\+F/);
   assert.match(main, /function openFindBar/);
   assert.match(main, /function replaceAllMatches/);
+  assert.match(main, /function expandReplaceText/);
+  assert.match(main, /function syncFindReplaceRowVisibility/);
+  assert.match(html, /id="find-replace-toggle-btn"/);
   assert.match(main, /case 'lumina_find':/);
   assert.match(main, /case 'lumina_find_replace':/);
   assert.match(main, /event\.key\.toLowerCase\(\) === 'f'/);

@@ -94,6 +94,30 @@ body > header {
     display: none;
 }
 
+.find-replace-toggle-btn {
+    flex: 0 0 auto;
+    width: 1.25rem;
+    height: 1.25rem;
+    padding: 0;
+    border: none;
+    border-radius: 0.25rem;
+    background: transparent;
+    color: #94a3b8;
+    font-size: 0.72rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: transform 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.find-replace-toggle-btn:hover {
+    background: #28344b;
+    color: #e2e8f0;
+}
+
+.find-replace-toggle-btn.is-expanded {
+    transform: rotate(90deg);
+}
+
 .find-replace-label {
     flex: 0 0 3.25rem;
     font-size: 0.68rem;

@@ -2618,7 +2618,90 @@ fn truncate_for_prompt(text: &str, limit: usize) -> String {
     format!("{}\n…(diff truncated)…\n", &text[..end])
 }
 
-/// Strip markdown fences and common preambles from a one-shot Claude print response.
+#[derive(Serialize, Clone)]
+struct GeneratedCommitMessage {
+    message: String,
+    source: String,
+    notice: Option<String>,
+}
+
+struct StagedPathChange {
+    path: String,
+}
+
+fn parse_staged_name_status(raw: &str) -> Vec<StagedPathChange> {
+    raw.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            let path = line
+                .split('\t')
+                .last()
+                .map(str::trim)
+                .filter(|path| !path.is_empty())?;
+            Some(StagedPathChange {
+                path: path.to_string(),
+            })
+        })
+        .collect()
+}
+
+fn recent_commit_prefix(recent: &str) -> &'static str {
+    for line in recent.lines() {
+        let subject = line.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+        for prefix in [
+            "feat", "fix", "chore", "refactor", "test", "docs", "style", "perf",
+        ] {
+            if subject.starts_with(&format!("{prefix}:")) {
+                return prefix;
+            }
+        }
+    }
+    "chore"
+}
+
+fn path_summary(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+fn infer_local_commit_message(repo: &Path, recent: &str) -> Result<String, String> {
+    let name_status = ok_git_output(run_git(
+        repo,
+        &["diff", "--cached", "--name-status"],
+        None,
+    )?)?;
+    let entries = parse_staged_name_status(&name_status);
+    if entries.is_empty() {
+        return Err("Stage changes before generating a commit message.".to_string());
+    }
+
+    let prefix = recent_commit_prefix(recent);
+    let primary = path_summary(&entries[0].path);
+    let subject = if entries.len() == 1 {
+        format!("{prefix}: update {primary}")
+    } else {
+        format!(
+            "{prefix}: update {primary} and {} other staged file(s)",
+            entries.len() - 1
+        )
+    };
+
+    let body = if entries.len() <= 6 {
+        entries
+            .iter()
+            .map(|entry| format!("- {}", entry.path))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        format!("- {} staged files changed", entries.len())
+    };
+
+    Ok(format!("{subject}\n\n{body}"))
+}
+
+/// Strip markdown fences and common preambles from a one-shot model response.
 fn normalize_commit_message(raw: &str) -> String {
     let mut message = raw.trim().to_string();
     if message.starts_with("```") {
@@ -2645,31 +2728,44 @@ fn normalize_commit_message(raw: &str) -> String {
     message.trim().to_string()
 }
 
-fn claude_print_text(prompt: &str, cwd: &Path) -> Result<String, String> {
+fn normalize_hermes_print_output(raw: &str) -> String {
+    let filtered = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && !line.starts_with("session_id:")
+                && !line.contains("Reached maximum iterations")
+                && !line.starts_with("API call failed")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    normalize_commit_message(&filtered)
+}
+
+fn hermes_print_text(prompt: &str, cwd: &Path) -> Result<String, String> {
     use std::process::Stdio;
 
-    // One-shot print mode: tools must be disabled or Claude tries to read the
-    // repo in a headless GUI subprocess, cannot prompt for permissions, and
-    // returns an empty stdout while still exiting 0.
-    let output = Command::new("claude")
+    // One-shot query mode: no toolsets, quiet output, bounded turns.
+    let output = Command::new("hermes")
         .current_dir(cwd)
         .env("PATH", terminal_path())
-        .arg("-p")
-        .arg("--output-format")
-        .arg("text")
-        .arg("--tools")
-        .arg("")
-        .arg("--permission-mode")
-        .arg("dontAsk")
-        .arg("--no-session-persistence")
+        .arg("chat")
+        .arg("-q")
         .arg(prompt)
+        .arg("-Q")
+        .arg("--max-turns")
+        .arg("3")
+        .arg("-t")
+        .arg("")
+        .arg("--yolo")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .map_err(|error| {
             format!(
-                "Unable to run claude: {error}. Install the Claude Code CLI to generate messages."
+                "Unable to run hermes: {error}. Install the Hermes CLI to generate messages."
             )
         })?;
 
@@ -2682,14 +2778,14 @@ fn claude_print_text(prompt: &str, cwd: &Path) -> Result<String, String> {
         } else if !stdout.is_empty() {
             stdout
         } else {
-            format!("claude exited with {}", output.status)
+            format!("hermes exited with {}", output.status)
         };
         return Err(detail);
     }
 
-    let message = normalize_commit_message(if stdout.is_empty() { &stderr } else { &stdout });
+    let message = normalize_hermes_print_output(if stdout.is_empty() { &stderr } else { &stdout });
     if message.is_empty() {
-        return Err("Claude returned an empty commit message.".to_string());
+        return Err("Hermes returned an empty commit message.".to_string());
     }
     Ok(message)
 }
@@ -2698,7 +2794,7 @@ fn claude_print_text(prompt: &str, cwd: &Path) -> Result<String, String> {
 async fn git_generate_commit_message(
     state: State<'_, TerminalState>,
     cwd: Option<String>,
-) -> Result<String, String> {
+) -> Result<GeneratedCommitMessage, String> {
     let repo = resolve_git_root(&state, cwd.as_deref())?;
 
     let staged = ok_git_output(run_git(&repo, &["diff", "--cached", "--no-color"], None)?)?;
@@ -2725,7 +2821,24 @@ async fn git_generate_commit_message(
     prompt.push_str("\nStaged diff:\n");
     prompt.push_str(&truncate_for_prompt(&staged, 24_000));
 
-    claude_print_text(&prompt, &repo)
+    match hermes_print_text(&prompt, &repo) {
+        Ok(message) => Ok(GeneratedCommitMessage {
+            message,
+            source: "hermes".to_string(),
+            notice: None,
+        }),
+        Err(error) => {
+            let message = infer_local_commit_message(&repo, &recent)?;
+            let detail = error.lines().next().unwrap_or(&error).trim();
+            Ok(GeneratedCommitMessage {
+                message,
+                source: "local".to_string(),
+                notice: Some(format!(
+                    "Hermes unavailable ({detail}) — using a local draft."
+                )),
+            })
+        }
+    }
 }
 
 #[tauri::command(async)]
@@ -2873,7 +2986,12 @@ pub fn run() {
 
 #[cfg(test)]
 mod commit_message_tests {
-    use super::normalize_commit_message;
+    use super::{
+        infer_local_commit_message, normalize_commit_message, normalize_hermes_print_output,
+        parse_staged_name_status, recent_commit_prefix,
+    };
+    use std::fs;
+    use std::process::Command;
 
     #[test]
     fn strips_markdown_fences() {
@@ -2891,5 +3009,70 @@ mod commit_message_tests {
             normalize_commit_message(raw),
             "feat: add security policy layer"
         );
+    }
+
+    #[test]
+    fn strips_hermes_session_metadata() {
+        let raw = "session_id: abc123\n\nfeat: add GitHub share link\n";
+        assert_eq!(
+            normalize_hermes_print_output(raw),
+            "feat: add GitHub share link"
+        );
+    }
+
+    #[test]
+    fn parses_name_status_lines() {
+        let entries = parse_staged_name_status("M\tsrc/main.js\nA\ttest/new.test.js");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, "src/main.js");
+        assert_eq!(entries[1].path, "test/new.test.js");
+    }
+
+    #[test]
+    fn recent_prefix_follows_repo_style() {
+        assert_eq!(
+            recent_commit_prefix("abc1234 feat: add widget\n"),
+            "feat"
+        );
+    }
+
+    #[test]
+    fn local_commit_message_uses_staged_paths() {
+        use std::path::PathBuf;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let repo: PathBuf = std::env::temp_dir().join(format!("lumina-commit-test-{stamp}"));
+        fs::create_dir_all(&repo).expect("create temp repo dir");
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&repo)
+            .output()
+            .expect("git init");
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo)
+            .output()
+            .expect("git config email");
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&repo)
+            .output()
+            .expect("git config name");
+        fs::write(repo.join("notes.md"), "hello").expect("write file");
+        Command::new("git")
+            .args(["add", "notes.md"])
+            .current_dir(&repo)
+            .output()
+            .expect("git add");
+
+        let message = infer_local_commit_message(&repo, "abc feat: seed repo\n").expect("local message");
+        assert!(message.starts_with("feat: update notes.md"));
+        assert!(message.contains("- notes.md"));
+
+        let _ = fs::remove_dir_all(&repo);
     }
 }
