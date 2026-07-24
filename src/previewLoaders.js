@@ -4,6 +4,7 @@
  */
 import { marked, Renderer } from 'marked';
 import { mayNeedKatex } from './previewMathHeuristic.js';
+import { sanitizePreviewHtml } from './previewSanitize.js';
 
 const renderer = new Renderer();
 // Marked v18+ passes a single token: { text, lang, escaped, ... }
@@ -86,11 +87,11 @@ let mermaidApi = null;
 
 const MERMAID_INIT = {
     startOnLoad: false,
-    securityLevel: 'loose',
+    securityLevel: 'strict',
     theme: 'base',
     flowchart: {
         curve: 'basis',
-        htmlLabels: true,
+        htmlLabels: false,
         padding: 24,
         nodeSpacing: 56,
         rankSpacing: 64
@@ -140,7 +141,7 @@ export async function renderMermaidInPreview(preview) {
             const { svg } = await mermaidApi.render(id, source);
             const wrapper = document.createElement('div');
             wrapper.className = 'mermaid';
-            wrapper.innerHTML = svg;
+            wrapper.innerHTML = sanitizePreviewHtml(svg);
             block.replaceWith(wrapper);
         } catch (error) {
             const fallback = document.createElement('pre');

@@ -1,5 +1,6 @@
         import exampleMarkdown from './example.md?raw';
         import { getVersion } from '@tauri-apps/api/app';
+        import pkg from '../package.json' with { type: 'json' };
         import { invoke } from '@tauri-apps/api/core';
         import { listen } from '@tauri-apps/api/event';
         import { relaunch } from '@tauri-apps/plugin-process';
@@ -39,6 +40,8 @@ import {
             renderFrontmatterHtml,
             splitYamlFrontmatter
         } from './previewFrontmatter.js';
+        import { sanitizePreviewHtml } from './previewSanitize.js';
+        import { escapeAttr, escapeHtml, isAllowedInitialFileParam } from './htmlEscape.js';
         import {
             appendUserTurn,
             chatStatusLabel,
@@ -114,6 +117,7 @@ const filenamePathSuggestions = document.getElementById('filename-path-suggestio
 const filenamePathToast = document.getElementById('filename-path-toast');
 const appVersionBadge = document.getElementById('app-version-badge');
 const installUpdateBadge = document.getElementById('install-update-badge');
+const shareRepoLink = document.getElementById('share-repo-link');
         const updateStatus = document.getElementById('update-status');
         const toggleSourceBtn = document.getElementById('toggle-source-btn');
         const toggleTerminalBtn = document.getElementById('toggle-terminal-btn');
@@ -285,6 +289,7 @@ let claudeWorkspaceFilePath = null;
         let sourceCheckoutInfoLoaded = false;
         let latestReleaseTag = null;
         let updateCheckInProgress = false;
+        let updateCheckPromise = null;
         let currentCheckoutInstallCommand = null;
         let currentFilePath = null;
         let currentFileMtime = 0;
@@ -301,10 +306,25 @@ let claudeWorkspaceFilePath = null;
         const lastOpenedFilePathKey = 'lumina:last-opened-file-path';
 const recentFilePathsKey = 'lumina:recent-file-paths';
 const maxRecentFilePaths = 10;
+        const repoUrl = 'https://github.com/DoctorKhan/Lumina';
         const releaseApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/releases/latest';
         const tagsApiUrl = 'https://api.github.com/repos/DoctorKhan/Lumina/tags?per_page=100';
         const publicInstallerUrl = 'https://raw.githubusercontent.com/DoctorKhan/Lumina/main/install.sh';
-let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
+
+        function applyVersionLabel(label) {
+            const trimmed = String(label ?? '').trim();
+            if (!trimmed) return;
+            const display = trimmed.startsWith('v') ? trimmed : `v${trimmed}`;
+            appVersionBadge.textContent = display;
+            appVersionBadge.title = `Lumina ${display.replace(/^v/, '')} — click to check for updates`;
+            const match = display.match(/^v?(\d+\.\d+\.\d+)/);
+            if (match) {
+                currentVersion = match[1];
+            }
+        }
+
+        let currentVersion = pkg.version;
+        applyVersionLabel(pkg.version);
 
         const initialValue = exampleMarkdown;
 
@@ -545,7 +565,7 @@ let currentVersion = appVersionBadge.textContent.trim().replace(/^v/i, '');
             filenamePathSuggestions.innerHTML = paths
                 .map(
                     (path, index) =>
-                        `<li role="option" data-index="${index}" class="${index === 0 ? 'is-active' : ''}" title="${path}">${formatPathForDisplay(path)}</li>`
+                        `<li role="option" data-index="${index}" class="${index === 0 ? 'is-active' : ''}" title="${escapeAttr(path)}">${escapeHtml(formatPathForDisplay(path))}</li>`
                 )
                 .join('');
             filenamePathSuggestions.classList.toggle('hidden', paths.length === 0);
@@ -1328,7 +1348,7 @@ async function openRecentFile(recentIndex = null) {
             if (metadata) {
                 html = renderFrontmatterHtml(metadata) + html;
             }
-            element.innerHTML = html;
+            element.innerHTML = sanitizePreviewHtml(html);
             await highlightCodeBlocksIn(element);
             await renderMermaidInPreview(element);
             await applyKatexToPreview(element, normalizedValue);
@@ -1955,8 +1975,11 @@ ${preview.outerHTML}
         }
 
         function setUpdateStatus(message) {
+            if (!updateStatus) return;
             updateStatus.textContent = message;
             updateStatus.title = message;
+            updateStatus.classList.remove('hidden');
+            updateStatus.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         }
 
 function showInstallUpdateBadge(tagName) {
@@ -2205,47 +2228,83 @@ function hideInstallUpdateBadge() {
             terminal?.focus();
         }
 
-async function checkForUpdate({ background = false } = {}) {
-            if (updateCheckInProgress) return;
+async function resolveLatestUpdateTag() {
+    let latestTagInfo = null;
+
+    try {
+        const [releaseResponse, tagsResponse] = await Promise.all([
+            fetch(releaseApiUrl, {
+                headers: { Accept: 'application/vnd.github+json' },
+                cache: 'no-store'
+            }),
+            fetch(tagsApiUrl, {
+                headers: { Accept: 'application/vnd.github+json' },
+                cache: 'no-store'
+            })
+        ]);
+
+        let latestReleaseTagName = null;
+        if (releaseResponse.ok) {
+            const release = await releaseResponse.json();
+            latestReleaseTagName = release.tag_name;
+        } else if (releaseResponse.status !== 404) {
+            throw new Error(`GitHub releases returned ${releaseResponse.status}`);
+        }
+
+        if (!tagsResponse.ok) {
+            throw new Error(`GitHub tags returned ${tagsResponse.status}`);
+        }
+
+        latestTagInfo = selectLatestUpdateTag({
+            latestReleaseTag: latestReleaseTagName,
+            tags: await tagsResponse.json()
+        });
+    } catch (_) {
+        latestTagInfo = null;
+    }
+
+    try {
+        const repoInfo = await invoke('latest_lumina_repo_tag');
+        const repoTag = repoInfo?.latestTag;
+        if (repoTag && parseVersion(repoTag)) {
+            if (!latestTagInfo || compareVersions(repoTag, latestTagInfo.tag) > 0) {
+                latestTagInfo = { tag: repoTag, source: repoInfo.source || 'git' };
+            }
+        }
+    } catch (_) {
+        /* git unavailable — GitHub result (if any) still stands */
+    }
+
+    return latestTagInfo;
+}
+
+async function checkForUpdate({ background = false, force = false } = {}) {
+            if (updateCheckInProgress) {
+                if (updateCheckPromise && (force || !background)) {
+                    return updateCheckPromise;
+                }
+                if (!background) {
+                    setUpdateStatus('Update check already in progress…');
+                }
+                return false;
+            }
+
             updateCheckInProgress = true;
             latestReleaseTag = null;
     hideInstallUpdateBadge();
     if (!background) {
-        setUpdateStatus('Checking GitHub releases and tags...');
+        setUpdateStatus('Checking for updates…');
     }
 
+            updateCheckPromise = (async () => {
             try {
-                const [releaseResponse, tagsResponse] = await Promise.all([
-                    fetch(releaseApiUrl, {
-                        headers: { Accept: 'application/vnd.github+json' },
-                        cache: 'no-store'
-                    }),
-                    fetch(tagsApiUrl, {
-                        headers: { Accept: 'application/vnd.github+json' },
-                        cache: 'no-store'
-                    })
-                ]);
-
-                let latestReleaseTagName = null;
-                if (releaseResponse.ok) {
-                    const release = await releaseResponse.json();
-                    latestReleaseTagName = release.tag_name;
-                } else if (releaseResponse.status !== 404) {
-                    throw new Error(`GitHub releases returned ${releaseResponse.status}`);
-                }
-
-                if (!tagsResponse.ok) {
-                    throw new Error(`GitHub tags returned ${tagsResponse.status}`);
-                }
-
-                const latestTagInfo = selectLatestUpdateTag({
-                    latestReleaseTag: latestReleaseTagName,
-                    tags: await tagsResponse.json()
-                });
+                const latestTagInfo = await resolveLatestUpdateTag();
 
                 if (!latestTagInfo) {
-                    setUpdateStatus('No semver GitHub releases or tags found.');
-                    return;
+                    if (!background) {
+                        setUpdateStatus('No semver releases or tags found in the git repository.');
+                    }
+                    return false;
                 }
 
                 const { tag: latestTag, source } = latestTagInfo;
@@ -2253,19 +2312,60 @@ async function checkForUpdate({ background = false } = {}) {
                     latestReleaseTag = latestTag;
             showInstallUpdateBadge(latestTag);
                     setUpdateStatus(`Update available: ${latestTag} (${source})`);
-                } else {
+                    return true;
+                }
+
             hideInstallUpdateBadge();
             if (!background) {
                 setUpdateStatus(`Up to date: v${currentVersion}; latest ${source} is ${latestTag}`);
             }
-                }
+            return false;
             } catch (error) {
         hideInstallUpdateBadge();
         if (!background) {
             setUpdateStatus(`Update check failed: ${error?.message || error}`);
         }
+            return false;
             } finally {
                 updateCheckInProgress = false;
+                updateCheckPromise = null;
+            }
+            })();
+
+            return updateCheckPromise;
+        }
+
+        async function runUpdateCheckFromMenu() {
+            await checkForUpdate({ background: false, force: true });
+        }
+
+        async function runInstallUpdateFromMenu() {
+            if (latestReleaseTag) {
+                await installDetectedUpdate();
+                return;
+            }
+
+            setUpdateStatus('Checking for updates before install…');
+            const updateAvailable = await checkForUpdate({ background: false, force: true });
+            if (updateAvailable && latestReleaseTag) {
+                await installDetectedUpdate();
+                return;
+            }
+
+            if (!latestReleaseTag) {
+                setUpdateStatus('No installable update found. You may already be on the latest version.');
+            }
+        }
+
+        async function handleVersionBadgeClick() {
+            appVersionBadge.disabled = true;
+            try {
+                const updateAvailable = await checkForUpdate({ background: false, force: true });
+                if (updateAvailable && latestReleaseTag) {
+                    await installDetectedUpdate();
+                }
+            } finally {
+                appVersionBadge.disabled = false;
             }
         }
 
@@ -2692,7 +2792,7 @@ function buildTextBlock(block, final) {
         // Full pipeline (async); fine to fire-and-forget into this stable element.
         void renderMarkdownInto(el, text);
     } else {
-        el.innerHTML = marked.parse(text);
+        el.textContent = text;
     }
     return el;
 }
@@ -4429,7 +4529,11 @@ async function replaceSelectionFromClipboard() {
             setGitMessage('Asking Claude to draft a commit message…');
             try {
                 const message = await invoke('git_generate_commit_message', { cwd: gitCwd() });
-                gitCommitMessage.value = message;
+                const trimmed = String(message ?? '').trim();
+                if (!trimmed) {
+                    throw new Error('Claude returned an empty commit message.');
+                }
+                gitCommitMessage.value = trimmed;
                 gitCommitMessage.focus();
                 setGitMessage('');
             } catch (error) {
@@ -4493,19 +4597,31 @@ async function replaceSelectionFromClipboard() {
 
         async function openGithub() {
             try {
-                await invoke('open_external_url', { url: 'https://github.com/DoctorKhan/Lumina' });
+                await invoke('open_external_url', { url: repoUrl });
             } catch (error) {
-                setUpdateStatus(`Unable to open GitHub: ${error?.message || error}`);
+                const opened = window.open(repoUrl, '_blank', 'noopener,noreferrer');
+                if (!opened) {
+                    setUpdateStatus(`Unable to open GitHub: ${error?.message || error}`);
+                }
             }
         }
 
+        function normalizeMenuCommand(payload) {
+            if (typeof payload === 'string') return payload;
+            if (payload && typeof payload === 'object' && typeof payload.id === 'string') {
+                return payload.id;
+            }
+            return String(payload ?? '');
+        }
+
         function handleMenuCommand(command) {
-            if (command.startsWith('lumina_open_recent_file:')) {
-                openRecentFile(Number(command.slice('lumina_open_recent_file:'.length)));
+            const id = normalizeMenuCommand(command);
+            if (id.startsWith('lumina_open_recent_file:')) {
+                openRecentFile(Number(id.slice('lumina_open_recent_file:'.length)));
                 return;
             }
 
-            switch (command) {
+            switch (id) {
                 case 'lumina_new_file':
                     newUntitledDocument();
                     break;
@@ -4546,10 +4662,10 @@ async function replaceSelectionFromClipboard() {
                     copyToClipboard();
                     break;
                 case 'lumina_check_updates':
-                    checkForUpdate();
+                    void runUpdateCheckFromMenu();
                     break;
                 case 'lumina_install_update':
-                    installDetectedUpdate();
+                    void runInstallUpdateFromMenu();
                     break;
                 case 'lumina_install_checkout':
                     installCurrentCheckout();
@@ -4602,7 +4718,12 @@ async function replaceSelectionFromClipboard() {
             setUpdateStatus(`Open-file events unavailable: ${error?.message || error}`);
         });
         syncAppMenu();
+appVersionBadge.addEventListener('click', () => { void handleVersionBadgeClick(); });
 installUpdateBadge.addEventListener('click', installDetectedUpdate);
+shareRepoLink?.addEventListener('click', (event) => {
+    event.preventDefault();
+    void openGithub();
+});
         installProgressDismiss?.addEventListener('click', () => {
             // Universal escape hatch: stop tracking and hide the card. Covers cases the
             // completion/failure markers don't (Ctrl-C, network hang, unrecognized output).
@@ -5304,13 +5425,6 @@ document.addEventListener('click', (event) => {
             syncHighlightLayerScroll();
         }
 
-        function escapeHtml(text) {
-            return text
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-        }
-
         function syncHighlightLayerScroll() {
             editorHighlightLayer.scrollTop = editor.scrollTop;
             editorHighlightLayer.scrollLeft = editor.scrollLeft;
@@ -5801,15 +5915,21 @@ document.addEventListener('click', (event) => {
 
         async function refreshAppVersionBadge() {
             try {
+                applyVersionLabel(await invoke('app_version_label'));
+                return;
+            } catch (_) {
+                /* fall through */
+            }
+            try {
                 const raw = await getVersion();
-                if (!raw || !String(raw).trim()) {
+                if (raw && String(raw).trim()) {
+                    applyVersionLabel(raw);
                     return;
                 }
-                currentVersion = String(raw).trim().replace(/^v/i, '');
-                appVersionBadge.textContent = `v${currentVersion}`;
             } catch (_) {
-                /* Vite dev / non-Tauri: keep index.html placeholder for currentVersion */
+                /* Vite dev / non-Tauri: keep package.json version */
             }
+            applyVersionLabel(pkg.version);
         }
 
         async function loadInitialContent() {
@@ -5817,7 +5937,7 @@ document.addEventListener('click', (event) => {
             const fileParam = params.get('file');
             const fileDisplayName = params.get('name');
 
-            if (!fileParam) {
+            if (!fileParam || !isAllowedInitialFileParam(fileParam)) {
                 if (await flushPendingOpenPathsFromBackend()) {
                     return;
                 }

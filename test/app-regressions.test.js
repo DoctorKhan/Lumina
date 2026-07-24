@@ -13,14 +13,18 @@ test("Help menu exposes the bundled example guide as Lumina Help", () => {
 });
 
 test("Lumina on GitHub uses the native external URL command", () => {
+  const html = fs.readFileSync("index.html", "utf8");
   const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
 
+  assert.match(html, /id="share-repo-link"/);
+  assert.match(html, /https:\/\/github\.com\/DoctorKhan\/Lumina/);
   assert.match(rust, /Lumina on GitHub/);
   assert.match(rust, /fn open_external_url/);
   assert.match(rust, /https:\/\/github\.com\/DoctorKhan\/Lumina/);
-  assert.match(main, /invoke\('open_external_url'/);
-  assert.doesNotMatch(main, /window\.open\('https:\/\/github\.com\/DoctorKhan\/Lumina'/);
+  assert.match(main, /const repoUrl = 'https:\/\/github\.com\/DoctorKhan\/Lumina'/);
+  assert.match(main, /invoke\('open_external_url', \{ url: repoUrl \}/);
+  assert.match(main, /window\.open\(repoUrl/);
 });
 
 test("app menu sync and native save are wired for standard File menu", () => {
@@ -63,6 +67,8 @@ test("CLI and Open With pass file paths into the editor via pending open queue",
 
 test("startup update check is quiet and exposes an install badge", () => {
   const html = fs.readFileSync("index.html", "utf8");
+  const css = fs.readFileSync("src/styles.css", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
   const capabilities = fs.readFileSync("src-tauri/capabilities/default.json", "utf8");
 
@@ -70,13 +76,23 @@ test("startup update check is quiet and exposes an install badge", () => {
   assert.match(main, /\brelaunch\b/);
   assert.match(capabilities, /"process:default"/);
   assert.match(html, /id="install-update-badge"/);
-  assert.match(main, /checkForUpdate\(\{ background = false \} = \{\}\)/);
+  assert.match(main, /checkForUpdate\(\{ background = false, force = false \} = \{\}\)/);
   assert.match(main, /checkForUpdate\(\{ background: true \}\)/);
+  assert.match(main, /runUpdateCheckFromMenu/);
+  assert.match(main, /runInstallUpdateFromMenu/);
+  assert.match(rust, /emit_lumina_menu_command/);
+  assert.match(main, /handleVersionBadgeClick/);
+  assert.match(main, /latest_lumina_repo_tag/);
+  assert.match(main, /resolveLatestUpdateTag/);
+  assert.match(html, /id="app-version-badge"/);
+  assert.match(css, /\.app-version-badge/);
+  assert.match(rust, /fn latest_lumina_repo_tag/);
   assert.match(main, /getVersion/);
   assert.match(main, /refreshAppVersionBadge/);
   assert.match(main, /void bootstrap\(\)/);
   assert.match(main, /requestIdleCallback/);
   assert.doesNotMatch(main, /setTimeout\(\(\) => \{\s*checkForUpdate\(\{ background: true \}\)/);
+  assert.match(main, /appVersionBadge\.addEventListener\('click'/);
   assert.match(main, /installUpdateBadge\.addEventListener\('click', installDetectedUpdate\)/);
   assert.match(main, /showInstallUpdateBadge\(latestTag\)/);
   assert.match(html, /id="install-progress"/);

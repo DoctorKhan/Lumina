@@ -1,3 +1,10 @@
+mod security;
+
+use security::{
+    audit_ipc, is_supported_document_path, validate_agent_message,
+    validate_claude_permission_mode, validate_cursor_agent_mode, validate_external_url,
+    validate_model_name, validate_path_input, validate_read_path, validate_write_path,
+};
 use notify_debouncer_full::{
     new_debouncer,
     notify::{EventKind, RecursiveMode, Watcher},
@@ -109,16 +116,6 @@ struct FileWatchState {
 #[derive(Default)]
 struct SourceWatchState {
     debouncer: Mutex<Option<Box<dyn std::any::Any + Send>>>,
-}
-
-fn is_supported_document_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("md")
-                || extension.eq_ignore_ascii_case("markdown")
-                || extension.eq_ignore_ascii_case("txt")
-        })
 }
 
 fn collect_cli_document_paths() -> Vec<String> {
@@ -479,6 +476,18 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .item(&assistant_menu)
         .item(&help_menu)
         .build()
+}
+
+fn emit_lumina_menu_command(app: &AppHandle, id: &str) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.emit("lumina-menu", id);
+        return;
+    }
+    if let Some(window) = app.webview_windows().into_values().next() {
+        let _ = window.emit("lumina-menu", id);
+        return;
+    }
+    let _ = app.emit("lumina-menu", id);
 }
 
 fn is_lumina_menu_id(id: &str) -> bool {
@@ -929,12 +938,12 @@ fn claude_chat_start(
     let open_doc = open_file_path
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
-        .and_then(|p| fs::canonicalize(expand_user_path(&p, None)).ok())
-        .filter(|p| p.is_file());
-    let mode = permission_mode
-        .map(|m| m.trim().to_string())
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| "acceptEdits".to_string());
+        .and_then(|p| {
+            validate_path_input(&p).ok()?;
+            fs::canonicalize(expand_user_path(&p, None)).ok()
+        })
+        .filter(|p| validate_read_path(p).is_ok());
+    let mode = validate_claude_permission_mode(permission_mode.as_deref())?;
 
     let mut command = Command::new("claude");
     command
@@ -950,6 +959,7 @@ fn claude_chat_start(
     if let Some(model) = model {
         let model = model.trim();
         if !model.is_empty() {
+            validate_model_name(model)?;
             command.arg("--model").arg(model);
         }
     }
@@ -1215,10 +1225,8 @@ fn cursor_agent_send(
     provider: Option<String>,
     cwd: Option<String>,
 ) -> Result<(), String> {
-    let text = text.trim().to_string();
-    if text.is_empty() {
-        return Err("Message is empty.".to_string());
-    }
+    let text = validate_agent_message(&text)?;
+    validate_cursor_agent_mode(mode.as_deref())?;
 
     let is_hermes = provider.as_deref() == Some("hermes");
 
@@ -1546,16 +1554,13 @@ fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<Opene
     let path = path
         .trim()
         .trim_matches(|character| matches!(character, '"' | '\'' | '`' | '<' | '>' | ')' | '('));
+    validate_path_input(path)?;
     let path = path.trim_end_matches(|character: char| matches!(character, ',' | ';' | '.'));
     let path = strip_editor_line_column_suffix(path);
     let base = resolve_relative_base(&state);
     let path = expand_user_path(path, base.as_ref());
     let path = fs::canonicalize(&path).map_err(|error| error.to_string())?;
-    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
-
-    if !metadata.is_file() {
-        return Err("Clicked path is not a file.".to_string());
-    }
+    validate_read_path(&path)?;
 
     let content =
         fs::read_to_string(&path).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
@@ -1575,13 +1580,10 @@ fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<Opene
 
 #[tauri::command(async)]
 fn save_file_path(path: String, content: String) -> Result<OpenedFile, String> {
+    validate_path_input(path.trim())?;
     let path = expand_user_path(path.trim(), None);
     let path = fs::canonicalize(&path).map_err(|error| error.to_string())?;
-    let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
-
-    if !metadata.is_file() {
-        return Err("Save target is not a file.".to_string());
-    }
+    validate_write_path(&path)?;
 
     fs::write(&path, content).map_err(|error| error.to_string())?;
     let name = path
@@ -1689,11 +1691,14 @@ fn delete_recovery_snapshot(app: AppHandle, path: String) -> Result<(), String> 
 /// Writes the document to the given path, creating the file and parent directories if needed.
 #[tauri::command(async)]
 fn write_document(path: String, content: String) -> Result<OpenedFile, String> {
+    validate_path_input(path.trim())?;
     let path = expand_user_path(path.trim(), None);
+    validate_write_path(&path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     fs::write(&path, &content).map_err(|error| error.to_string())?;
+    audit_ipc("write-document", &path.display().to_string(), true);
     let path = fs::canonicalize(&path).map_err(|error| error.to_string())?;
     let name = path
         .file_name()
@@ -1841,6 +1846,209 @@ fn export_pdf(html: String, out_path: String) -> Result<String, String> {
     let _ = fs::remove_dir_all(&user_data);
 
     render.map(|_| out.to_string_lossy().to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoVersionInfo {
+    latest_tag: Option<String>,
+    source: String,
+}
+
+fn parse_semver_tag(tag: &str) -> Option<(u32, u32, u32)> {
+    let trimmed = tag.trim().trim_start_matches('v');
+    let mut parts = trimmed.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn pick_newest_semver_tag(tags: impl IntoIterator<Item = String>) -> Option<String> {
+    tags.into_iter()
+        .filter_map(|tag| parse_semver_tag(&tag).map(|version| (version, tag)))
+        .max_by(|(left, _), (right, _)| left.cmp(right))
+        .map(|(_, tag)| tag)
+}
+
+fn git_newest_semver_tag_in_dir(dir: &Path) -> Result<Option<String>, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["tag", "--sort=-v:refname"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|error| format!("Unable to run git: {error}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let tags = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    Ok(pick_newest_semver_tag(tags))
+}
+
+/// Latest semver tag from a local Lumina checkout or, failing that, `git ls-remote`.
+#[tauri::command]
+fn latest_lumina_repo_tag() -> Result<RepoVersionInfo, String> {
+    if let Some(dir) = find_lumina_source_dir() {
+        if let Some(tag) = git_newest_semver_tag_in_dir(&dir)? {
+            return Ok(RepoVersionInfo {
+                latest_tag: Some(tag),
+                source: "local".to_string(),
+            });
+        }
+    }
+
+    let output = Command::new("git")
+        .args([
+            "ls-remote",
+            "--tags",
+            "https://github.com/DoctorKhan/Lumina.git",
+        ])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|error| format!("Unable to run git: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            "git ls-remote failed.".to_string()
+        } else {
+            stderr
+        });
+    }
+
+    let tags = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.split('\t').nth(1))
+        .map(|reference| {
+            reference
+                .trim_start_matches("refs/tags/")
+                .trim_end_matches("^{}")
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+
+    Ok(RepoVersionInfo {
+        latest_tag: pick_newest_semver_tag(tags),
+        source: "remote".to_string(),
+    })
+}
+
+fn lumina_repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+/// Turn `git describe` output into a compact dev suffix (e.g. `git.abc1234`, `git.abc1234-dirty`).
+fn dev_git_suffix(describe: &str) -> Option<String> {
+    let mut s = describe.trim().trim_start_matches('v').to_string();
+    if s.is_empty() {
+        return None;
+    }
+
+    let dirty = s.ends_with("-dirty");
+    if dirty {
+        s.truncate(s.len() - "-dirty".len());
+    }
+
+    // Exact semver tag with no commits since tag — no dev suffix.
+    if parse_semver_tag(&s).is_some() {
+        return if dirty {
+            Some("git.dirty".to_string())
+        } else {
+            None
+        };
+    }
+
+    // Commits after tag: 0.3.19-4-gabc1234
+    if let Some(g_idx) = s.rfind("-g") {
+        let hash: String = s[g_idx + 2..]
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .take(7)
+            .collect();
+        if !hash.is_empty() {
+            return Some(if dirty {
+                format!("git.{hash}-dirty")
+            } else {
+                format!("git.{hash}")
+            });
+        }
+    }
+
+    // Detached HEAD / no tags: short commit hash only.
+    if s.chars().all(|c| c.is_ascii_hexdigit()) {
+        let short: String = s.chars().take(7).collect();
+        return Some(if dirty {
+            format!("git.{short}-dirty")
+        } else {
+            format!("git.{short}")
+        });
+    }
+
+    None
+}
+
+fn git_describe_suffix(repo_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["describe", "--tags", "--always", "--dirty"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let describe = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    dev_git_suffix(&describe)
+}
+
+/// Display label for the title-bar version badge. Dev builds append a git suffix.
+#[tauri::command]
+fn app_version_label() -> String {
+    let base = env!("CARGO_PKG_VERSION").to_string();
+    if !cfg!(debug_assertions) {
+        return base;
+    }
+
+    match git_describe_suffix(&lumina_repo_root()) {
+        Some(suffix) => format!("{base}+{suffix}"),
+        None => base,
+    }
+}
+
+#[cfg(test)]
+mod version_label_tests {
+    use super::dev_git_suffix;
+
+    #[test]
+    fn dev_git_suffix_from_exact_tag_is_none() {
+        assert_eq!(dev_git_suffix("v0.3.19"), None);
+        assert_eq!(dev_git_suffix("v0.3.19-dirty"), Some("git.dirty".to_string()));
+    }
+
+    #[test]
+    fn dev_git_suffix_from_describe_includes_short_hash() {
+        assert_eq!(
+            dev_git_suffix("v0.3.19-4-gdeadbeef"),
+            Some("git.deadbee".to_string())
+        );
+    }
+
+    #[test]
+    fn dev_git_suffix_from_commit_only() {
+        assert_eq!(dev_git_suffix("abc1234"), Some("git.abc1234".to_string()));
+    }
 }
 
 #[tauri::command(async)]
@@ -2410,6 +2618,82 @@ fn truncate_for_prompt(text: &str, limit: usize) -> String {
     format!("{}\n…(diff truncated)…\n", &text[..end])
 }
 
+/// Strip markdown fences and common preambles from a one-shot Claude print response.
+fn normalize_commit_message(raw: &str) -> String {
+    let mut message = raw.trim().to_string();
+    if message.starts_with("```") {
+        if let Some(start) = message.find('\n') {
+            message = message[start + 1..].to_string();
+        }
+        if let Some(end) = message.rfind("```") {
+            message = message[..end].trim_end().to_string();
+        }
+    }
+    for prefix in [
+        "Here is the commit message:",
+        "Here's the commit message:",
+        "Commit message:",
+        "Suggested commit message:",
+    ] {
+        if message.len() >= prefix.len()
+            && message[..prefix.len()].eq_ignore_ascii_case(prefix)
+        {
+            message = message[prefix.len()..].trim_start().to_string();
+            break;
+        }
+    }
+    message.trim().to_string()
+}
+
+fn claude_print_text(prompt: &str, cwd: &Path) -> Result<String, String> {
+    use std::process::Stdio;
+
+    // One-shot print mode: tools must be disabled or Claude tries to read the
+    // repo in a headless GUI subprocess, cannot prompt for permissions, and
+    // returns an empty stdout while still exiting 0.
+    let output = Command::new("claude")
+        .current_dir(cwd)
+        .env("PATH", terminal_path())
+        .arg("-p")
+        .arg("--output-format")
+        .arg("text")
+        .arg("--tools")
+        .arg("")
+        .arg("--permission-mode")
+        .arg("dontAsk")
+        .arg("--no-session-persistence")
+        .arg(prompt)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| {
+            format!(
+                "Unable to run claude: {error}. Install the Claude Code CLI to generate messages."
+            )
+        })?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if !output.status.success() {
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("claude exited with {}", output.status)
+        };
+        return Err(detail);
+    }
+
+    let message = normalize_commit_message(if stdout.is_empty() { &stderr } else { &stdout });
+    if message.is_empty() {
+        return Err("Claude returned an empty commit message.".to_string());
+    }
+    Ok(message)
+}
+
 #[tauri::command]
 async fn git_generate_commit_message(
     state: State<'_, TerminalState>,
@@ -2441,39 +2725,12 @@ async fn git_generate_commit_message(
     prompt.push_str("\nStaged diff:\n");
     prompt.push_str(&truncate_for_prompt(&staged, 24_000));
 
-    let output = Command::new("claude")
-        .current_dir(&repo)
-        // GUI-launched apps inherit a minimal PATH that omits ~/.local/bin and the
-        // other dirs where `claude` is typically installed, so spawn would fail with
-        // "No such file". Use the same enriched PATH as the terminal/chat panes.
-        .env("PATH", terminal_path())
-        .args(["-p", &prompt])
-        .output()
-        .map_err(|error| {
-            format!(
-                "Unable to run claude: {error}. Install the Claude Code CLI to generate messages."
-            )
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            format!("claude exited with {}", output.status)
-        } else {
-            stderr
-        });
-    }
-    let message = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if message.is_empty() {
-        return Err("Claude returned an empty commit message.".to_string());
-    }
-    Ok(message)
+    claude_print_text(&prompt, &repo)
 }
 
 #[tauri::command(async)]
 fn open_external_url(url: String) -> Result<(), String> {
-    if url != "https://github.com/DoctorKhan/Lumina" {
-        return Err("External URL is not allowed.".to_string());
-    }
+    validate_external_url(&url)?;
 
     #[cfg(target_os = "macos")]
     let status = Command::new("open").arg(&url).status();
@@ -2550,7 +2807,7 @@ pub fn run() {
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             if is_lumina_menu_id(id) {
-                let _ = app.emit("lumina-menu", id);
+                emit_lumina_menu_command(app, id);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -2585,6 +2842,8 @@ pub fn run() {
             unwatch_source_checkout,
             open_external_url,
             current_checkout_install_info,
+            latest_lumina_repo_tag,
+            app_version_label,
             source_dir_info,
             git_status,
             git_diff,
@@ -2610,4 +2869,27 @@ pub fn run() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod commit_message_tests {
+    use super::normalize_commit_message;
+
+    #[test]
+    fn strips_markdown_fences() {
+        let raw = "```\nfix: populate git commit message field\n\nBody line.\n```";
+        assert_eq!(
+            normalize_commit_message(raw),
+            "fix: populate git commit message field\n\nBody line."
+        );
+    }
+
+    #[test]
+    fn strips_common_preamble() {
+        let raw = "Commit message:\n\nfeat: add security policy layer";
+        assert_eq!(
+            normalize_commit_message(raw),
+            "feat: add security policy layer"
+        );
+    }
 }

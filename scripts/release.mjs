@@ -10,7 +10,7 @@ const rootDir = path.resolve(scriptDir, "..");
 process.chdir(rootDir);
 
 const semver = /^(\d+)\.(\d+)\.(\d+)$/;
-const target = process.argv[2] ?? "patch";
+const targetArg = process.argv[2] ?? "patch";
 
 export function run(command, args, options = {}) {
   return execFileSync(command, args, {
@@ -69,6 +69,52 @@ export function resolveReleaseVersion(current, requested) {
   return `${major}.${minor}.${patch}`;
 }
 
+export function readCargoVersion() {
+  const cargoPath = path.resolve(rootDir, "src-tauri/Cargo.toml");
+  const cargo = fs.readFileSync(cargoPath, "utf8");
+  const match = cargo.match(/^version\s*=\s*"([^"]+)"/m);
+  if (!match) {
+    throw new Error("Could not read version from src-tauri/Cargo.toml");
+  }
+  return match[1];
+}
+
+export function readIndexBadgeVersion() {
+  const indexPath = path.resolve(rootDir, "index.html");
+  const indexHtml = fs.readFileSync(indexPath, "utf8");
+  const match = indexHtml.match(
+    /id="app-version-badge"[^>]*>v([0-9]+\.[0-9]+\.[0-9]+)</,
+  );
+  if (!match) {
+    throw new Error("Could not read version from #app-version-badge in index.html");
+  }
+  return match[1];
+}
+
+export function readVersionSources() {
+  return {
+    packageJson: readJson("package.json").version,
+    tauriConfig: readJson("src-tauri/tauri.conf.json").version,
+    cargoToml: readCargoVersion(),
+    indexHtml: readIndexBadgeVersion(),
+  };
+}
+
+/** Every checked-in version field must match package.json (canonical). */
+export function assertVersionsInSync() {
+  const sources = readVersionSources();
+  const canonical = sources.packageJson;
+  const mismatches = Object.entries(sources)
+    .filter(([, value]) => value !== canonical)
+    .map(([key, value]) => `  ${key}: ${value} (expected ${canonical})`);
+  if (mismatches.length) {
+    throw new Error(
+      `Version mismatch — run "just release patch" or sync files manually:\n${mismatches.join("\n")}`,
+    );
+  }
+  return canonical;
+}
+
 export function updateVersions(version) {
   const packageJson = readJson("package.json");
   packageJson.version = version;
@@ -92,7 +138,7 @@ export function updateVersions(version) {
   const indexPath = path.resolve(rootDir, "index.html");
   const indexHtml = fs.readFileSync(indexPath, "utf8");
   const updatedIndex = indexHtml.replace(
-    /(<span id="app-version-badge"[^>]*>)v[0-9]+\.[0-9]+\.[0-9]+(<\/span>)/,
+    /(id="app-version-badge"[^>]*>)v[0-9]+\.[0-9]+\.[0-9]+(<\/(?:span|button)>)/,
     `$1v${version}$2`,
   );
   if (indexHtml === updatedIndex) {
@@ -151,6 +197,13 @@ export function checkTauriSync() {
 
 if (isMainModule()) {
 try {
+  if (targetArg === "check") {
+    const version = assertVersionsInSync();
+    console.log(`All version sources match: ${version}`);
+    process.exit(0);
+  }
+
+  const target = targetArg;
   ensureCommand("git", "Install git: https://git-scm.com/");
   ensureCommand("node", "Install Node.js: https://nodejs.org/");
   ensureCommand("cargo", "Install Rust toolchain: https://rustup.rs/");
@@ -193,6 +246,7 @@ try {
   console.log(`Releasing version ${nextVersion} from ${currentVersion} on branch ${branch}`);
 
   updateVersions(nextVersion);
+  assertVersionsInSync();
   for (const [command, args] of releaseCommandPlan({ branch, tag, nextVersion })) {
     run(command, args);
   }

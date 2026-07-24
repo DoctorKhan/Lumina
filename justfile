@@ -10,10 +10,11 @@ default:
 _ensure-pnpm:
 	@command -v pnpm >/dev/null 2>&1 || { echo "Missing dependency: pnpm"; echo "Install pnpm: https://pnpm.io/installation"; exit 1; }
 
-# Install JS dependencies.
+# Install JS dependencies and optional git hooks.
 [group('Bootstrap')]
 setup: _ensure-pnpm
 	pnpm install
+	@bash scripts/setup-git-hooks.sh
 
 # Run Vite dev server only.
 [group('Dev')]
@@ -25,10 +26,21 @@ vite-dev: _ensure-pnpm
 build: _ensure-pnpm
 	pnpm build
 
-# Run regression tests.
+# Run regression tests and verify all version sources match.
 [group('Quality')]
 test: _ensure-pnpm
 	pnpm test
+	just version-check
+
+# Fail if package.json, Cargo.toml, tauri.conf.json, and index.html disagree.
+[group('Release')]
+version-check:
+	node scripts/release.mjs check
+
+# Bump versions, commit, tag, and push current branch.
+[group('Release')]
+release target='patch':
+	node scripts/release.mjs {{target}}
 
 # Run Tauri in development mode.
 [group('Dev')]
@@ -54,11 +66,6 @@ tauri-build-app:
 [group('Build')]
 install-app:
 	@cd "{{justfile_directory()}}" && bash scripts/install-app.sh
-
-# Bump versions, commit, tag, and push current branch.
-[group('Release')]
-release target='patch':
-	node scripts/release.mjs {{target}}
 
 # Print the exact prompt context sent to Claude.
 [group('AI Helpers')]
