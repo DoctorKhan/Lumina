@@ -400,3 +400,17 @@ test("autosave, recovery snapshots, and safe external reload are wired", () => {
   assert.match(html, /id="document-alert-diff"/);
   assert.match(main, /function refreshEditorFromDisk/);
 });
+
+test("main.js relative imports resolve to files in src/", () => {
+  const main = fs.readFileSync("src/main.js", "utf8");
+  const imports = [...main.matchAll(/from '\.\/([^']+\.js)'/g)].map((match) => match[1]);
+  assert.ok(imports.length > 0, "expected main.js to import local modules");
+
+  for (const relativePath of imports) {
+    const absolutePath = `src/${relativePath}`;
+    assert.ok(
+      fs.existsSync(absolutePath),
+      `missing ${absolutePath} imported from src/main.js`
+    );
+  }
+});

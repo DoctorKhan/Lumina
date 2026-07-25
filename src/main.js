@@ -709,6 +709,7 @@ const maxRecentFilePaths = 10;
                 item.addEventListener('click', () => {
                     scrollEditorToOffset(heading.offset);
                     renderDocumentOutline(headings);
+                    lastInputRenderedSource = null;
                     if (isLargeDocument(editor.value.length)) {
                         scheduleInputPreviewRender();
                     }
