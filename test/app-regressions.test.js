@@ -98,6 +98,8 @@ test("startup update check is quiet and exposes an install badge", () => {
   assert.match(main, /appVersionBadge\.addEventListener\('click'/);
   assert.match(main, /installUpdateBadge\.addEventListener\('click', installDetectedUpdate\)/);
   assert.match(main, /showInstallUpdateBadge\(latestTag\)/);
+  assert.match(main, /isInstallableFromGitHub\(latestTag, currentVersion\)/);
+  assert.match(main, /Latest \$\{source\} is \$\{latestTag\}; click Install to rebuild from GitHub\./);
   assert.match(html, /id="install-progress"/);
   assert.match(main, /feedInstallProgressFromTerminal/);
   assert.match(main, /trackInstallProgress: true/);

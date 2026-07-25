@@ -5,7 +5,7 @@
         import { listen } from '@tauri-apps/api/event';
         import { relaunch } from '@tauri-apps/plugin-process';
         import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { compareVersions, parseVersion, selectLatestUpdateTag } from './update.js';
+import { compareVersions, isInstallableFromGitHub, parseVersion, selectLatestUpdateTag } from './update.js';
         import {
             createInstallProgressState,
             processInstallProgressLine
@@ -2507,14 +2507,27 @@ async function checkForUpdate({ background = false, force = false } = {}) {
                 }
 
                 const { tag: latestTag, source } = latestTagInfo;
-                if (compareVersions(latestTag, currentVersion) > 0) {
+                const versionCmp = compareVersions(latestTag, currentVersion);
+                if (isInstallableFromGitHub(latestTag, currentVersion)) {
                     latestReleaseTag = latestTag;
-            showInstallUpdateBadge(latestTag);
-                    setUpdateStatus(`Update available: ${latestTag} (${source})`);
+                    if (versionCmp > 0) {
+                        showInstallUpdateBadge(latestTag);
+                        setUpdateStatus(`Update available: ${latestTag} (${source})`);
+                        return true;
+                    }
+                    if (!background) {
+                        showInstallUpdateBadge(latestTag);
+                        setUpdateStatus(
+                            `Latest ${source} is ${latestTag}; click Install to rebuild from GitHub.`
+                        );
+                    } else {
+                        hideInstallUpdateBadge();
+                    }
                     return true;
                 }
 
             hideInstallUpdateBadge();
+            latestReleaseTag = null;
             if (!background) {
                 setUpdateStatus(`Up to date: v${currentVersion}; latest ${source} is ${latestTag}`);
             }
@@ -2545,15 +2558,13 @@ async function checkForUpdate({ background = false, force = false } = {}) {
             }
 
             setUpdateStatus('Checking for updates before install…');
-            const updateAvailable = await checkForUpdate({ background: false, force: true });
-            if (updateAvailable && latestReleaseTag) {
+            await checkForUpdate({ background: false, force: true });
+            if (latestReleaseTag) {
                 await installDetectedUpdate();
                 return;
             }
 
-            if (!latestReleaseTag) {
-                setUpdateStatus('No installable update found. You may already be on the latest version.');
-            }
+            setUpdateStatus('No installable release found in the git repository.');
         }
 
         async function handleVersionBadgeClick() {
@@ -2571,8 +2582,12 @@ async function checkForUpdate({ background = false, force = false } = {}) {
                 return;
             }
 
+            const sameVersion = compareVersions(latestReleaseTag, currentVersion) === 0;
             const confirmed = window.confirm(
-                `Install Lumina ${latestReleaseTag} from GitHub?\n\n` +
+                (sameVersion
+                    ? `Reinstall Lumina ${latestReleaseTag} from GitHub?`
+                    : `Install Lumina ${latestReleaseTag} from GitHub?`) +
+                    '\n\n' +
                     'This runs the public install.sh and rebuilds the app locally. ' +
                     'The first build often takes many minutes; wait until it finishes (do not treat a quiet terminal as a hang).'
             );

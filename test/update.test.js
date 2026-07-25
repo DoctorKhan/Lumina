@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { compareVersions, newestSemverTag, parseVersion, selectLatestUpdateTag } from "../src/update.js";
+import { compareVersions, isInstallableFromGitHub, newestSemverTag, parseVersion, selectLatestUpdateTag } from "../src/update.js";
 
 test("parseVersion accepts v-prefixed semver tags", () => {
   assert.deepEqual(parseVersion("v0.2.4"), [0, 2, 4]);
@@ -12,6 +12,12 @@ test("compareVersions orders semver tags", () => {
   assert.equal(compareVersions("v0.2.4", "v0.2.3"), 1);
   assert.equal(compareVersions("v0.2.3", "v0.2.4"), -1);
   assert.equal(compareVersions("v0.2.4", "0.2.4"), 0);
+});
+
+test("isInstallableFromGitHub allows same-version reinstalls", () => {
+  assert.equal(isInstallableFromGitHub("v0.4.0", "0.4.0"), true);
+  assert.equal(isInstallableFromGitHub("v0.4.1", "0.4.0"), true);
+  assert.equal(isInstallableFromGitHub("v0.4.0", "0.4.1"), false);
 });
 
 test("newestSemverTag ignores non-semver tags", () => {

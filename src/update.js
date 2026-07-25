@@ -16,6 +16,12 @@ export function compareVersions(left, right) {
   return 0;
 }
 
+/** True when GitHub's latest tag is the same semver or newer than the running app. */
+export function isInstallableFromGitHub(latestTag, currentVersion) {
+  if (!parseVersion(latestTag) || !parseVersion(currentVersion)) return false;
+  return compareVersions(latestTag, currentVersion) >= 0;
+}
+
 export function newestSemverTag(tags) {
   return (
     tags
