@@ -559,7 +559,7 @@ const maxRecentFilePaths = 10;
         let outlineRefreshTimer = null;
         let documentHeadings = [];
         const outlineVisibleKey = 'lumina-outline-visible';
-        let outlinePaneVisible = localStorage.getItem(outlineVisibleKey) !== 'false';
+        let outlinePaneVisible = localStorage.getItem(outlineVisibleKey) === 'true';
 
         function syncOutlineToggleButton(hasContent = shouldShowDocumentOutline(documentHeadings)) {
             if (!toggleOutlineBtn) return;
