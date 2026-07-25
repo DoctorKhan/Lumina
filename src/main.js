@@ -68,6 +68,18 @@ import {
             shouldOfferRecovery,
             UNTITLED_RECOVERY_PATH
         } from './documentRecovery.js';
+        import {
+            EDITOR_METRICS_DEBOUNCE_MS_LARGE,
+            editorHistoryLimitForSize,
+            isLargeDocument,
+            PREVIEW_WINDOW_LINE_HEIGHT_PX,
+            previewInputDebounceMsForSize,
+            selectPreviewTokenWindow
+        } from './largeDocument.js';
+        import {
+            collectDocumentHeadings,
+            shouldShowDocumentOutline
+        } from './documentOutline.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -75,6 +87,8 @@ import {
 
         const editor = document.getElementById('editor');
         const preview = document.getElementById('preview');
+        const documentOutline = document.getElementById('document-outline');
+        const documentOutlineList = document.getElementById('document-outline-list');
         const charCount = document.getElementById('char-count');
 const fixLatexBtn = document.getElementById('fix-latex-btn');
 const reloadFileBtn = document.getElementById('reload-file-btn');
@@ -365,7 +379,7 @@ const maxRecentFilePaths = 10;
             editorHistory = editorHistory.slice(0, editorHistoryIndex + 1);
             editorHistory.push(snapshot);
 
-            if (editorHistory.length > editorHistoryLimit) {
+            if (editorHistory.length > editorHistoryLimitForSize(editor.value.length)) {
                 editorHistory.shift();
             }
 
@@ -408,8 +422,11 @@ const maxRecentFilePaths = 10;
         let previewInputDebounceTimer = null;
         let previewInputIdleHandle = null;
         let lastInputRenderedSource = null;
-        const previewInputDebounceMs = 500;
         const previewInputIdleTimeoutMs = 1000;
+        let editorMetricsTimer = null;
+        let previewWindowStartLine = 0;
+        let outlineRefreshTimer = null;
+        let documentHeadings = [];
 
         // Cache backing incremental preview rendering: the normalized source that
         // produced the current preview DOM and its top-level lexer tokens. The
@@ -448,6 +465,7 @@ const maxRecentFilePaths = 10;
 
         function scheduleInputPreviewRender() {
             cancelScheduledInputPreviewRender();
+            const debounceMs = previewInputDebounceMsForSize(editor.value.length);
             previewInputDebounceTimer = setTimeout(() => {
                 previewInputDebounceTimer = null;
                 if (editor.value === lastInputRenderedSource) return;
@@ -466,13 +484,89 @@ const maxRecentFilePaths = 10;
                 } else {
                     run();
                 }
-            }, previewInputDebounceMs);
+            }, debounceMs);
         }
 
         function updateEditorMetrics() {
             const rawValue = editor.value;
             const wordCount = rawValue.trim() ? rawValue.trim().split(/\s+/).length : 0;
-            charCount.textContent = `${rawValue.length} chars • ${wordCount} words`;
+            const large = isLargeDocument(rawValue.length);
+            const suffix = large ? ' · windowed preview' : '';
+            charCount.textContent = `${rawValue.length} chars • ${wordCount} words${suffix}`;
+        }
+
+        function scrollEditorToOffset(offset) {
+            editor.focus();
+            editor.setSelectionRange(offset, offset);
+            scrollEditorMatchIntoView(offset, offset);
+            syncPreviewScrollToEditor(offset);
+        }
+
+        function activeOutlineHeadingIndex(headings = documentHeadings) {
+            if (!headings.length) return -1;
+            const cursor = editor.selectionStart;
+            let active = 0;
+            for (let i = 0; i < headings.length; i += 1) {
+                if (headings[i].offset <= cursor) active = i;
+                else break;
+            }
+            return active;
+        }
+
+        function renderDocumentOutline(headings = collectDocumentHeadings(editor.value)) {
+            documentHeadings = headings;
+            const visible = shouldShowDocumentOutline(headings);
+            documentOutline?.classList.toggle('hidden', !visible);
+            if (!documentOutlineList) return;
+
+            if (!visible) {
+                documentOutlineList.replaceChildren();
+                return;
+            }
+
+            const activeIndex = activeOutlineHeadingIndex(headings);
+            const fragment = document.createDocumentFragment();
+            headings.forEach((heading, index) => {
+                const item = document.createElement('button');
+                item.type = 'button';
+                item.className = 'document-outline-item';
+                if (index === activeIndex) item.classList.add('is-active');
+                item.style.setProperty('--outline-level', String(heading.level));
+                item.textContent = heading.title;
+                item.title = heading.title;
+                item.addEventListener('click', () => {
+                    scrollEditorToOffset(heading.offset);
+                    renderDocumentOutline(headings);
+                    if (isLargeDocument(editor.value.length)) {
+                        scheduleInputPreviewRender();
+                    }
+                });
+                const li = document.createElement('li');
+                li.appendChild(item);
+                fragment.appendChild(li);
+            });
+            documentOutlineList.replaceChildren(fragment);
+
+            const activeItem = documentOutlineList.querySelector('.document-outline-item.is-active');
+            activeItem?.scrollIntoView({ block: 'nearest' });
+        }
+
+        function scheduleDocumentOutlineRefresh() {
+            clearTimeout(outlineRefreshTimer);
+            outlineRefreshTimer = setTimeout(() => {
+                outlineRefreshTimer = null;
+                renderDocumentOutline();
+            }, isLargeDocument(editor.value.length) ? 400 : 120);
+        }
+
+        function scheduleEditorMetrics() {
+            clearTimeout(editorMetricsTimer);
+            const rawLength = editor.value.length;
+            if (!isLargeDocument(rawLength)) {
+                updateEditorMetrics();
+                return;
+            }
+            editorMetricsTimer = setTimeout(updateEditorMetrics, EDITOR_METRICS_DEBOUNCE_MS_LARGE);
         }
 
         let homeDirectory = null;
@@ -739,6 +833,7 @@ const maxRecentFilePaths = 10;
             charCount.textContent = `${content.length} chars`;
             resetEditorHistory();
             schedulePreviewUpdate();
+            renderDocumentOutline();
         }
 
         function loadExampleGuide() {
@@ -1383,6 +1478,7 @@ async function openRecentFile(recentIndex = null) {
         // active find overlay) declines the fast path.
         async function tryIncrementalPreviewRender(normalizedValue) {
             if (
+                isLargeDocument(editor.value.length) ||
                 prevPreviewTokens == null ||
                 prevPreviewNormalized == null ||
                 findBarVisible ||
@@ -1449,6 +1545,48 @@ async function openRecentFile(recentIndex = null) {
             return true;
         }
 
+        function appendPreviewWindowSpacer(parent, { position, lines }) {
+            const spacer = document.createElement('div');
+            spacer.className = `preview-window-spacer preview-window-spacer-${position}`;
+            spacer.setAttribute('aria-hidden', 'true');
+            spacer.style.minHeight = `${lines * PREVIEW_WINDOW_LINE_HEIGHT_PX}px`;
+            spacer.textContent = `… ${lines.toLocaleString()} lines ${position === 'top' ? 'above' : 'below'}`;
+            parent.appendChild(spacer);
+            return spacer;
+        }
+
+        async function renderWindowedPreview(normalizedValue, sourceTokens) {
+            const cursorLine = sourceLineAtOffset(editor.selectionStart);
+            const window = selectPreviewTokenWindow(sourceTokens, cursorLine);
+            previewWindowStartLine = window.startLine;
+
+            const fragment = document.createDocumentFragment();
+            if (window.linesBefore > 0) {
+                appendPreviewWindowSpacer(fragment, {
+                    position: 'top',
+                    lines: window.linesBefore
+                });
+            }
+
+            const bodyHost = document.createElement('div');
+            bodyHost.className = 'preview-window-body';
+            await renderMarkdownInto(bodyHost, window.markdown);
+            while (bodyHost.firstChild) {
+                fragment.appendChild(bodyHost.firstChild);
+            }
+
+            if (window.linesAfter > 0) {
+                appendPreviewWindowSpacer(fragment, {
+                    position: 'bottom',
+                    lines: window.linesAfter
+                });
+            }
+
+            preview.replaceChildren(fragment);
+            prevPreviewTokens = sourceTokens;
+            prevPreviewNormalized = normalizedValue;
+        }
+
         async function executePreviewRender() {
             const rawValue = editor.value;
             // Records what the preview currently reflects so the input-path
@@ -1476,18 +1614,33 @@ async function openRecentFile(recentIndex = null) {
             const normalizedValue = normalizeEscapedLatexDelimiters(
                 normalizeMathBlocks(body)
             );
+            const largeDocument = isLargeDocument(rawValue.length);
             let handledIncrementally = false;
             try {
-                // Frontmatter renders as a separate preview header, so skip the
-                // token<->DOM incremental path that assumes one child per token.
-                handledIncrementally = metadata
-                    ? false
-                    : await tryIncrementalPreviewRender(normalizedValue);
+                if (largeDocument && !metadata) {
+                    let sourceTokens;
+                    try {
+                        sourceTokens = marked.lexer(normalizedValue);
+                    } catch {
+                        sourceTokens = null;
+                    }
+                    if (sourceTokens) {
+                        await renderWindowedPreview(normalizedValue, sourceTokens);
+                        handledIncrementally = true;
+                    }
+                } else {
+                    // Frontmatter renders as a separate preview header, so skip the
+                    // token<->DOM incremental path that assumes one child per token.
+                    handledIncrementally = metadata
+                        ? false
+                        : await tryIncrementalPreviewRender(normalizedValue);
+                }
             } catch {
                 handledIncrementally = false;
             }
             if (bailIfSuperseded()) return;
             if (!handledIncrementally) {
+                previewWindowStartLine = 0;
                 await renderMarkdownInto(preview, rawValue);
                 if (bailIfSuperseded()) return;
                 try {
@@ -1658,16 +1811,20 @@ async function openRecentFile(recentIndex = null) {
         function rebuildPreviewLineMap(sourceTokens = null) {
             const map = [];
             const children = preview.children;
-            // offsetTop is preview-content-relative (paddingP + contentOffset).
-            // The editor anchor renders its line editorPaddingTop below the top
-            // edge, so offsetting the preview by the editor's padding makes the
-            // synced line land at the same screen Y in both panes (cancelling
-            // the p-6 vs p-8 padding difference between the two).
             const editorPaddingTop = parseFloat(getComputedStyle(editor).paddingTop) || 0;
             const { metadata, body, frontmatterLineCount } = splitYamlFrontmatter(editor.value);
-            let line = 0;
+            let line = previewWindowStartLine;
             let childIndex = 0;
             let tokens;
+            const largeDocument = isLargeDocument(editor.value.length);
+
+            if (
+                largeDocument &&
+                children[childIndex]?.classList.contains('preview-window-spacer-top')
+            ) {
+                childIndex += 1;
+            }
+
             try {
                 const markdownBody = metadata
                     ? normalizeEscapedLatexDelimiters(normalizeMathBlocks(body))
@@ -1677,13 +1834,22 @@ async function openRecentFile(recentIndex = null) {
                 previewLineMap = [];
                 return;
             }
-            if (metadata && children[0]?.classList.contains('document-frontmatter')) {
-                const el = children[0];
+
+            if (largeDocument && previewWindowStartLine > 0) {
+                const windowSelection = selectPreviewTokenWindow(
+                    tokens,
+                    sourceLineAtOffset(editor.selectionStart)
+                );
+                tokens = tokens.slice(windowSelection.start, windowSelection.end + 1);
+            }
+
+            if (metadata && children[childIndex]?.classList.contains('document-frontmatter')) {
+                const el = children[childIndex];
                 const top = el.offsetTop - editorPaddingTop;
                 map.push({ line: 0, top });
                 map.push({ line: frontmatterLineCount, top: top + el.offsetHeight });
                 line = frontmatterLineCount;
-                childIndex = 1;
+                childIndex += 1;
             }
             {
                 for (const token of tokens) {
@@ -1697,7 +1863,7 @@ async function openRecentFile(recentIndex = null) {
                     if (token.type === 'space') continue;
                     const el = children[childIndex];
                     childIndex += 1;
-                    if (!el) break;
+                    if (!el || el.classList.contains('preview-window-spacer')) break;
                     // Newlines inside the block once trailing blank lines are
                     // stripped: the count of source lines the block's content
                     // actually spans.
@@ -5222,17 +5388,19 @@ document.addEventListener('click', (event) => {
 
         editor.addEventListener('input', () => {
             markEditorVisualLineMapDirty();
-            updateEditorMetrics();
+            scheduleEditorMetrics();
             scheduleEditorHistory();
             refreshFindHighlights();
             scheduleInputPreviewRender();
             scheduleDocumentPersistence();
+            scheduleDocumentOutlineRefresh();
         });
 
         editor.addEventListener('select', () => {
+            scheduleDocumentOutlineRefresh();
             if (!findBarVisible || suppressFindSelectHandler) return;
             findMatchIndex = -1;
-            updateFindMatchStatus();
+            scheduleFindRefresh();
         });
 
         function lineBoundsAt(value, position) {
@@ -5327,7 +5495,56 @@ document.addEventListener('click', (event) => {
         let findMatchIndex = -1;
         let suppressFindInputHandler = false;
         let suppressFindSelectHandler = false;
+        let findRefreshTimer = null;
+        let findRefreshPending = { reveal: false };
+        const findRefreshDebounceMs = 80;
         const findOptions = { caseSensitive: false, wholeWord: false, regex: false };
+
+        function cancelScheduledFindRefresh() {
+            clearTimeout(findRefreshTimer);
+            findRefreshTimer = null;
+            findRefreshPending = { reveal: false };
+        }
+
+        function runFindRefresh({ reveal = false } = {}) {
+            if (!findBarVisible) return;
+            const needle = findNeedle();
+            if (!needle) {
+                updateFindMatchStatus();
+                return;
+            }
+            if (reveal) {
+                revealMatchAtCursor({ focusEditor: false });
+            } else {
+                updateFindMatchStatus();
+            }
+        }
+
+        // Find/replace does a full-document scan plus highlight/preview DOM work.
+        // Running that synchronously on every keystroke blocks the find input and
+        // can queue characters that spill into whatever field gets focus next.
+        function scheduleFindRefresh({ reveal = false, immediate = false } = {}) {
+            findRefreshPending.reveal = findRefreshPending.reveal || reveal;
+            if (immediate) {
+                cancelScheduledFindRefresh();
+                const pending = { ...findRefreshPending };
+                findRefreshPending = { reveal: false };
+                runFindRefresh(pending);
+                return;
+            }
+            clearTimeout(findRefreshTimer);
+            findRefreshTimer = setTimeout(() => {
+                findRefreshTimer = null;
+                const pending = { ...findRefreshPending };
+                findRefreshPending = { reveal: false };
+                runFindRefresh(pending);
+            }, findRefreshDebounceMs);
+        }
+
+        function flushScheduledFindRefresh() {
+            if (findRefreshTimer == null) return;
+            scheduleFindRefresh({ immediate: true });
+        }
 
         function findNeedle() {
             return findInput.value;
@@ -5587,7 +5804,7 @@ document.addEventListener('click', (event) => {
             scrollPreviewFindMarkIntoView(currentMark);
         }
 
-        function updateFindMatchStatus() {
+        function updateFindMatchStatus(precomputedMatches = null) {
             const needle = findNeedle();
             if (!needle) {
                 findMatchStatus.textContent = '';
@@ -5610,7 +5827,7 @@ document.addEventListener('click', (event) => {
             }
             findInputWrap.classList.remove('is-invalid');
 
-            const matches = collectFindMatches(needle);
+            const matches = precomputedMatches ?? collectFindMatches(needle);
             if (!matches.length) {
                 findMatchStatus.textContent = 'No results';
                 findMatchStatus.classList.add('is-error');
@@ -5668,7 +5885,7 @@ document.addEventListener('click', (event) => {
                 editorHighlightLayer.textContent = '';
                 return;
             }
-            updateFindMatchStatus();
+            scheduleFindRefresh();
         }
 
         function shouldFocusEditorForFind() {
@@ -5702,15 +5919,18 @@ document.addEventListener('click', (event) => {
             const matches = collectFindMatches(needle);
             if (!matches.length) {
                 findMatchIndex = -1;
-                updateFindMatchStatus();
+                updateFindMatchStatus(matches);
                 return false;
             }
 
             const index = activeFindMatchIndex(matches);
-            return selectFindMatch(matches[index], { focusEditor });
+            return selectFindMatch(matches[index], { focusEditor, matches, matchIndex: index });
         }
 
-        function selectFindMatch(match, { focusEditor } = {}) {
+        function selectFindMatch(
+            match,
+            { focusEditor, matches: precomputedMatches = null, matchIndex: precomputedIndex = null } = {}
+        ) {
             if (!match) return false;
 
             const focus = focusEditor ?? shouldFocusEditorForFind();
@@ -5720,14 +5940,23 @@ document.addEventListener('click', (event) => {
             if (focus) editor.focus();
             scrollEditorMatchIntoView(match.start, match.end);
 
-            findMatchIndex = collectFindMatches().findIndex(
-                (candidate) => candidate.start === match.start && candidate.end === match.end
-            );
-            updateFindMatchStatus();
+            if (precomputedIndex != null) {
+                findMatchIndex = precomputedIndex;
+            } else if (precomputedMatches) {
+                findMatchIndex = precomputedMatches.findIndex(
+                    (candidate) => candidate.start === match.start && candidate.end === match.end
+                );
+            } else {
+                findMatchIndex = collectFindMatches().findIndex(
+                    (candidate) => candidate.start === match.start && candidate.end === match.end
+                );
+            }
+            updateFindMatchStatus(precomputedMatches);
             return true;
         }
 
         function findNextMatch({ wrap = true, focusEditor } = {}) {
+            cancelScheduledFindRefresh();
             const needle = findNeedle();
             if (!needle) {
                 updateFindMatchStatus();
@@ -5737,17 +5966,22 @@ document.addEventListener('click', (event) => {
             const matches = collectFindMatches(needle);
             if (!matches.length) {
                 findMatchIndex = -1;
-                updateFindMatchStatus();
+                updateFindMatchStatus(matches);
                 return false;
             }
 
             const currentIndex = activeFindMatchIndex(matches);
             const nextIndex = currentIndex + 1;
             const targetIndex = nextIndex < matches.length ? nextIndex : wrap ? 0 : currentIndex;
-            return selectFindMatch(matches[targetIndex], { focusEditor });
+            return selectFindMatch(matches[targetIndex], {
+                focusEditor,
+                matches,
+                matchIndex: targetIndex
+            });
         }
 
         function findPreviousMatch({ wrap = true, focusEditor } = {}) {
+            cancelScheduledFindRefresh();
             const needle = findNeedle();
             if (!needle) {
                 updateFindMatchStatus();
@@ -5757,7 +5991,7 @@ document.addEventListener('click', (event) => {
             const matches = collectFindMatches(needle);
             if (!matches.length) {
                 findMatchIndex = -1;
-                updateFindMatchStatus();
+                updateFindMatchStatus(matches);
                 return false;
             }
 
@@ -5765,7 +5999,11 @@ document.addEventListener('click', (event) => {
             const previousIndex = currentIndex - 1;
             const targetIndex =
                 previousIndex >= 0 ? previousIndex : wrap ? matches.length - 1 : currentIndex;
-            return selectFindMatch(matches[targetIndex], { focusEditor });
+            return selectFindMatch(matches[targetIndex], {
+                focusEditor,
+                matches,
+                matchIndex: targetIndex
+            });
         }
 
         function syncFindReplaceRowVisibility() {
@@ -5781,6 +6019,7 @@ document.addEventListener('click', (event) => {
         }
 
         function openFindBar({ replace = false, seedFromSelection = true } = {}) {
+            cancelScheduledFindRefresh();
             const wasVisible = findBarVisible;
             findBarVisible = true;
             if (replace) {
@@ -5811,6 +6050,7 @@ document.addEventListener('click', (event) => {
 
         function closeFindBar() {
             if (!findBarVisible) return;
+            cancelScheduledFindRefresh();
             findBarVisible = false;
             findBarShowsReplace = false;
             findMatchIndex = -1;
@@ -5837,6 +6077,7 @@ document.addEventListener('click', (event) => {
         }
 
         function replaceCurrentMatch() {
+            cancelScheduledFindRefresh();
             const needle = findNeedle();
             const replacement = replaceInput.value;
             if (!needle) return false;
@@ -5861,6 +6102,7 @@ document.addEventListener('click', (event) => {
         }
 
         function replaceAllMatches() {
+            cancelScheduledFindRefresh();
             const needle = findNeedle();
             const replacement = replaceInput.value;
             if (!needle) return 0;
@@ -5900,6 +6142,7 @@ document.addEventListener('click', (event) => {
         }
 
         function toggleFindOption(optionKey) {
+            cancelScheduledFindRefresh();
             findOptions[optionKey] = !findOptions[optionKey];
             syncFindOptionButtons();
             findMatchIndex = -1;
@@ -5929,13 +6172,15 @@ document.addEventListener('click', (event) => {
         findInput.addEventListener('input', () => {
             if (suppressFindInputHandler) return;
             findMatchIndex = -1;
-            if (findInput.value) {
-                revealMatchAtCursor({ focusEditor: false });
-            } else {
+            if (!findInput.value) {
+                cancelScheduledFindRefresh();
                 updateFindMatchStatus();
+                return;
             }
+            scheduleFindRefresh({ reveal: true });
         });
-        replaceInput.addEventListener('input', updateFindMatchStatus);
+        findInput.addEventListener('blur', flushScheduledFindRefresh);
+        replaceInput.addEventListener('input', () => scheduleFindRefresh());
         findNextBtn.addEventListener('click', () => findNextMatch());
         findPrevBtn.addEventListener('click', () => findPreviousMatch());
         replaceBtn.addEventListener('click', () => replaceCurrentMatch());

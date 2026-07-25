@@ -165,7 +165,12 @@
                 <div class="h-10 bg-slate-100 flex items-center px-4 text-xs font-medium uppercase tracking-wider text-slate-600 border-b border-slate-200">
                     Live Preview
                 </div>
-                <div id="preview" class="flex-1 p-8 overflow-y-auto prose max-w-none"></div>
+                <div class="preview-body flex flex-1 min-h-0 min-w-0">
+                    <nav id="document-outline" class="document-outline hidden" aria-label="Document outline">
+                        <ul id="document-outline-list" class="document-outline-list"></ul>
+                    </nav>
+                    <div id="preview" class="flex-1 p-8 overflow-y-auto prose max-w-none min-w-0"></div>
+                </div>
             </div>
         </div>
 

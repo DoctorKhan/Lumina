@@ -288,7 +288,15 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(css, /preview-find-match/);
   assert.match(main, /function toggleFindOption/);
   assert.match(main, /find-opt-case/);
-  assert.match(main, /focusEditor: false/);
+  assert.match(main, /from '\.\/documentOutline\.js'/);
+  assert.match(main, /function renderDocumentOutline/);
+  assert.match(html, /id="document-outline"/);
+  assert.match(main, /from '\.\/largeDocument\.js'/);
+  assert.match(main, /function renderWindowedPreview/);
+  assert.match(main, /preview-window-spacer/);
+  assert.match(main, /function scheduleFindRefresh/);
+  assert.match(main, /findRefreshDebounceMs/);
+  assert.match(main, /flushScheduledFindRefresh/);
 });
 
 test("develop-Lumina mode lets Claude edit the source checkout and rebuild from the UI", () => {
