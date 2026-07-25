@@ -2852,21 +2852,31 @@ async function writeClaudePrompt(prompt) {
 // Pasted-image tracking: the textarea shows `[Image #N]` placeholders while the
 // real file paths live here, keyed by N. Resolved into the message at send time.
 const claudePastedImagePaths = new Map();
-let claudePastedImageCounter = 0;
+const claudePastedImageCounter = { value: 0 };
+const agentPastedImagePaths = new Map();
+const agentPastedImageCounter = { value: 0 };
 
-function resolveClaudePastedImages(text) {
-    if (!claudePastedImagePaths.size) return text;
+function resolvePastedImages(text, pastedImagePaths) {
+    if (!pastedImagePaths.size) return text;
     return text.replace(/\[Image #(\d+)\]/g, (match, n) => {
-        const path = claudePastedImagePaths.get(Number(n));
+        const path = pastedImagePaths.get(Number(n));
         return path ? `[Image #${n}: ${path}]` : match;
     });
+}
+
+function resolveClaudePastedImages(text) {
+    return resolvePastedImages(text, claudePastedImagePaths);
+}
+
+function resolveAgentPastedImages(text) {
+    return resolvePastedImages(text, agentPastedImagePaths);
 }
 
 // Composer send: resolve any pasted-image placeholders, then submit.
 async function sendClaudeMessage(text) {
     const resolved = resolveClaudePastedImages(text);
     claudePastedImagePaths.clear();
-    claudePastedImageCounter = 0;
+    claudePastedImageCounter.value = 0;
     await submitClaudeMessage(resolved);
 }
 
@@ -3371,7 +3381,10 @@ async function submitAgentMessage(text) {
 }
 
 async function sendAgentMessage(text) {
-    await submitAgentMessage(text);
+    const resolved = resolveAgentPastedImages(text);
+    agentPastedImagePaths.clear();
+    agentPastedImageCounter.value = 0;
+    await submitAgentMessage(resolved);
 }
 
 async function stopAgentChat() {
@@ -3473,9 +3486,32 @@ function autoSizeAgentInput() {
     agentInput.style.height = `${agentInput.scrollHeight}px`;
 }
 
+function wireComposerImagePaste(input, pastedImagePaths, counterRef, autoSizeFn) {
+    if (!input) return;
+    input.addEventListener('paste', (event) => {
+        const items = event.clipboardData?.items;
+        if (!items) return;
+        const images = [];
+        for (const item of items) {
+            if (item.kind === 'file' && item.type.startsWith('image/')) {
+                const file = item.getAsFile();
+                if (file) images.push(file);
+            }
+        }
+        if (!images.length) return;
+        event.preventDefault();
+        (async () => {
+            for (const file of images) {
+                await handleComposerImagePaste(file, input, pastedImagePaths, counterRef, autoSizeFn);
+            }
+        })();
+    });
+}
+
 function wireAgentInputBar() {
     if (!agentInputBar || !agentInput) return;
     agentInput.addEventListener('input', autoSizeAgentInput);
+    wireComposerImagePaste(agentInput, agentPastedImagePaths, agentPastedImageCounter, autoSizeAgentInput);
     agentInput.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
             event.preventDefault();
@@ -3497,8 +3533,8 @@ function wireAgentInputBar() {
 // Save a pasted-image File to disk via Tauri and insert an `[Image #N]` marker
 // at the cursor. The actual path is substituted in at send time so the visible
 // composer text stays short — matches the regular Claude CLI paste UX.
-async function handleClaudeImagePaste(file) {
-    if (!file || !claudeInput) return;
+async function handleComposerImagePaste(file, input, pastedImagePaths, counterRef, autoSizeFn) {
+    if (!file || !input) return;
     const buffer = await file.arrayBuffer();
     const bytes = Array.from(new Uint8Array(buffer));
     const mime = file.type || 'image/png';
@@ -3510,21 +3546,21 @@ async function handleClaudeImagePaste(file) {
         setUpdateStatus(`Could not save pasted image: ${error}`);
         return;
     }
-    const n = ++claudePastedImageCounter;
-    claudePastedImagePaths.set(n, path);
+    const n = ++counterRef.value;
+    pastedImagePaths.set(n, path);
 
     const marker = `[Image #${n}]`;
-    const start = claudeInput.selectionStart ?? claudeInput.value.length;
-    const end = claudeInput.selectionEnd ?? claudeInput.value.length;
-    const before = claudeInput.value.slice(0, start);
-    const after = claudeInput.value.slice(end);
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    const before = input.value.slice(0, start);
+    const after = input.value.slice(end);
     const needsLead = before.length > 0 && !/\s$/.test(before);
     const needsTail = after.length > 0 && !/^\s/.test(after);
     const insert = `${needsLead ? ' ' : ''}${marker}${needsTail ? ' ' : ''}`;
-    claudeInput.value = `${before}${insert}${after}`;
+    input.value = `${before}${insert}${after}`;
     const caret = before.length + insert.length;
-    claudeInput.setSelectionRange(caret, caret);
-    autoSizeClaudeInput();
+    input.setSelectionRange(caret, caret);
+    autoSizeFn?.();
 }
 
 // Grows the input box with its content up to the CSS max-height. The transcript
@@ -3544,24 +3580,7 @@ function wireClaudeInputBar() {
         void maybeAutoSendClaudeContext();
     });
 
-    claudeInput.addEventListener('paste', (event) => {
-        const items = event.clipboardData?.items;
-        if (!items) return;
-        const images = [];
-        for (const item of items) {
-            if (item.kind === 'file' && item.type.startsWith('image/')) {
-                const file = item.getAsFile();
-                if (file) images.push(file);
-            }
-        }
-        if (!images.length) return;
-        event.preventDefault();
-        (async () => {
-            for (const file of images) {
-                await handleClaudeImagePaste(file);
-            }
-        })();
-    });
+    wireComposerImagePaste(claudeInput, claudePastedImagePaths, claudePastedImageCounter, autoSizeClaudeInput);
 
     // Enter sends; Shift+Enter inserts a newline.
     claudeInput.addEventListener('keydown', (event) => {

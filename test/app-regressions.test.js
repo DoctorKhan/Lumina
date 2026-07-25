@@ -331,6 +331,25 @@ test("develop-Lumina mode lets Claude edit the source checkout and rebuild from 
   assert.match(rust, /Agent cwd is not a directory/);
 });
 
+test("assistant composers accept pasted screenshots", () => {
+  const main = fs.readFileSync("src/main.js", "utf8");
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const security = fs.readFileSync("src-tauri/src/security.rs", "utf8");
+
+  assert.match(rust, /fn claude_save_pasted_image/);
+  assert.match(main, /function wireComposerImagePaste/);
+  assert.match(main, /function resolvePastedImages/);
+  assert.match(main, /wireComposerImagePaste\(claudeInput, claudePastedImagePaths/);
+  assert.match(main, /wireComposerImagePaste\(agentInput, agentPastedImagePaths/);
+  assert.match(main, /resolveAgentPastedImages/);
+  assert.match(main, /agentPastedImagePaths\.clear\(\)/);
+  assert.match(security, /fn extract_pasted_image_paths/);
+  assert.match(security, /fn validate_pasted_image_attachment_path/);
+  assert.match(rust, /extract_pasted_image_paths\(&text\)/);
+  assert.match(rust, /validate_pasted_image_attachment_path\(&path\)/);
+  assert.match(rust, /\.arg\("--image"\)/);
+});
+
 test("example guide documents the app features that have regressed before", () => {
   const guide = fs.readFileSync("src/example.md", "utf8");
 

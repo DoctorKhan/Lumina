@@ -2,6 +2,8 @@
 //! Model output and webview requests are untrusted proposals; these checks run
 //! before any side effect and are ordered: allowlist → schema → ownership/scope.
 
+use std::env;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -263,6 +265,69 @@ pub fn validate_agent_message(text: &str) -> Result<String, String> {
     Ok(text.to_string())
 }
 
+pub fn pasted_image_cache_dir() -> Option<PathBuf> {
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".lumina").join("image-cache"))
+}
+
+/// Extract absolute paths from Lumina composer markers like `[Image #1: /path/to.png]`.
+pub fn extract_pasted_image_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut search_from = 0;
+    while let Some(rel) = text[search_from..].find("[Image #") {
+        let idx = search_from + rel;
+        let slice = &text[idx..];
+        let Some(prefix_end) = slice.find(": ") else {
+            search_from = idx + 7;
+            continue;
+        };
+        let after_colon = &slice[prefix_end + 2..];
+        let Some(bracket) = after_colon.find(']') else {
+            search_from = idx + 7;
+            continue;
+        };
+        let path = after_colon[..bracket].trim();
+        if !path.is_empty() {
+            paths.push(path.to_string());
+        }
+        search_from = idx + prefix_end + 2 + bracket + 1;
+    }
+    paths
+}
+
+/// Hermes/Cursor Agent image attachments must come from Lumina's paste cache.
+pub fn validate_pasted_image_attachment_path(path: &str) -> Result<PathBuf, String> {
+    validate_path_input(path)?;
+    let cache_dir = pasted_image_cache_dir().ok_or_else(|| "HOME is not set.".to_string())?;
+    let path = PathBuf::from(path.trim());
+    let canonical = fs::canonicalize(&path).map_err(|error| {
+        audit_ipc("pasted-image-path", path.to_string_lossy().as_ref(), false);
+        format!("Pasted image path is unavailable: {error}")
+    })?;
+    let cache_canonical = fs::canonicalize(&cache_dir).unwrap_or(cache_dir);
+    if !canonical.starts_with(&cache_canonical) {
+        audit_ipc(
+            "pasted-image-path",
+            canonical.to_string_lossy().as_ref(),
+            false,
+        );
+        return Err("Pasted image path is outside the Lumina image cache.".to_string());
+    }
+    if !canonical.is_file() {
+        audit_ipc(
+            "pasted-image-path",
+            canonical.to_string_lossy().as_ref(),
+            false,
+        );
+        return Err("Pasted image path is not a file.".to_string());
+    }
+    audit_ipc(
+        "pasted-image-path",
+        canonical.to_string_lossy().as_ref(),
+        true,
+    );
+    Ok(canonical)
+}
+
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
         .map(|value| {
@@ -327,5 +392,14 @@ mod tests {
     #[test]
     fn rejects_path_traversal_strings_with_null_bytes() {
         assert!(validate_path_input("safe\0/path").is_err());
+    }
+
+    #[test]
+    fn extracts_pasted_image_paths_from_composer_markers() {
+        let text = "Look at [Image #1: /Users/alice/.lumina/image-cache/img-1.png] please";
+        assert_eq!(
+            extract_pasted_image_paths(text),
+            vec!["/Users/alice/.lumina/image-cache/img-1.png".to_string()]
+        );
     }
 }

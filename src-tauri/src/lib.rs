@@ -1,9 +1,10 @@
 mod security;
 
 use security::{
-    audit_ipc, is_supported_document_path, validate_agent_message,
+    audit_ipc, extract_pasted_image_paths, is_supported_document_path, validate_agent_message,
     validate_claude_permission_mode, validate_cursor_agent_mode, validate_external_url,
-    validate_model_name, validate_path_input, validate_read_path, validate_write_path,
+    validate_model_name, validate_pasted_image_attachment_path, validate_path_input,
+    validate_read_path, validate_write_path,
 };
 use notify_debouncer_full::{
     new_debouncer,
@@ -1344,6 +1345,10 @@ fn cursor_agent_send(
         // "unrecognized arguments"); it reads the message from stdin, and end of
         // input ends the turn.
         command.arg("chat");
+        for path in extract_pasted_image_paths(&text) {
+            let validated = validate_pasted_image_attachment_path(&path)?;
+            command.arg("--image").arg(validated);
+        }
         command.stdin(Stdio::piped());
     } else {
         command = Command::new("cursor");
