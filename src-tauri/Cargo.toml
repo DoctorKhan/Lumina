@@ -1,6 +1,6 @@
 [package]
 name = "lumina"
-version = "0.5.3"
+version = "0.5.4"
 description = "Lumina desktop app"
 authors = ["you"]
 edition = "2021"
@@ -20,6 +20,7 @@ portable-pty = "0.9.0"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-process = "2"
 notify-debouncer-full = "0.3"
+gpui = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
