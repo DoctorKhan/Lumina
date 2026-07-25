@@ -772,9 +772,14 @@ body > header {
     color: #94a3b8;
     background: transparent;
     border: 1px solid #334155;
-    font-size: 0.95rem;
-    line-height: 1;
+    line-height: 0;
     transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+
+.terminal-new-tab-icon {
+    width: 0.875rem;
+    height: 0.875rem;
+    display: block;
 }
 
 .terminal-new-tab-btn:hover {
