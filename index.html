@@ -111,11 +111,23 @@
                         </div>
                         <ul id="filename-path-suggestions" class="filename-path-suggestions hidden" role="listbox" aria-label="Path suggestions"></ul>
                     </div>
-                    <button id="reload-file-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Reload this file from disk, discarding unsaved changes">Reload</button>
+                    <button id="reload-file-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Reload from disk — shows a diff when the file differs">Reload</button>
                     <button id="fix-latex-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors" title="Normalize LaTeX delimiters in source (converts \[…\] and \(…\) to $$ and $)">Fix LaTeX</button>
-                    <span id="char-count" class="shrink-0 whitespace-nowrap text-right normal-case tracking-normal">0 chars</span>
+                    <span id="char-count" class="shrink-0 whitespace-nowrap text-right normal-case tracking-normal cursor-default" title="Alt+click to toggle editor performance log">0 chars</span>
                     </div>
                     <div id="filename-path-toast" class="filename-path-toast hidden" role="status" aria-live="polite"></div>
+                    <div id="editor-perf-panel" class="editor-perf-panel hidden" aria-label="Editor performance log">
+                        <div class="editor-perf-head">
+                            <span class="editor-perf-title">Editor performance log</span>
+                            <span id="editor-perf-summary" class="editor-perf-summary"></span>
+                            <div class="editor-perf-actions">
+                                <button id="editor-perf-copy-btn" type="button" class="editor-perf-btn">Copy</button>
+                                <button id="editor-perf-clear-btn" type="button" class="editor-perf-btn">Clear</button>
+                                <button id="editor-perf-close-btn" type="button" class="editor-perf-btn" aria-label="Close performance log">×</button>
+                            </div>
+                        </div>
+                        <pre id="editor-perf-log" class="editor-perf-log"></pre>
+                    </div>
                 </div>
                 <div id="find-replace-bar" class="find-replace-bar hidden" role="search" aria-label="Find and replace">
                     <div class="find-replace-row">
@@ -146,11 +158,24 @@
                     <button id="find-replace-close-btn" type="button" class="find-replace-close-btn" title="Close (Esc)" aria-label="Close find and replace">×</button>
                 </div>
                 <div id="document-alert-banner" class="document-alert-banner hidden" role="alert" aria-live="assertive">
-                    <p id="document-alert-message" class="document-alert-message"></p>
-                    <div class="document-alert-actions">
-                        <button id="document-alert-primary-btn" type="button" class="document-alert-btn document-alert-btn-primary"></button>
-                        <button id="document-alert-secondary-btn" type="button" class="document-alert-btn"></button>
-                        <button id="document-alert-dismiss-btn" type="button" class="document-alert-btn document-alert-btn-ghost" title="Dismiss">Dismiss</button>
+                    <div class="document-alert-main">
+                        <div class="document-alert-copy">
+                            <p id="document-alert-title" class="document-alert-title"></p>
+                            <p id="document-alert-message" class="document-alert-message"></p>
+                            <p id="document-alert-summary" class="document-alert-summary"></p>
+                        </div>
+                        <div class="document-alert-actions">
+                            <button id="document-alert-primary-btn" type="button" class="document-alert-btn document-alert-btn-primary"></button>
+                            <button id="document-alert-secondary-btn" type="button" class="document-alert-btn"></button>
+                            <button id="document-alert-dismiss-btn" type="button" class="document-alert-btn document-alert-btn-ghost" title="Dismiss">Dismiss</button>
+                        </div>
+                    </div>
+                    <div id="document-alert-diff-wrap" class="document-alert-diff-wrap hidden">
+                        <div class="document-alert-diff-labels">
+                            <span id="document-alert-diff-left-label" class="document-alert-diff-label"></span>
+                            <span id="document-alert-diff-right-label" class="document-alert-diff-label"></span>
+                        </div>
+                        <pre id="document-alert-diff" class="document-alert-diff" aria-label="Document diff preview"></pre>
                     </div>
                 </div>
                 <div class="editor-input-wrap flex-1 min-h-0">

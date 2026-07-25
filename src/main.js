@@ -68,6 +68,10 @@ import {
             UNTITLED_RECOVERY_PATH
         } from './documentRecovery.js';
         import {
+            buildDocumentDiffPreview,
+            describeConflictAction
+        } from './documentDiff.js';
+        import {
             EDITOR_METRICS_DEBOUNCE_MS_LARGE,
             editorDirtyUiDebounceMsForSize,
             editorHistoryDebounceMsForSize,
@@ -82,6 +86,7 @@ import {
             collectDocumentHeadings,
             shouldShowDocumentOutline
         } from './documentOutline.js';
+        import { createEditorPerfLog, PERF_STORAGE_KEY } from './editorPerf.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
         import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -93,10 +98,25 @@ import {
         const documentOutlineList = document.getElementById('document-outline-list');
         const toggleOutlineBtn = document.getElementById('toggle-outline-btn');
         const charCount = document.getElementById('char-count');
+        const editorPerfPanel = document.getElementById('editor-perf-panel');
+        const editorPerfLog = document.getElementById('editor-perf-log');
+        const editorPerfSummary = document.getElementById('editor-perf-summary');
+        const editorPerfCopyBtn = document.getElementById('editor-perf-copy-btn');
+        const editorPerfClearBtn = document.getElementById('editor-perf-clear-btn');
+        const editorPerfCloseBtn = document.getElementById('editor-perf-close-btn');
+        const perf = createEditorPerfLog({
+            enabled: localStorage.getItem(PERF_STORAGE_KEY) === 'true'
+        });
 const fixLatexBtn = document.getElementById('fix-latex-btn');
 const reloadFileBtn = document.getElementById('reload-file-btn');
 const documentAlertBanner = document.getElementById('document-alert-banner');
+const documentAlertTitle = document.getElementById('document-alert-title');
 const documentAlertMessage = document.getElementById('document-alert-message');
+const documentAlertSummary = document.getElementById('document-alert-summary');
+const documentAlertDiffWrap = document.getElementById('document-alert-diff-wrap');
+const documentAlertDiff = document.getElementById('document-alert-diff');
+const documentAlertDiffLeftLabel = document.getElementById('document-alert-diff-left-label');
+const documentAlertDiffRightLabel = document.getElementById('document-alert-diff-right-label');
 const documentAlertPrimaryBtn = document.getElementById('document-alert-primary-btn');
 const documentAlertSecondaryBtn = document.getElementById('document-alert-secondary-btn');
 const documentAlertDismissBtn = document.getElementById('document-alert-dismiss-btn');
@@ -315,6 +335,7 @@ let claudeWorkspaceFilePath = null;
         let autosaveInFlight = false;
         let pendingExternalFile = null;
         let pendingRecoverySnapshot = null;
+        let pendingReloadFile = null;
         let documentAlertMode = null;
         let fileChangedUnlisten = null;
         let filePollIntervalId = null;
@@ -349,6 +370,97 @@ const maxRecentFilePaths = 10;
         let lastPersistedContent = editor.value;
         let documentDirtyFlag = false;
         let editorEditGeneration = 0;
+        let lastEditorInputAt = 0;
+        let editorInputFrame = null;
+        const editorInteractionGraceMs = 600;
+
+        function touchEditorInteraction() {
+            lastEditorInputAt = Date.now();
+        }
+
+        function isEditorInteractionRecent() {
+            return Date.now() - lastEditorInputAt < editorInteractionGraceMs;
+        }
+
+        function refreshEditorPerfPanel() {
+            if (!editorPerfPanel || editorPerfPanel.classList.contains('hidden')) return;
+            const rows = perf.summary();
+            if (editorPerfSummary) {
+                editorPerfSummary.textContent = rows.length
+                    ? rows
+                          .slice(0, 3)
+                          .map(
+                              (row) =>
+                                  `${row.event} avg ${row.avgMs.toFixed(1)}ms (${row.slowCount} slow)`
+                          )
+                          .join(' · ')
+                    : 'No events yet — type in the editor to collect timings.';
+            }
+            if (editorPerfLog) {
+                editorPerfLog.textContent = perf.exportText({ includeSummary: true });
+                editorPerfLog.scrollTop = editorPerfLog.scrollHeight;
+            }
+        }
+
+        function setEditorPerfEnabled(enabled) {
+            perf.setEnabled(enabled);
+            localStorage.setItem(PERF_STORAGE_KEY, String(enabled));
+            editorPerfPanel?.classList.toggle('hidden', !enabled);
+            charCount?.classList.toggle('editor-perf-active', enabled);
+            if (enabled) {
+                perf.record('perf.panel_open', { chars: editor.value.length });
+                refreshEditorPerfPanel();
+            }
+        }
+
+        perf.onChange(() => refreshEditorPerfPanel());
+        if (perf.isEnabled()) {
+            editorPerfPanel?.classList.remove('hidden');
+            charCount?.classList.add('editor-perf-active');
+            refreshEditorPerfPanel();
+        }
+
+        charCount?.addEventListener('click', (event) => {
+            if (!event.altKey) return;
+            event.preventDefault();
+            setEditorPerfEnabled(!perf.isEnabled());
+        });
+        editorPerfCopyBtn?.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(perf.exportText());
+                setUpdateStatus('Copied editor performance log.');
+            } catch (error) {
+                setUpdateStatus(`Copy failed: ${error?.message || error}`);
+            }
+        });
+        editorPerfClearBtn?.addEventListener('click', () => {
+            perf.clear();
+            perf.record('perf.cleared');
+            refreshEditorPerfPanel();
+        });
+        editorPerfCloseBtn?.addEventListener('click', () => setEditorPerfEnabled(false));
+
+        function runEditorInputSideEffects() {
+            const end = perf.startSpan('editor.input.batch', {
+                chars: editor.value.length,
+                gen: editorEditGeneration
+            });
+            scheduleEditorMetrics();
+            scheduleEditorHistory();
+            refreshFindHighlights({ source: 'editor-input' });
+            scheduleInputPreviewRender();
+            scheduleDocumentPersistence();
+            scheduleDocumentOutlineRefresh({ rebuild: true });
+            end();
+        }
+
+        function scheduleEditorInputSideEffects() {
+            if (editorInputFrame != null) return;
+            editorInputFrame = requestAnimationFrame(() => {
+                editorInputFrame = null;
+                runEditorInputSideEffects();
+            });
+        }
 
         let editorHistory = [];
         let editorHistoryIndex = -1;
@@ -374,6 +486,10 @@ const maxRecentFilePaths = 10;
         function pushEditorHistory() {
             if (restoringEditorHistory) return;
 
+            const end = perf.startSpan('editor.history.push', {
+                chars: editor.value.length,
+                gen: editorEditGeneration
+            });
             const snapshot = editorSnapshot();
             const current = editorHistory[editorHistoryIndex];
             if (
@@ -381,6 +497,7 @@ const maxRecentFilePaths = 10;
                 current.selectionStart === snapshot.selectionStart &&
                 current.selectionEnd === snapshot.selectionEnd
             ) {
+                end({ skipped: true });
                 return;
             }
 
@@ -392,6 +509,7 @@ const maxRecentFilePaths = 10;
             }
 
             editorHistoryIndex = editorHistory.length - 1;
+            end({ depth: editorHistory.length });
         }
 
         function scheduleEditorHistory() {
@@ -560,6 +678,7 @@ const maxRecentFilePaths = 10;
         }
 
         function renderDocumentOutline(headings = collectDocumentHeadings(editor.value)) {
+            const end = perf.startSpan('editor.outline.render', { chars: editor.value.length });
             documentHeadings = headings;
             const hasContent = shouldShowDocumentOutline(headings);
             const shown = isOutlinePaneShown(hasContent);
@@ -569,9 +688,13 @@ const maxRecentFilePaths = 10;
 
             if (!hasContent) {
                 documentOutlineList.replaceChildren();
+                end({ headings: 0, shown: false });
                 return;
             }
-            if (!shown) return;
+            if (!shown) {
+                end({ headings: headings.length, shown: false });
+                return;
+            }
 
             const activeIndex = activeOutlineHeadingIndex(headings);
             const fragment = document.createDocumentFragment();
@@ -598,6 +721,7 @@ const maxRecentFilePaths = 10;
 
             const activeItem = documentOutlineList.querySelector('.document-outline-item.is-active');
             activeItem?.scrollIntoView({ block: 'nearest' });
+            end({ headings: headings.length, shown: isOutlinePaneShown(hasContent) });
         }
 
         function scheduleDocumentOutlineRefresh({ rebuild = true } = {}) {
@@ -1261,30 +1385,105 @@ function hideDocumentAlertBanner() {
     documentAlertMode = null;
     pendingExternalFile = null;
     pendingRecoverySnapshot = null;
+    pendingReloadFile = null;
     documentAlertBanner?.classList.add('hidden');
+    documentAlertDiffWrap?.classList.add('hidden');
+    if (documentAlertSummary) documentAlertSummary.textContent = '';
+}
+
+function renderDocumentAlertDiff(leftText, rightText) {
+    const preview = buildDocumentDiffPreview(leftText, rightText);
+    if (documentAlertSummary) {
+        documentAlertSummary.textContent = preview.summaryText;
+    }
+    if (!documentAlertDiff || !documentAlertDiffWrap) return preview;
+
+    documentAlertDiff.replaceChildren();
+    if (!preview.lines.length) {
+        documentAlertDiffWrap.classList.add('hidden');
+        return preview;
+    }
+
+    documentAlertDiffWrap.classList.remove('hidden');
+    for (const line of preview.lines) {
+        const row = document.createElement('span');
+        row.className = 'document-alert-diff-line';
+        if (line.type === 'add') {
+            row.classList.add('is-add');
+            row.textContent = `+ ${line.text}`;
+        } else if (line.type === 'del') {
+            row.classList.add('is-del');
+            row.textContent = `- ${line.text}`;
+        } else if (line.type === 'more') {
+            row.classList.add('is-more');
+            row.textContent = line.text;
+        } else {
+            row.classList.add('is-ctx');
+            row.textContent = `  ${line.text}`;
+        }
+        documentAlertDiff.appendChild(row);
+    }
+    return preview;
+}
+
+function showDocumentConflictBanner({
+    mode,
+    message,
+    leftContent,
+    rightContent,
+    payload = null
+}) {
+    if (!documentAlertBanner) return;
+    const copy = describeConflictAction(mode);
+    documentAlertMode = mode;
+    pendingExternalFile = mode === 'disk-changed' ? payload : null;
+    pendingRecoverySnapshot = mode === 'recovery' ? payload : null;
+    pendingReloadFile = mode === 'reload' ? payload : null;
+
+    if (documentAlertTitle) documentAlertTitle.textContent = copy.title;
+    if (documentAlertMessage) documentAlertMessage.textContent = message;
+    if (documentAlertPrimaryBtn) documentAlertPrimaryBtn.textContent = copy.primaryLabel;
+    if (documentAlertSecondaryBtn) {
+        documentAlertSecondaryBtn.textContent = copy.secondaryLabel;
+        documentAlertSecondaryBtn.classList.toggle('hidden', mode === 'reload');
+    }
+    documentAlertDismissBtn?.classList.toggle('hidden', mode === 'reload');
+
+    if (documentAlertDiffLeftLabel) {
+        documentAlertDiffLeftLabel.textContent = copy.leftLabel;
+    }
+    if (documentAlertDiffRightLabel) {
+        documentAlertDiffRightLabel.textContent = copy.rightLabel;
+    }
+
+    renderDocumentAlertDiff(leftContent, rightContent);
+    documentAlertBanner.classList.remove('hidden');
 }
 
 function showDocumentAlertBanner(mode, payload) {
-    if (!documentAlertBanner || !documentAlertMessage) return;
-    documentAlertMode = mode;
     if (mode === 'disk-changed') {
-        pendingExternalFile = payload;
         const label = basename(payload?.path || currentFilePath || 'this file');
-        documentAlertMessage.textContent =
-            `"${label}" changed on disk while you have unsaved edits. Reloading will discard your in-editor changes.`;
-        documentAlertPrimaryBtn.textContent = 'Reload from disk';
-        documentAlertSecondaryBtn.textContent = 'Keep editing';
-        documentAlertSecondaryBtn.classList.remove('hidden');
-    } else if (mode === 'recovery') {
-        pendingRecoverySnapshot = payload;
-        const label = basename(payload?.path || currentFilePath || 'this document');
-        documentAlertMessage.textContent =
-            `Unsaved recovery data is available for "${label}". Restore it to continue where you left off.`;
-        documentAlertPrimaryBtn.textContent = 'Restore recovery';
-        documentAlertSecondaryBtn.textContent = 'Keep disk version';
-        documentAlertSecondaryBtn.classList.remove('hidden');
+        showDocumentConflictBanner({
+            mode,
+            message: `Another program saved changes to "${label}". Compare your unsaved edits with the on-disk file before choosing.`,
+            leftContent: editor.value,
+            rightContent: payload.content,
+            payload
+        });
+        return;
     }
-    documentAlertBanner.classList.remove('hidden');
+
+    if (mode === 'recovery') {
+        const label = basename(payload?.path || currentFilePath || 'this document');
+        const diskContent = payload?.diskContent ?? editor.value;
+        showDocumentConflictBanner({
+            mode,
+            message: `Lumina found an unsaved recovery snapshot for "${label}" from a previous session.`,
+            leftContent: payload.content,
+            rightContent: diskContent,
+            payload
+        });
+    }
 }
 
 async function applyPendingExternalFile() {
@@ -1302,14 +1501,38 @@ async function applyPendingRecoverySnapshot() {
     const recovery = pendingRecoverySnapshot;
     if (!recovery) return;
     hideDocumentAlertBanner();
-    editor.value = recovery.content;
-    editorEditGeneration = 0;
-    resetEditorHistory();
+    setEditorContent(
+        recovery.content,
+        currentFilePath ? `Editing: ${currentFilePath}` : 'Untitled document',
+        currentFilePath || ''
+    );
     syncDocumentDirtyFromContent();
-    updateEditorMetrics();
-    schedulePreviewUpdate();
+    await deleteRecoveryForCurrentFile();
     editor.focus();
-    setUpdateStatus('Restored unsaved recovery data.');
+    setUpdateStatus('Restored the recovered draft into the editor.');
+}
+
+async function applyReloadFromDisk(file) {
+    if (!file) return;
+    hideDocumentAlertBanner();
+    currentFileMtime = file.modifiedMs ?? 0;
+    setEditorContent(file.content, `Editing: ${file.path}`, file.path);
+    markDocumentPersisted(file.content);
+    await deleteRecoveryForCurrentFile();
+    editor.focus();
+    setUpdateStatus(`Reloaded ${basename(file.path)} from disk.`);
+}
+
+async function refreshEditorFromDisk(file, { identical = false } = {}) {
+    currentFileMtime = file.modifiedMs ?? currentFileMtime;
+    if (!identical) {
+        markDocumentPersisted(file.content);
+    } else {
+        markDocumentPersisted(editor.value);
+    }
+    schedulePreviewUpdate();
+    renderDocumentOutline();
+    editor.focus();
 }
 
 async function dismissRecoverySnapshot() {
@@ -1331,7 +1554,7 @@ async function maybeOfferRecoveryRestore(path, diskContent) {
             await invoke('delete_recovery_snapshot', { path: recoveryPathForDocument(path) });
             return;
         }
-        showDocumentAlertBanner('recovery', recovery);
+        showDocumentAlertBanner('recovery', { ...recovery, diskContent });
     } catch (_) {}
 }
 
@@ -1641,11 +1864,16 @@ async function openRecentFile(recentIndex = null) {
         }
 
         async function renderWindowedPreview(normalizedValue, sourceTokens) {
-            const cursorLine = sourceLineAtOffset(editor.selectionStart);
-            const window = selectPreviewTokenWindow(sourceTokens, cursorLine);
+            const window = selectPreviewTokenWindow(
+                sourceTokens,
+                sourceLineAtOffset(editor.selectionStart)
+            );
             previewWindowStartLine = window.startLine;
 
             const fragment = document.createDocumentFragment();
+            const bodyHost = document.createElement('div');
+            bodyHost.className = 'preview-window-body';
+
             if (window.linesBefore > 0) {
                 appendPreviewWindowSpacer(fragment, {
                     position: 'top',
@@ -1653,8 +1881,6 @@ async function openRecentFile(recentIndex = null) {
                 });
             }
 
-            const bodyHost = document.createElement('div');
-            bodyHost.className = 'preview-window-body';
             await renderMarkdownInto(bodyHost, window.markdown);
             while (bodyHost.firstChild) {
                 fragment.appendChild(bodyHost.firstChild);
@@ -1668,11 +1894,15 @@ async function openRecentFile(recentIndex = null) {
             }
 
             preview.replaceChildren(fragment);
+            rebuildPreviewLineMap(sourceTokens);
             prevPreviewTokens = sourceTokens;
             prevPreviewNormalized = normalizedValue;
         }
 
         async function executePreviewRender() {
+            const end = perf.startSpan('editor.preview.render', {
+                chars: editor.value.length
+            });
             const rawValue = editor.value;
             // Records what the preview currently reflects so the input-path
             // render can skip redundant full rebuilds. Set here (the single
@@ -1723,11 +1953,17 @@ async function openRecentFile(recentIndex = null) {
             } catch {
                 handledIncrementally = false;
             }
-            if (bailIfSuperseded()) return;
+            if (bailIfSuperseded()) {
+                end({ superseded: true });
+                return;
+            }
             if (!handledIncrementally) {
                 previewWindowStartLine = 0;
                 await renderMarkdownInto(preview, rawValue);
-                if (bailIfSuperseded()) return;
+                if (bailIfSuperseded()) {
+                    end({ superseded: true, mode: 'full' });
+                    return;
+                }
                 try {
                     prevPreviewTokens = marked.lexer(normalizedValue);
                     prevPreviewNormalized = normalizedValue;
@@ -1752,6 +1988,14 @@ async function openRecentFile(recentIndex = null) {
                 clearPreviewFindHighlights();
                 syncPreviewScrollToEditor();
             }
+            end({
+                mode: handledIncrementally
+                    ? largeDocument
+                        ? 'windowed'
+                        : 'incremental'
+                    : 'full',
+                chars: rawValue.length
+            });
         }
 
         let editorVisualLineMap = [];
@@ -1824,6 +2068,10 @@ async function openRecentFile(recentIndex = null) {
         // Pixel offset of a source character index in the editor viewport, accounting
         // for soft-wrapped visual rows (hard newline count alone is not enough).
         function measureEditorOffsetTop(offset) {
+            const end = perf.startSpan('editor.measure_offset', {
+                offset,
+                chars: editor.value.length
+            });
             const value = editor.value;
             const clamped = Math.max(0, Math.min(offset, value.length));
             const paddingTop = parseFloat(getComputedStyle(editor).paddingTop) || 0;
@@ -1842,7 +2090,9 @@ async function openRecentFile(recentIndex = null) {
 
             editorScrollMeasure.replaceChildren(fragment);
             markEditorVisualLineMapDirty();
-            return Math.max(0, marker.offsetTop - paddingTop);
+            const top = Math.max(0, marker.offsetTop - paddingTop);
+            end();
+            return top;
         }
 
         // Fractional source line currently sitting at the top of the editor
@@ -3746,10 +3996,17 @@ async function replaceAgentSelectionFromClipboard() {
     }
 }
 
+let agentAutoSizeFrame = null;
+
 function autoSizeAgentInput() {
     if (!agentInput) return;
-    agentInput.style.height = 'auto';
-    agentInput.style.height = `${agentInput.scrollHeight}px`;
+    if (agentAutoSizeFrame != null) return;
+    agentAutoSizeFrame = requestAnimationFrame(() => {
+        agentAutoSizeFrame = null;
+        if (!agentInput) return;
+        agentInput.style.height = 'auto';
+        agentInput.style.height = `${agentInput.scrollHeight}px`;
+    });
 }
 
 function wireComposerImagePaste(input, pastedImagePaths, counterRef, autoSizeFn) {
@@ -3783,7 +4040,8 @@ function wireAgentInputBar() {
             event.preventDefault();
             const text = agentInput.value;
             agentInput.value = '';
-            autoSizeAgentInput();
+            agentInput.style.height = 'auto';
+            agentAutoSizeFrame = null;
             void sendAgentMessage(text);
         }
     });
@@ -3791,7 +4049,8 @@ function wireAgentInputBar() {
         event.preventDefault();
         const text = agentInput.value;
         agentInput.value = '';
-        autoSizeAgentInput();
+        agentInput.style.height = 'auto';
+        agentAutoSizeFrame = null;
         void sendAgentMessage(text);
     });
 }
@@ -3831,10 +4090,17 @@ async function handleComposerImagePaste(file, input, pastedImagePaths, counterRe
 
 // Grows the input box with its content up to the CSS max-height. The transcript
 // above is a flex child, so it shrinks to make room automatically.
+let claudeAutoSizeFrame = null;
+
 function autoSizeClaudeInput() {
     if (!claudeInput) return;
-    claudeInput.style.height = 'auto';
-    claudeInput.style.height = `${claudeInput.scrollHeight}px`;
+    if (claudeAutoSizeFrame != null) return;
+    claudeAutoSizeFrame = requestAnimationFrame(() => {
+        claudeAutoSizeFrame = null;
+        if (!claudeInput) return;
+        claudeInput.style.height = 'auto';
+        claudeInput.style.height = `${claudeInput.scrollHeight}px`;
+    });
 }
 
 function wireClaudeInputBar() {
@@ -3854,7 +4120,8 @@ function wireClaudeInputBar() {
             event.preventDefault();
             const text = claudeInput.value;
             claudeInput.value = '';
-            autoSizeClaudeInput();
+            claudeInput.style.height = 'auto';
+            claudeAutoSizeFrame = null;
             void sendClaudeMessage(text);
         }
     });
@@ -3863,7 +4130,8 @@ function wireClaudeInputBar() {
         event.preventDefault();
         const text = claudeInput.value;
         claudeInput.value = '';
-        autoSizeClaudeInput();
+        claudeInput.style.height = 'auto';
+        claudeAutoSizeFrame = null;
         void sendClaudeMessage(text);
     });
 }
@@ -5255,23 +5523,17 @@ async function reloadCurrentFile() {
     try {
         const file = await invoke('open_file_path', { path });
         if (file.content === editor.value) {
-            currentFileMtime = file.modifiedMs ?? currentFileMtime;
-            markDocumentPersisted(editor.value);
-            setUpdateStatus('Already up to date with disk.');
+            await refreshEditorFromDisk(file, { identical: true });
+            setUpdateStatus(`Refreshed ${basename(path)} — editor already matches disk.`);
             return;
         }
-        // The editor differs from disk — confirm before throwing away in-editor
-        // edits, since reload is a one-way discard.
-        if (!window.confirm(`Reload "${basename(path)}" from disk?\n\nUnsaved changes in the editor will be lost.`)) {
-            return;
-        }
-        hideDocumentAlertBanner();
-        currentFileMtime = file.modifiedMs ?? 0;
-        setEditorContent(file.content, `Editing: ${file.path}`, file.path);
-        markDocumentPersisted(file.content);
-        await deleteRecoveryForCurrentFile();
-        editor.focus();
-        setUpdateStatus(`Reloaded ${basename(path)} from disk.`);
+        showDocumentConflictBanner({
+            mode: 'reload',
+            message: `"${basename(path)}" on disk differs from what's in the editor. Review the diff, then choose which version to keep.`,
+            leftContent: editor.value,
+            rightContent: file.content,
+            payload: file
+        });
     } catch (error) {
         setUpdateStatus(`Unable to reload ${basename(path)}: ${error?.message || error}`);
     }
@@ -5283,12 +5545,15 @@ reloadFileBtn.addEventListener('click', () => {
 
 documentAlertPrimaryBtn?.addEventListener('click', () => {
     if (documentAlertMode === 'disk-changed') {
-        if (!window.confirm('Reload from disk and discard your unsaved edits?')) return;
         void applyPendingExternalFile();
         return;
     }
     if (documentAlertMode === 'recovery') {
         void applyPendingRecoverySnapshot();
+        return;
+    }
+    if (documentAlertMode === 'reload') {
+        void applyReloadFromDisk(pendingReloadFile);
     }
 });
 
@@ -5303,6 +5568,11 @@ documentAlertSecondaryBtn?.addEventListener('click', () => {
     }
     if (documentAlertMode === 'recovery') {
         void dismissRecoverySnapshot();
+        return;
+    }
+    if (documentAlertMode === 'reload') {
+        hideDocumentAlertBanner();
+        setUpdateStatus('Reload canceled.');
     }
 });
 
@@ -5475,14 +5745,14 @@ document.addEventListener('click', (event) => {
         });
 
         editor.addEventListener('input', () => {
+            touchEditorInteraction();
             markEditorVisualLineMapDirty();
             markEditorEdited();
-            scheduleEditorMetrics();
-            scheduleEditorHistory();
-            refreshFindHighlights();
-            scheduleInputPreviewRender();
-            scheduleDocumentPersistence();
-            scheduleDocumentOutlineRefresh({ rebuild: true });
+            perf.record('editor.input', {
+                chars: editor.value.length,
+                gen: editorEditGeneration
+            });
+            scheduleEditorInputSideEffects();
         });
 
         editor.addEventListener('select', () => {
@@ -5574,11 +5844,42 @@ document.addEventListener('click', (event) => {
         }
 
         function replaceEditorRange(start, end, text, selectionStart, selectionEnd = selectionStart) {
+            const endSpan = perf.startSpan('editor.replace_range', {
+                start,
+                end,
+                chars: editor.value.length
+            });
             const value = editor.value;
+            const length = value.length;
+            const safeStart = Math.max(0, Math.min(start, length));
+            const safeEnd = Math.max(safeStart, Math.min(end, length));
+            const nextValue = value.slice(0, safeStart) + text + value.slice(safeEnd);
+            if (nextValue === value) {
+                endSpan({ skipped: true });
+                return;
+            }
+
             pushEditorHistory();
-            editor.value = value.slice(0, start) + text + value.slice(end);
-            pushEditorHistory();
-            notifyEditorContentChanged(selectionStart, selectionEnd);
+            editor.value = nextValue;
+            const safeSelectionStart = Math.max(
+                0,
+                Math.min(selectionStart, nextValue.length)
+            );
+            const safeSelectionEnd = Math.max(
+                safeSelectionStart,
+                Math.min(selectionEnd, nextValue.length)
+            );
+            editor.setSelectionRange(safeSelectionStart, safeSelectionEnd);
+            markEditorVisualLineMapDirty();
+            markEditorEdited();
+            scheduleEditorMetrics();
+            scheduleInputPreviewRender();
+            scheduleDocumentPersistence();
+            scheduleDocumentOutlineRefresh({ rebuild: true });
+            endSpan({
+                clamped: safeStart !== start || safeEnd !== end,
+                nextChars: nextValue.length
+            });
         }
 
         let findBarVisible = false;
@@ -5598,10 +5899,15 @@ document.addEventListener('click', (event) => {
         }
 
         function runFindRefresh({ reveal = false } = {}) {
-            if (!findBarVisible) return;
+            const end = perf.startSpan('editor.find.refresh', { reveal });
+            if (!findBarVisible) {
+                end({ skipped: true });
+                return;
+            }
             const needle = findNeedle();
             if (!needle) {
                 updateFindMatchStatus();
+                end({ empty: true });
                 return;
             }
             if (reveal) {
@@ -5609,13 +5915,15 @@ document.addEventListener('click', (event) => {
             } else {
                 updateFindMatchStatus();
             }
+            end({ chars: editor.value.length });
         }
 
         // Find/replace does a full-document scan plus highlight/preview DOM work.
         // Running that synchronously on every keystroke blocks the find input and
         // can queue characters that spill into whatever field gets focus next.
-        function scheduleFindRefresh({ reveal = false, immediate = false } = {}) {
+        function scheduleFindRefresh({ reveal = false, immediate = false, deferMs = null } = {}) {
             findRefreshPending.reveal = findRefreshPending.reveal || reveal;
+            const delay = immediate ? 0 : deferMs ?? findRefreshDebounceMs;
             if (immediate) {
                 cancelScheduledFindRefresh();
                 const pending = { ...findRefreshPending };
@@ -5629,7 +5937,7 @@ document.addEventListener('click', (event) => {
                 const pending = { ...findRefreshPending };
                 findRefreshPending = { reveal: false };
                 runFindRefresh(pending);
-            }, findRefreshDebounceMs);
+            }, delay);
         }
 
         function flushScheduledFindRefresh() {
@@ -5694,23 +6002,31 @@ document.addEventListener('click', (event) => {
         }
 
         function collectFindMatches(needle = findNeedle(), haystack = editor.value) {
+            const end = perf.startSpan('editor.find.collect', {
+                chars: haystack.length,
+                needleLength: needle?.length ?? 0
+            });
             const regex = buildFindRegex(needle);
-            if (!regex) return [];
+            if (!regex) {
+                end({ matches: 0, skipped: true });
+                return [];
+            }
 
             const matches = [];
             let match;
             // Cap iterations as a guard against pathological regexes on big docs.
             while ((match = regex.exec(haystack)) !== null) {
                 const start = match.index;
-                const end = start + match[0].length;
+                const endIndex = start + match[0].length;
                 if (match[0].length > 0) {
-                    matches.push({ start, end });
+                    matches.push({ start, end: endIndex });
                 }
                 // Always advance to avoid infinite loops on zero-width matches.
-                regex.lastIndex = Math.max(end, start + 1);
+                regex.lastIndex = Math.max(endIndex, start + 1);
                 if (matches.length > 50000) break;
             }
 
+            end({ matches: matches.length });
             return matches;
         }
 
@@ -5896,6 +6212,9 @@ document.addEventListener('click', (event) => {
         }
 
         function updateFindMatchStatus(precomputedMatches = null) {
+            const end = perf.startSpan('editor.find.update_status', {
+                chars: editor.value.length
+            });
             const needle = findNeedle();
             if (!needle) {
                 findMatchStatus.textContent = '';
@@ -5904,6 +6223,7 @@ document.addEventListener('click', (event) => {
                 renderFindHighlights([], -1);
                 clearPreviewFindHighlights();
                 updateFindActiveVisual(false);
+                end({ matches: 0 });
                 return;
             }
 
@@ -5914,6 +6234,7 @@ document.addEventListener('click', (event) => {
                 renderFindHighlights([], -1);
                 clearPreviewFindHighlights();
                 updateFindActiveVisual(false);
+                end({ invalid: true });
                 return;
             }
             findInputWrap.classList.remove('is-invalid');
@@ -5925,6 +6246,7 @@ document.addEventListener('click', (event) => {
                 renderFindHighlights([], -1);
                 clearPreviewFindHighlights();
                 updateFindActiveVisual(false);
+                end({ matches: 0 });
                 return;
             }
 
@@ -5935,14 +6257,20 @@ document.addEventListener('click', (event) => {
             renderFindHighlights(matches, index);
             applyPreviewFindHighlights(matches, index);
             updateFindActiveVisual(true);
+            end({ matches: matches.length, index });
         }
 
         // VSCode-style "highlight every match" overlay. Rebuilds the mirror
         // layer's HTML with <mark> spans over each match; the current match gets
         // a stronger colour. Kept in sync with the textarea's scroll position.
         function renderFindHighlights(matches, currentIndex) {
+            const end = perf.startSpan('editor.find.render_highlights', {
+                chars: editor.value.length,
+                matches: matches.length
+            });
             if (!findBarVisible || !matches.length) {
                 editorHighlightLayer.textContent = '';
+                end({ skipped: true });
                 return;
             }
 
@@ -5950,16 +6278,17 @@ document.addEventListener('click', (event) => {
             let html = '';
             let cursor = 0;
             for (let i = 0; i < matches.length; i += 1) {
-                const { start, end } = matches[i];
+                const { start, end: matchEnd } = matches[i];
                 if (start < cursor) continue;
                 html += escapeHtml(value.slice(cursor, start));
                 const cls = i === currentIndex ? ' class="find-current"' : '';
-                html += `<mark${cls}>${escapeHtml(value.slice(start, end))}</mark>`;
-                cursor = end;
+                html += `<mark${cls}>${escapeHtml(value.slice(start, matchEnd))}</mark>`;
+                cursor = matchEnd;
             }
             html += escapeHtml(value.slice(cursor));
             editorHighlightLayer.innerHTML = html;
             syncHighlightLayerScroll();
+            end();
         }
 
         function syncHighlightLayerScroll() {
@@ -5971,12 +6300,16 @@ document.addEventListener('click', (event) => {
             editorHighlightLayer.style.paddingBottom = scrollbarHeight ? `${scrollbarHeight}px` : '';
         }
 
-        function refreshFindHighlights() {
+        function refreshFindHighlights({ source = 'unknown' } = {}) {
             if (!findBarVisible) {
                 editorHighlightLayer.textContent = '';
                 return;
             }
-            scheduleFindRefresh();
+            let deferMs = null;
+            if (source === 'editor-input') {
+                deferMs = isLargeDocument(editor.value.length) ? 900 : 350;
+            }
+            scheduleFindRefresh({ reveal: false, deferMs });
         }
 
         function shouldFocusEditorForFind() {
@@ -6020,10 +6353,36 @@ document.addEventListener('click', (event) => {
 
         function selectFindMatch(
             match,
-            { focusEditor, matches: precomputedMatches = null, matchIndex: precomputedIndex = null } = {}
+            {
+                focusEditor,
+                matches: precomputedMatches = null,
+                matchIndex: precomputedIndex = null,
+                force = false
+            } = {}
         ) {
             if (!match) return false;
 
+            if (
+                !force &&
+                document.activeElement === editor &&
+                isEditorInteractionRecent()
+            ) {
+                perf.record('editor.find.select_skipped', {
+                    detail: 'recent-editor-input',
+                    start: match.start,
+                    end: match.end
+                });
+                if (precomputedIndex != null) {
+                    findMatchIndex = precomputedIndex;
+                }
+                updateFindMatchStatus(precomputedMatches);
+                return false;
+            }
+
+            const end = perf.startSpan('editor.find.select_match', {
+                start: match.start,
+                end: match.end
+            });
             const focus = focusEditor ?? shouldFocusEditorForFind();
             suppressFindSelectHandler = true;
             editor.setSelectionRange(match.start, match.end);
@@ -6043,6 +6402,7 @@ document.addEventListener('click', (event) => {
                 );
             }
             updateFindMatchStatus(precomputedMatches);
+            end();
             return true;
         }
 
@@ -6067,7 +6427,8 @@ document.addEventListener('click', (event) => {
             return selectFindMatch(matches[targetIndex], {
                 focusEditor,
                 matches,
-                matchIndex: targetIndex
+                matchIndex: targetIndex,
+                force: true
             });
         }
 
@@ -6093,7 +6454,8 @@ document.addEventListener('click', (event) => {
             return selectFindMatch(matches[targetIndex], {
                 focusEditor,
                 matches,
-                matchIndex: targetIndex
+                matchIndex: targetIndex,
+                force: true
             });
         }
 

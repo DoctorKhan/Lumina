@@ -294,7 +294,10 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /function markEditorEdited/);
   assert.match(main, /function updateOutlineActiveItem/);
   assert.match(html, /id="toggle-outline-btn"/);
-  assert.match(main, /function toggleOutlinePane/);
+  assert.match(main, /from '\.\/editorPerf\.js'/);
+  assert.match(main, /function setEditorPerfEnabled/);
+  assert.match(html, /id="editor-perf-panel"/);
+  assert.match(main, /editor\.find\.select_skipped/);
   assert.match(main, /outlinePaneVisible/);
   assert.match(main, /from '\.\/largeDocument\.js'/);
   assert.match(main, /function renderWindowedPreview/);
@@ -392,5 +395,8 @@ test("autosave, recovery snapshots, and safe external reload are wired", () => {
   assert.match(main, /shouldBlockExternalReload\(/);
   assert.match(main, /flushDocumentPersistence\(\)/);
   assert.match(main, /maybeOfferRecoveryRestore\(/);
-  assert.match(html, /id="document-alert-banner"/);
+  assert.match(main, /function showDocumentConflictBanner/);
+  assert.match(main, /from '\.\/documentDiff\.js'/);
+  assert.match(html, /id="document-alert-diff"/);
+  assert.match(main, /function refreshEditorFromDisk/);
 });
