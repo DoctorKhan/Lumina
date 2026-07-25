@@ -61,7 +61,6 @@ import {
         } from './agentChatParse.js';
         import {
             autosaveDebounceMs,
-            isDocumentDirty as documentIsDirty,
             recoveryDebounceMs,
             recoveryPathForDocument,
             shouldBlockExternalReload,
@@ -70,8 +69,11 @@ import {
         } from './documentRecovery.js';
         import {
             EDITOR_METRICS_DEBOUNCE_MS_LARGE,
+            editorDirtyUiDebounceMsForSize,
+            editorHistoryDebounceMsForSize,
             editorHistoryLimitForSize,
             isLargeDocument,
+            outlineRefreshDebounceMsForSize,
             PREVIEW_WINDOW_LINE_HEIGHT_PX,
             previewInputDebounceMsForSize,
             selectPreviewTokenWindow
@@ -89,6 +91,7 @@ import {
         const preview = document.getElementById('preview');
         const documentOutline = document.getElementById('document-outline');
         const documentOutlineList = document.getElementById('document-outline-list');
+        const toggleOutlineBtn = document.getElementById('toggle-outline-btn');
         const charCount = document.getElementById('char-count');
 const fixLatexBtn = document.getElementById('fix-latex-btn');
 const reloadFileBtn = document.getElementById('reload-file-btn');
@@ -344,18 +347,21 @@ const maxRecentFilePaths = 10;
 
         editor.value = initialValue;
         let lastPersistedContent = editor.value;
+        let documentDirtyFlag = false;
+        let editorEditGeneration = 0;
 
-        const editorHistoryLimit = 200;
         let editorHistory = [];
         let editorHistoryIndex = -1;
         let restoringEditorHistory = false;
         let editorHistoryTimeout = null;
+        let dirtyIndicatorTimer = null;
 
         function editorSnapshot() {
             return {
                 value: editor.value,
                 selectionStart: editor.selectionStart,
-                selectionEnd: editor.selectionEnd
+                selectionEnd: editor.selectionEnd,
+                generation: editorEditGeneration
             };
         }
 
@@ -370,9 +376,11 @@ const maxRecentFilePaths = 10;
 
             const snapshot = editorSnapshot();
             const current = editorHistory[editorHistoryIndex];
-            if (current?.value === snapshot.value &&
+            if (
+                current?.generation === snapshot.generation &&
                 current.selectionStart === snapshot.selectionStart &&
-                current.selectionEnd === snapshot.selectionEnd) {
+                current.selectionEnd === snapshot.selectionEnd
+            ) {
                 return;
             }
 
@@ -388,7 +396,10 @@ const maxRecentFilePaths = 10;
 
         function scheduleEditorHistory() {
             clearTimeout(editorHistoryTimeout);
-            editorHistoryTimeout = setTimeout(pushEditorHistory, 250);
+            editorHistoryTimeout = setTimeout(
+                pushEditorHistory,
+                editorHistoryDebounceMsForSize(editor.value.length)
+            );
         }
 
         function restoreEditorHistory(index) {
@@ -398,8 +409,10 @@ const maxRecentFilePaths = 10;
             restoringEditorHistory = true;
             editor.value = snapshot.value;
             editor.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+            editorEditGeneration = snapshot.generation ?? editorEditGeneration;
             editorHistoryIndex = index;
             restoringEditorHistory = false;
+            syncDocumentDirtyFromContent();
             schedulePreviewUpdate();
             return true;
         }
@@ -427,6 +440,28 @@ const maxRecentFilePaths = 10;
         let previewWindowStartLine = 0;
         let outlineRefreshTimer = null;
         let documentHeadings = [];
+        const outlineVisibleKey = 'lumina-outline-visible';
+        let outlinePaneVisible = localStorage.getItem(outlineVisibleKey) !== 'false';
+
+        function syncOutlineToggleButton(hasContent = shouldShowDocumentOutline(documentHeadings)) {
+            if (!toggleOutlineBtn) return;
+            toggleOutlineBtn.classList.toggle('hidden', !hasContent);
+            toggleOutlineBtn.setAttribute('aria-pressed', String(outlinePaneVisible && hasContent));
+            toggleOutlineBtn.title = outlinePaneVisible ? 'Hide outline' : 'Show outline';
+        }
+
+        function isOutlinePaneShown(hasContent = shouldShowDocumentOutline(documentHeadings)) {
+            return hasContent && outlinePaneVisible;
+        }
+
+        function toggleOutlinePane(force) {
+            outlinePaneVisible = typeof force === 'boolean' ? force : !outlinePaneVisible;
+            localStorage.setItem(outlineVisibleKey, String(outlinePaneVisible));
+            syncOutlineToggleButton();
+            renderDocumentOutline();
+        }
+
+        toggleOutlineBtn?.addEventListener('click', () => toggleOutlinePane());
 
         // Cache backing incremental preview rendering: the normalized source that
         // produced the current preview DOM and its top-level lexer tokens. The
@@ -513,16 +548,30 @@ const maxRecentFilePaths = 10;
             return active;
         }
 
+        function updateOutlineActiveItem() {
+            if (!documentHeadings.length || documentOutline?.classList.contains('hidden')) return;
+            const activeIndex = activeOutlineHeadingIndex();
+            const items = documentOutlineList?.querySelectorAll('.document-outline-item');
+            if (!items?.length) return;
+            items.forEach((item, index) => {
+                item.classList.toggle('is-active', index === activeIndex);
+            });
+            items[activeIndex]?.scrollIntoView({ block: 'nearest' });
+        }
+
         function renderDocumentOutline(headings = collectDocumentHeadings(editor.value)) {
             documentHeadings = headings;
-            const visible = shouldShowDocumentOutline(headings);
-            documentOutline?.classList.toggle('hidden', !visible);
+            const hasContent = shouldShowDocumentOutline(headings);
+            const shown = isOutlinePaneShown(hasContent);
+            syncOutlineToggleButton(hasContent);
+            documentOutline?.classList.toggle('hidden', !shown);
             if (!documentOutlineList) return;
 
-            if (!visible) {
+            if (!hasContent) {
                 documentOutlineList.replaceChildren();
                 return;
             }
+            if (!shown) return;
 
             const activeIndex = activeOutlineHeadingIndex(headings);
             const fragment = document.createDocumentFragment();
@@ -551,12 +600,20 @@ const maxRecentFilePaths = 10;
             activeItem?.scrollIntoView({ block: 'nearest' });
         }
 
-        function scheduleDocumentOutlineRefresh() {
+        function scheduleDocumentOutlineRefresh({ rebuild = true } = {}) {
+            if (!rebuild && !isOutlinePaneShown()) return;
             clearTimeout(outlineRefreshTimer);
-            outlineRefreshTimer = setTimeout(() => {
+            const delay = rebuild ? outlineRefreshDebounceMsForSize(editor.value.length) : 0;
+            const run = () => {
                 outlineRefreshTimer = null;
-                renderDocumentOutline();
-            }, isLargeDocument(editor.value.length) ? 400 : 120);
+                if (rebuild) renderDocumentOutline();
+                else updateOutlineActiveItem();
+            };
+            if (delay === 0) {
+                run();
+                return;
+            }
+            outlineRefreshTimer = setTimeout(run, delay);
         }
 
         function scheduleEditorMetrics() {
@@ -825,6 +882,7 @@ const maxRecentFilePaths = 10;
 
         function setEditorContent(content, label, fullPath = '') {
             editor.value = content;
+            editorEditGeneration = 0;
             // Assigning .value moves the caret to the end; reset it so a
             // subsequent focus() doesn't scroll the textarea to the bottom.
             editor.setSelectionRange(0, 0);
@@ -832,6 +890,7 @@ const maxRecentFilePaths = 10;
             setFilenameLabel(label, fullPath);
             charCount.textContent = `${content.length} chars`;
             resetEditorHistory();
+            syncDocumentDirtyFromContent();
             schedulePreviewUpdate();
             renderDocumentOutline();
         }
@@ -1080,7 +1139,31 @@ function applyExternalFileUpdate(file) {
 }
 
 function isDocumentDirty() {
-    return documentIsDirty(editor.value, lastPersistedContent);
+    return documentDirtyFlag;
+}
+
+function syncDocumentDirtyFromContent() {
+    documentDirtyFlag = editor.value !== lastPersistedContent;
+    refreshDirtyIndicator();
+}
+
+function markEditorEdited() {
+    editorEditGeneration += 1;
+    documentDirtyFlag = true;
+    scheduleDirtyIndicatorRefresh();
+}
+
+function scheduleDirtyIndicatorRefresh() {
+    clearTimeout(dirtyIndicatorTimer);
+    const delay = editorDirtyUiDebounceMsForSize(editor.value.length);
+    if (delay === 0) {
+        refreshDirtyIndicator();
+        return;
+    }
+    dirtyIndicatorTimer = setTimeout(() => {
+        dirtyIndicatorTimer = null;
+        refreshDirtyIndicator();
+    }, delay);
 }
 
 function currentRecoveryPath() {
@@ -1096,6 +1179,7 @@ function refreshDirtyIndicator() {
 
 function markDocumentPersisted(content = editor.value) {
     lastPersistedContent = content;
+    documentDirtyFlag = false;
     refreshDirtyIndicator();
     if (!isDocumentDirty()) {
         hideDocumentAlertBanner();
@@ -1152,7 +1236,6 @@ async function performAutosave({ silent = true } = {}) {
 }
 
 function scheduleDocumentPersistence() {
-    refreshDirtyIndicator();
     scheduleRecoverySnapshot();
     if (!isDocumentDirty()) return;
     if (!currentFilePath) return;
@@ -1220,7 +1303,9 @@ async function applyPendingRecoverySnapshot() {
     if (!recovery) return;
     hideDocumentAlertBanner();
     editor.value = recovery.content;
+    editorEditGeneration = 0;
     resetEditorHistory();
+    syncDocumentDirtyFromContent();
     updateEditorMetrics();
     schedulePreviewUpdate();
     editor.focus();
@@ -5238,8 +5323,11 @@ fixLatexBtn.addEventListener('click', () => {
     const selEnd = editor.selectionEnd;
     pushEditorHistory();
     editor.value = fixed;
+    editorEditGeneration += 1;
+    documentDirtyFlag = true;
     editor.selectionStart = selStart;
     editor.selectionEnd = selEnd;
+    scheduleDirtyIndicatorRefresh();
     schedulePreviewUpdate();
     setUpdateStatus('LaTeX delimiters normalized.');
 });
@@ -5388,16 +5476,17 @@ document.addEventListener('click', (event) => {
 
         editor.addEventListener('input', () => {
             markEditorVisualLineMapDirty();
+            markEditorEdited();
             scheduleEditorMetrics();
             scheduleEditorHistory();
             refreshFindHighlights();
             scheduleInputPreviewRender();
             scheduleDocumentPersistence();
-            scheduleDocumentOutlineRefresh();
+            scheduleDocumentOutlineRefresh({ rebuild: true });
         });
 
         editor.addEventListener('select', () => {
-            scheduleDocumentOutlineRefresh();
+            scheduleDocumentOutlineRefresh({ rebuild: false });
             if (!findBarVisible || suppressFindSelectHandler) return;
             findMatchIndex = -1;
             scheduleFindRefresh();
@@ -5477,9 +5566,11 @@ document.addEventListener('click', (event) => {
         function notifyEditorContentChanged(selectionStart, selectionEnd = selectionStart) {
             editor.setSelectionRange(selectionStart, selectionEnd);
             markEditorVisualLineMapDirty();
-            updateEditorMetrics();
+            markEditorEdited();
+            scheduleEditorMetrics();
             scheduleInputPreviewRender();
             scheduleDocumentPersistence();
+            scheduleDocumentOutlineRefresh({ rebuild: true });
         }
 
         function replaceEditorRange(start, end, text, selectionStart, selectionEnd = selectionStart) {

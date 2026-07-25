@@ -5,7 +5,12 @@ export const PREVIEW_WINDOW_BLOCK_RADIUS = 30;
 export const PREVIEW_INPUT_DEBOUNCE_MS = 500;
 export const PREVIEW_INPUT_DEBOUNCE_MS_LARGE = 1800;
 export const EDITOR_METRICS_DEBOUNCE_MS_LARGE = 400;
-export const EDITOR_HISTORY_LIMIT_LARGE = 50;
+export const EDITOR_HISTORY_DEBOUNCE_MS = 250;
+export const EDITOR_HISTORY_DEBOUNCE_MS_LARGE = 900;
+export const EDITOR_DIRTY_UI_DEBOUNCE_MS_LARGE = 200;
+export const OUTLINE_REFRESH_DEBOUNCE_MS = 120;
+export const OUTLINE_REFRESH_DEBOUNCE_MS_LARGE = 800;
+export const EDITOR_HISTORY_LIMIT_LARGE = 30;
 export const EDITOR_HISTORY_LIMIT_DEFAULT = 200;
 export const PREVIEW_WINDOW_LINE_HEIGHT_PX = 26;
 
@@ -25,6 +30,20 @@ export function previewInputDebounceMsForSize(charCount) {
 
 export function editorHistoryLimitForSize(charCount) {
     return isLargeDocument(charCount) ? EDITOR_HISTORY_LIMIT_LARGE : EDITOR_HISTORY_LIMIT_DEFAULT;
+}
+
+export function editorHistoryDebounceMsForSize(charCount) {
+    return isLargeDocument(charCount) ? EDITOR_HISTORY_DEBOUNCE_MS_LARGE : EDITOR_HISTORY_DEBOUNCE_MS;
+}
+
+export function editorDirtyUiDebounceMsForSize(charCount) {
+    return isLargeDocument(charCount) ? EDITOR_DIRTY_UI_DEBOUNCE_MS_LARGE : 0;
+}
+
+export function outlineRefreshDebounceMsForSize(charCount) {
+    return isLargeDocument(charCount)
+        ? OUTLINE_REFRESH_DEBOUNCE_MS_LARGE
+        : OUTLINE_REFRESH_DEBOUNCE_MS;
 }
 
 export function countNewlines(text) {

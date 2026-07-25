@@ -289,8 +289,13 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /function toggleFindOption/);
   assert.match(main, /find-opt-case/);
   assert.match(main, /from '\.\/documentOutline\.js'/);
-  assert.match(main, /function renderDocumentOutline/);
-  assert.match(html, /id="document-outline"/);
+  assert.match(main, /documentDirtyFlag/);
+  assert.match(main, /editorEditGeneration/);
+  assert.match(main, /function markEditorEdited/);
+  assert.match(main, /function updateOutlineActiveItem/);
+  assert.match(html, /id="toggle-outline-btn"/);
+  assert.match(main, /function toggleOutlinePane/);
+  assert.match(main, /outlinePaneVisible/);
   assert.match(main, /from '\.\/largeDocument\.js'/);
   assert.match(main, /function renderWindowedPreview/);
   assert.match(main, /preview-window-spacer/);
