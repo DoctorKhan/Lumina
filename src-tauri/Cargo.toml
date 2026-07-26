@@ -1,6 +1,6 @@
 [package]
 name = "lumina"
-version = "0.5.6"
+version = "0.5.7"
 description = "Lumina desktop app"
 authors = ["you"]
 edition = "2021"
