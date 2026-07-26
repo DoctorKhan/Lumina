@@ -1,0 +1,7 @@
+# Use incremental compilation in debug to reuse prior artifacts.
+[build]
+incremental = true
+
+# Cache compiled build scripts and rustc artifacts via sccache.
+[build.cache]
+sccache = true

@@ -13,7 +13,7 @@
         <div class="flex items-center gap-3 min-w-0 flex-1">
             <div class="w-8 h-8 shrink-0 bg-gradient-to-br from-indigo-500 to-sky-500 rounded-lg flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">L</div>
             <h1 class="text-xl font-semibold tracking-tight text-slate-100 flex items-center gap-2 min-w-0">
-                <span class="min-w-0 truncate">Lumina <button type="button" id="app-version-badge" class="app-version-badge text-slate-500 font-normal text-sm ml-2" title="Check for updates from the git repository">v0.5.5</button></span>
+                <span class="min-w-0 truncate">Lumina <button type="button" id="app-version-badge" class="app-version-badge text-slate-500 font-normal text-sm ml-2" title="Check for updates from the git repository">v0.5.6</button></span>
                 <button id="install-update-badge" type="button" class="update-install-badge hidden shrink-0" title="Install available update"></button>
                 <a
                     id="share-repo-link"
@@ -113,6 +113,7 @@
                     </div>
                     <button id="reload-file-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Reload from disk — shows a diff when the file differs">Reload</button>
                     <button id="fix-latex-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors" title="Normalize LaTeX delimiters in source (converts \[…\] and \(…\) to $$ and $)">Fix LaTeX</button>
+                    <button id="toggle-editor-mode-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Switch editor mode (textarea / CodeMirror 6)">Editor: textarea</button>
                     <span id="char-count" class="shrink-0 whitespace-nowrap text-right normal-case tracking-normal cursor-default" title="Alt+click to toggle editor performance log">0 chars</span>
                     </div>
                     <div id="filename-path-toast" class="filename-path-toast hidden" role="status" aria-live="polite"></div>
@@ -178,8 +179,11 @@
                         <pre id="document-alert-diff" class="document-alert-diff" aria-label="Document diff preview"></pre>
                     </div>
                 </div>
-                <div id="editor-host" class="editor-host flex-1 min-h-0 min-w-0 relative"></div>
-                <textarea id="editor" class="editor-legacy hidden" spellcheck="false" placeholder="Start typing your masterpiece..."></textarea>
+                <div class="editor-input-wrap flex-1 min-h-0">
+                    <div id="editor-highlight-layer" class="editor-highlight-layer p-6 leading-relaxed" aria-hidden="true"></div>
+                    <div id="editor-cm6-host" class="editor-host flex-1 min-h-0 min-w-0 relative hidden"></div>
+                    <textarea id="editor" class="p-6 leading-relaxed" spellcheck="false" placeholder="Start typing your masterpiece..."></textarea>
+                </div>
             </div>
 
             <div id="pane-resizer" class="pane-resizer" aria-hidden="true"></div>
