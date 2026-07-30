@@ -72,10 +72,11 @@ import {
             describeConflictAction
         } from './documentDiff.js';
         import {
-            EDITOR_METRICS_DEBOUNCE_MS_LARGE,
+            countWords,
             editorDirtyUiDebounceMsForSize,
             editorHistoryDebounceMsForSize,
             editorHistoryLimitForSize,
+            editorMetricsDebounceMsForSize,
             isLargeDocument,
             outlineRefreshDebounceMsForSize,
             PREVIEW_WINDOW_LINE_HEIGHT_PX,
@@ -642,7 +643,7 @@ const maxRecentFilePaths = 10;
 
         function updateEditorMetrics() {
             const rawValue = editor.value;
-            const wordCount = rawValue.trim() ? rawValue.trim().split(/\s+/).length : 0;
+            const wordCount = countWords(rawValue);
             const large = isLargeDocument(rawValue.length);
             const suffix = large ? ' · windowed preview' : '';
             charCount.textContent = `${rawValue.length} chars • ${wordCount} words${suffix}`;
@@ -743,12 +744,10 @@ const maxRecentFilePaths = 10;
 
         function scheduleEditorMetrics() {
             clearTimeout(editorMetricsTimer);
-            const rawLength = editor.value.length;
-            if (!isLargeDocument(rawLength)) {
-                updateEditorMetrics();
-                return;
-            }
-            editorMetricsTimer = setTimeout(updateEditorMetrics, EDITOR_METRICS_DEBOUNCE_MS_LARGE);
+            editorMetricsTimer = setTimeout(
+                updateEditorMetrics,
+                editorMetricsDebounceMsForSize(editor.value.length)
+            );
         }
 
         let homeDirectory = null;
@@ -3494,6 +3493,22 @@ function updateTurnEl(entry, turn, final, describeToolFn = describeTool) {
         // reconciled snapshot can replace the object at an index with a newer,
         // longer one that's also `done`, which still needs a rebuild.
         if (existing && existing._srcBlock === block && block.done) continue;
+
+        // Streaming text: mutate in place instead of replaceChild every frame.
+        // Rebuilding the node forces layout of the whole transcript and competes
+        // with composer typing on the main thread.
+        if (
+            existing &&
+            !final &&
+            block.kind === 'text' &&
+            existing.classList?.contains('claude-text')
+        ) {
+            const text = block.text || '';
+            if (existing.textContent !== text) existing.textContent = text;
+            existing._srcBlock = block;
+            continue;
+        }
+
         const el = buildBlockEl(block, final, describeToolFn);
         el._srcBlock = block;
         if (existing) {
@@ -3998,15 +4013,45 @@ async function replaceAgentSelectionFromClipboard() {
 }
 
 let agentAutoSizeFrame = null;
+let claudeAutoSizeFrame = null;
+let composerNativeFieldSizing = null;
+
+function composerSupportsNativeFieldSizing() {
+    if (composerNativeFieldSizing == null) {
+        composerNativeFieldSizing = Boolean(
+            typeof CSS !== 'undefined' && CSS.supports?.('field-sizing', 'content')
+        );
+    }
+    return composerNativeFieldSizing;
+}
+
+// Grow/shrink the composer without collapsing via height:auto/0 on every keystroke.
+// Collapsing forces a flex reflow of the transcript above and makes typing laggy.
+// Prefer CSS field-sizing when available; otherwise grow on overflow and only
+// measure a shrink when hard newlines decrease (or the field is cleared).
+function resizeComposerInput(input) {
+    if (!input || composerSupportsNativeFieldSizing()) return;
+
+    if (input.scrollHeight > input.clientHeight + 1) {
+        input.style.height = `${input.scrollHeight}px`;
+        return;
+    }
+
+    const hardLines = (input.value.match(/\n/g) || []).length;
+    const prevHardLines = Number(input.dataset.composerHardLines || '0');
+    input.dataset.composerHardLines = String(hardLines);
+    if (input.value.length > 0 && hardLines >= prevHardLines) return;
+
+    input.style.height = '0px';
+    input.style.height = `${input.scrollHeight}px`;
+}
 
 function autoSizeAgentInput() {
-    if (!agentInput) return;
+    if (!agentInput || composerSupportsNativeFieldSizing()) return;
     if (agentAutoSizeFrame != null) return;
     agentAutoSizeFrame = requestAnimationFrame(() => {
         agentAutoSizeFrame = null;
-        if (!agentInput) return;
-        agentInput.style.height = 'auto';
-        agentInput.style.height = `${agentInput.scrollHeight}px`;
+        resizeComposerInput(agentInput);
     });
 }
 
@@ -4041,7 +4086,8 @@ function wireAgentInputBar() {
             event.preventDefault();
             const text = agentInput.value;
             agentInput.value = '';
-            agentInput.style.height = 'auto';
+            agentInput.style.height = '';
+            delete agentInput.dataset.composerHardLines;
             agentAutoSizeFrame = null;
             void sendAgentMessage(text);
         }
@@ -4050,7 +4096,8 @@ function wireAgentInputBar() {
         event.preventDefault();
         const text = agentInput.value;
         agentInput.value = '';
-        agentInput.style.height = 'auto';
+        agentInput.style.height = '';
+        delete agentInput.dataset.composerHardLines;
         agentAutoSizeFrame = null;
         void sendAgentMessage(text);
     });
@@ -4091,16 +4138,12 @@ async function handleComposerImagePaste(file, input, pastedImagePaths, counterRe
 
 // Grows the input box with its content up to the CSS max-height. The transcript
 // above is a flex child, so it shrinks to make room automatically.
-let claudeAutoSizeFrame = null;
-
 function autoSizeClaudeInput() {
-    if (!claudeInput) return;
+    if (!claudeInput || composerSupportsNativeFieldSizing()) return;
     if (claudeAutoSizeFrame != null) return;
     claudeAutoSizeFrame = requestAnimationFrame(() => {
         claudeAutoSizeFrame = null;
-        if (!claudeInput) return;
-        claudeInput.style.height = 'auto';
-        claudeInput.style.height = `${claudeInput.scrollHeight}px`;
+        resizeComposerInput(claudeInput);
     });
 }
 
@@ -4121,7 +4164,8 @@ function wireClaudeInputBar() {
             event.preventDefault();
             const text = claudeInput.value;
             claudeInput.value = '';
-            claudeInput.style.height = 'auto';
+            claudeInput.style.height = '';
+            delete claudeInput.dataset.composerHardLines;
             claudeAutoSizeFrame = null;
             void sendClaudeMessage(text);
         }
@@ -4131,7 +4175,8 @@ function wireClaudeInputBar() {
         event.preventDefault();
         const text = claudeInput.value;
         claudeInput.value = '';
-        claudeInput.style.height = 'auto';
+        claudeInput.style.height = '';
+        delete claudeInput.dataset.composerHardLines;
         claudeAutoSizeFrame = null;
         void sendClaudeMessage(text);
     });
@@ -6303,7 +6348,9 @@ document.addEventListener('click', (event) => {
 
         function refreshFindHighlights({ source = 'unknown' } = {}) {
             if (!findBarVisible) {
-                editorHighlightLayer.textContent = '';
+                if (editorHighlightLayer.firstChild) {
+                    editorHighlightLayer.textContent = '';
+                }
                 return;
             }
             let deferMs = null;

@@ -6,13 +6,18 @@ export function collectDocumentHeadings(markdown) {
     const headings = [];
     const pattern = /^(#{1,6})\s+(.+)$/gm;
     let match;
+    let line = 1;
+    let scannedThrough = 0;
     while ((match = pattern.exec(markdown)) !== null) {
-        const before = markdown.slice(0, match.index);
+        for (let i = scannedThrough; i < match.index; i += 1) {
+            if (markdown.charCodeAt(i) === 10) line += 1;
+        }
+        scannedThrough = match.index;
         headings.push({
             level: match[1].length,
             title: match[2].trim(),
             offset: match.index,
-            line: before.split('\n').length
+            line
         });
     }
     return headings;

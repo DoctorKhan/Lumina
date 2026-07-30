@@ -4,11 +4,13 @@ export const LARGE_DOCUMENT_CHAR_THRESHOLD = 80_000;
 export const PREVIEW_WINDOW_BLOCK_RADIUS = 30;
 export const PREVIEW_INPUT_DEBOUNCE_MS = 500;
 export const PREVIEW_INPUT_DEBOUNCE_MS_LARGE = 1800;
+/** Always debounce char/word metrics — full scans must not run on every keystroke. */
+export const EDITOR_METRICS_DEBOUNCE_MS = 200;
 export const EDITOR_METRICS_DEBOUNCE_MS_LARGE = 400;
 export const EDITOR_HISTORY_DEBOUNCE_MS = 250;
 export const EDITOR_HISTORY_DEBOUNCE_MS_LARGE = 900;
 export const EDITOR_DIRTY_UI_DEBOUNCE_MS_LARGE = 200;
-export const OUTLINE_REFRESH_DEBOUNCE_MS = 120;
+export const OUTLINE_REFRESH_DEBOUNCE_MS = 250;
 export const OUTLINE_REFRESH_DEBOUNCE_MS_LARGE = 800;
 export const EDITOR_HISTORY_LIMIT_LARGE = 30;
 export const EDITOR_HISTORY_LIMIT_DEFAULT = 200;
@@ -16,6 +18,36 @@ export const PREVIEW_WINDOW_LINE_HEIGHT_PX = 26;
 
 export function isLargeDocument(charCount) {
     return charCount >= LARGE_DOCUMENT_CHAR_THRESHOLD;
+}
+
+export function editorMetricsDebounceMsForSize(charCount) {
+    return isLargeDocument(charCount)
+        ? EDITOR_METRICS_DEBOUNCE_MS_LARGE
+        : EDITOR_METRICS_DEBOUNCE_MS;
+}
+
+/** O(n) word count without allocating a per-word array. */
+export function countWords(text) {
+    if (!text) return 0;
+    let count = 0;
+    let inWord = false;
+    for (let i = 0; i < text.length; i += 1) {
+        const code = text.charCodeAt(i);
+        const isSpace =
+            code === 32 ||
+            code === 9 ||
+            code === 10 ||
+            code === 13 ||
+            code === 12 ||
+            code === 160;
+        if (isSpace) {
+            inWord = false;
+        } else if (!inWord) {
+            inWord = true;
+            count += 1;
+        }
+    }
+    return count;
 }
 
 export function previewInputDebounceMsForSize(charCount) {

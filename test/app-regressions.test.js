@@ -305,6 +305,13 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /function scheduleFindRefresh/);
   assert.match(main, /findRefreshDebounceMs/);
   assert.match(main, /flushScheduledFindRefresh/);
+  assert.match(main, /editorMetricsDebounceMsForSize/);
+  assert.match(main, /countWords/);
+  assert.match(main, /function resizeComposerInput/);
+  assert.match(main, /composerSupportsNativeFieldSizing/);
+  assert.match(main, /existing\.textContent !== text/);
+  assert.match(css, /field-sizing:\s*content/);
+  assert.doesNotMatch(css, /scroll-behavior:\s*smooth/);
 });
 
 test("develop-Lumina mode lets Claude edit the source checkout and rebuild from the UI", () => {

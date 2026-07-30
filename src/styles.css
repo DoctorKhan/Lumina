@@ -1527,6 +1527,7 @@ body > header {
     flex: 1 1 auto;
     min-width: 0;
     resize: none;
+    field-sizing: content;
     max-height: 9rem;
     padding: 0.45rem 0.6rem;
     border-radius: 0.5rem;
@@ -1537,6 +1538,7 @@ body > header {
     font-size: 0.8rem;
     line-height: 1.4;
     outline: none;
+    overflow-y: auto;
 }
 
 .claude-input::placeholder {
@@ -1785,7 +1787,6 @@ body > header {
     color: rgba(237, 233, 254, 0.92);
     font-size: 0.82rem;
     line-height: 1.5;
-    scroll-behavior: smooth;
 }
 
 .claude-empty {

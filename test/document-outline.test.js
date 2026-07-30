@@ -20,6 +20,19 @@ describe('documentOutline', () => {
         );
     });
 
+    test('collectDocumentHeadings stays linear for many headings', () => {
+        const parts = [];
+        for (let i = 1; i <= 200; i += 1) {
+            parts.push(`## Heading ${i}\n\nparagraph\n`);
+        }
+        const markdown = parts.join('');
+        const headings = collectDocumentHeadings(markdown);
+        assert.equal(headings.length, 200);
+        assert.equal(headings[0].line, 1);
+        assert.equal(headings[199].title, 'Heading 200');
+        assert.ok(headings[199].line > headings[0].line);
+    });
+
     test('shouldShowDocumentOutline requires at least two headings', () => {
         assert.equal(shouldShowDocumentOutline([]), false);
         assert.equal(shouldShowDocumentOutline([{ level: 1, title: 'One' }]), false);
