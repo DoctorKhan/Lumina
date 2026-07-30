@@ -81,6 +81,7 @@ import {
             outlineRefreshDebounceMsForSize,
             PREVIEW_WINDOW_LINE_HEIGHT_PX,
             previewInputDebounceMsForSize,
+            previewWindowNeedsRefresh,
             selectPreviewTokenWindow
         } from './largeDocument.js';
         import {
@@ -557,6 +558,15 @@ const maxRecentFilePaths = 10;
         const previewInputIdleTimeoutMs = 1000;
         let editorMetricsTimer = null;
         let previewWindowStartLine = 0;
+        let previewWindowEndLine = 0;
+        let previewWindowTokenStart = 0;
+        let previewWindowTokenEnd = -1;
+        let previewWindowLinesBefore = 0;
+        let previewWindowLinesAfter = 0;
+        let previewIsWindowed = false;
+        let previewWindowFocusOverride = null;
+        let previewWindowRefreshTimer = null;
+        let previewScrollSyncFromEditor = false;
         let outlineRefreshTimer = null;
         let documentHeadings = [];
         const outlineVisibleKey = 'lumina-outline-visible';
@@ -653,7 +663,77 @@ const maxRecentFilePaths = 10;
             editor.focus();
             editor.setSelectionRange(offset, offset);
             scrollEditorMatchIntoView(offset, offset);
+            if (isLargeDocument(editor.value.length)) {
+                // Windowed preview is anchored on the viewport; force a re-window
+                // so outline/find jumps don't land on a dashed spacer.
+                void updatePreview();
+                return;
+            }
             syncPreviewScrollToEditor(offset);
+        }
+
+        function clearPreviewWindowState() {
+            previewIsWindowed = false;
+            previewWindowStartLine = 0;
+            previewWindowEndLine = 0;
+            previewWindowTokenStart = 0;
+            previewWindowTokenEnd = -1;
+            previewWindowLinesBefore = 0;
+            previewWindowLinesAfter = 0;
+            previewWindowFocusOverride = null;
+        }
+
+        function previewFocusLine() {
+            if (previewWindowFocusOverride != null && Number.isFinite(previewWindowFocusOverride)) {
+                return Math.max(0, Math.round(previewWindowFocusOverride));
+            }
+            return Math.max(0, Math.round(getEditorAnchorLine()));
+        }
+
+        function scheduleWindowedPreviewRefresh(focusLine = previewFocusLine()) {
+            if (!previewIsWindowed) return false;
+            if (
+                !previewWindowNeedsRefresh(focusLine, previewWindowStartLine, previewWindowEndLine, {
+                    linesBefore: previewWindowLinesBefore,
+                    linesAfter: previewWindowLinesAfter
+                })
+            ) {
+                return false;
+            }
+            clearTimeout(previewWindowRefreshTimer);
+            previewWindowRefreshTimer = setTimeout(() => {
+                previewWindowRefreshTimer = null;
+                if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
+                void updatePreview();
+            }, 80);
+            return true;
+        }
+
+        function estimateFocusLineFromPreviewScroll() {
+            if (!previewIsWindowed) return null;
+            const topSpacer = preview.querySelector('.preview-window-spacer-top');
+            const bottomSpacer = preview.querySelector('.preview-window-spacer-bottom');
+            if (topSpacer) {
+                const spacerBottom = topSpacer.offsetTop + topSpacer.offsetHeight;
+                if (preview.scrollTop < spacerBottom - 48) {
+                    const y = Math.max(0, preview.scrollTop - topSpacer.offsetTop);
+                    return Math.max(
+                        0,
+                        Math.min(
+                            previewWindowStartLine,
+                            Math.floor(y / PREVIEW_WINDOW_LINE_HEIGHT_PX)
+                        )
+                    );
+                }
+            }
+            if (bottomSpacer) {
+                const viewBottom = preview.scrollTop + preview.clientHeight;
+                if (viewBottom > bottomSpacer.offsetTop + 48) {
+                    const y = Math.max(0, viewBottom - bottomSpacer.offsetTop);
+                    return previewWindowEndLine + Math.floor(y / PREVIEW_WINDOW_LINE_HEIGHT_PX);
+                }
+            }
+            return null;
         }
 
         function activeOutlineHeadingIndex(headings = documentHeadings) {
@@ -1858,17 +1938,22 @@ async function openRecentFile(recentIndex = null) {
             spacer.className = `preview-window-spacer preview-window-spacer-${position}`;
             spacer.setAttribute('aria-hidden', 'true');
             spacer.style.minHeight = `${lines * PREVIEW_WINDOW_LINE_HEIGHT_PX}px`;
-            spacer.textContent = `… ${lines.toLocaleString()} lines ${position === 'top' ? 'above' : 'below'}`;
+            spacer.textContent = `… ${lines.toLocaleString()} lines ${position === 'top' ? 'above' : 'below'} · scroll to load`;
             parent.appendChild(spacer);
             return spacer;
         }
 
         async function renderWindowedPreview(normalizedValue, sourceTokens) {
-            const window = selectPreviewTokenWindow(
-                sourceTokens,
-                sourceLineAtOffset(editor.selectionStart)
-            );
+            const focusLine = previewFocusLine();
+            const window = selectPreviewTokenWindow(sourceTokens, focusLine);
+            previewIsWindowed = true;
             previewWindowStartLine = window.startLine;
+            previewWindowEndLine = window.endLine;
+            previewWindowTokenStart = window.start;
+            previewWindowTokenEnd = window.end;
+            previewWindowLinesBefore = window.linesBefore;
+            previewWindowLinesAfter = window.linesAfter;
+            previewWindowFocusOverride = null;
 
             const fragment = document.createDocumentFragment();
             const bodyHost = document.createElement('div');
@@ -1958,7 +2043,7 @@ async function openRecentFile(recentIndex = null) {
                 return;
             }
             if (!handledIncrementally) {
-                previewWindowStartLine = 0;
+                clearPreviewWindowState();
                 await renderMarkdownInto(preview, rawValue);
                 if (bailIfSuperseded()) {
                     end({ superseded: true, mode: 'full' });
@@ -2170,12 +2255,8 @@ async function openRecentFile(recentIndex = null) {
                 return;
             }
 
-            if (largeDocument && previewWindowStartLine > 0) {
-                const windowSelection = selectPreviewTokenWindow(
-                    tokens,
-                    sourceLineAtOffset(editor.selectionStart)
-                );
-                tokens = tokens.slice(windowSelection.start, windowSelection.end + 1);
+            if (previewIsWindowed && previewWindowTokenEnd >= previewWindowTokenStart) {
+                tokens = tokens.slice(previewWindowTokenStart, previewWindowTokenEnd + 1);
             }
 
             if (metadata && children[childIndex]?.classList.contains('document-frontmatter')) {
@@ -2251,15 +2332,22 @@ async function openRecentFile(recentIndex = null) {
             const maxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
             const targetTop = previewTopForLine(anchorLine);
 
-            if (targetTop == null) {
-                // No block map (e.g. empty document): fall back to proportional.
-                const editorRange = editor.scrollHeight - editor.clientHeight;
-                const ratio = editorRange > 0 ? editor.scrollTop / editorRange : 0;
-                preview.scrollTop = ratio * maxScroll;
-                return;
-            }
+            previewScrollSyncFromEditor = true;
+            try {
+                if (targetTop == null) {
+                    // No block map (e.g. empty document): fall back to proportional.
+                    const editorRange = editor.scrollHeight - editor.clientHeight;
+                    const ratio = editorRange > 0 ? editor.scrollTop / editorRange : 0;
+                    preview.scrollTop = ratio * maxScroll;
+                    return;
+                }
 
-            preview.scrollTop = Math.max(0, Math.min(targetTop, maxScroll));
+                preview.scrollTop = Math.max(0, Math.min(targetTop, maxScroll));
+            } finally {
+                requestAnimationFrame(() => {
+                    previewScrollSyncFromEditor = false;
+                });
+            }
         }
 
         async function updatePreview() {
@@ -6905,7 +6993,32 @@ document.addEventListener('click', (event) => {
                     // scrolls. executePreviewRender() calls syncPreviewScrollToEditor()
                     // itself once the pending render actually runs.
                     if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
+                    if (scheduleWindowedPreviewRefresh()) {
+                        // A re-window is queued; interim scroll sync still keeps the
+                        // currently rendered slice aligned until it lands.
+                        syncPreviewScrollToEditor();
+                        return;
+                    }
                     syncPreviewScrollToEditor();
+                });
+            },
+            { passive: true }
+        );
+
+        let previewScrollWindowFrame = null;
+        preview.addEventListener(
+            'scroll',
+            () => {
+                if (previewScrollSyncFromEditor || !previewIsWindowed) return;
+                if (previewScrollWindowFrame != null) return;
+                previewScrollWindowFrame = requestAnimationFrame(() => {
+                    previewScrollWindowFrame = null;
+                    if (previewScrollSyncFromEditor) return;
+                    if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
+                    const estimated = estimateFocusLineFromPreviewScroll();
+                    if (estimated == null) return;
+                    previewWindowFocusOverride = estimated;
+                    scheduleWindowedPreviewRefresh(estimated);
                 });
             },
             { passive: true }

@@ -9,6 +9,7 @@ import {
     isLargeDocument,
     previewInputDebounceMsForSize,
     selectPreviewTokenWindow,
+    previewWindowNeedsRefresh,
     EDITOR_METRICS_DEBOUNCE_MS,
     EDITOR_METRICS_DEBOUNCE_MS_LARGE,
     LARGE_DOCUMENT_CHAR_THRESHOLD
@@ -66,5 +67,28 @@ describe('largeDocument', () => {
         assert.match(window.markdown, /Two/);
         assert.ok(window.linesBefore > 0);
         assert.ok(window.linesAfter > 0);
+    });
+
+    test('previewWindowNeedsRefresh triggers near spacer edges', () => {
+        assert.equal(
+            previewWindowNeedsRefresh(50, 0, 100, { linesBefore: 0, linesAfter: 0 }),
+            false
+        );
+        assert.equal(
+            previewWindowNeedsRefresh(50, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            false
+        );
+        assert.equal(
+            previewWindowNeedsRefresh(42, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            true
+        );
+        assert.equal(
+            previewWindowNeedsRefresh(78, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            true
+        );
+        assert.equal(
+            previewWindowNeedsRefresh(10, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            true
+        );
     });
 });

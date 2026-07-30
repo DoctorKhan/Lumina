@@ -302,6 +302,9 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /from '\.\/largeDocument\.js'/);
   assert.match(main, /function renderWindowedPreview/);
   assert.match(main, /preview-window-spacer/);
+  assert.match(main, /function scheduleWindowedPreviewRefresh/);
+  assert.match(main, /previewWindowNeedsRefresh/);
+  assert.match(main, /function estimateFocusLineFromPreviewScroll/);
   assert.match(main, /function scheduleFindRefresh/);
   assert.match(main, /findRefreshDebounceMs/);
   assert.match(main, /flushScheduledFindRefresh/);

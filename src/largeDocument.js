@@ -165,3 +165,16 @@ export function selectPreviewTokenWindow(
             .join('')
     };
 }
+
+/** True when the viewport/focus line is near or past the edge of the rendered window. */
+export function previewWindowNeedsRefresh(
+    focusLine,
+    startLine,
+    endLine,
+    { linesBefore = 0, linesAfter = 0 } = {}
+) {
+    if (linesBefore <= 0 && linesAfter <= 0) return false;
+    const span = Math.max(1, endLine - startLine);
+    const margin = Math.max(8, Math.floor(span * 0.2));
+    return focusLine < startLine + margin || focusLine > endLine - margin;
+}
