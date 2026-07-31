@@ -85,6 +85,7 @@ import {
             selectPreviewTokenWindow
         } from './largeDocument.js';
         import {
+            activeOutlineHeadingIndex as outlineHeadingIndexForLine,
             collectDocumentHeadings,
             shouldShowDocumentOutline
         } from './documentOutline.js';
@@ -736,20 +737,28 @@ const maxRecentFilePaths = 10;
             return null;
         }
 
-        function activeOutlineHeadingIndex(headings = documentHeadings) {
-            if (!headings.length) return -1;
-            const cursor = editor.selectionStart;
-            let active = 0;
-            for (let i = 0; i < headings.length; i += 1) {
-                if (headings[i].offset <= cursor) active = i;
-                else break;
+        function getOutlineViewportLine() {
+            // Prefer the live preview viewport — the outline sits beside it.
+            if (previewIsWindowed) {
+                const estimated = estimateFocusLineFromPreviewScroll();
+                if (estimated != null) return estimated;
             }
-            return active;
+            if (previewLineMap.length) {
+                const fromPreview = previewLineForTop(preview.scrollTop);
+                if (fromPreview != null) return fromPreview;
+            }
+            return getEditorAnchorLine();
+        }
+
+        function activeOutlineHeadingIndex(headings = documentHeadings) {
+            // 0-indexed viewport line → 1-indexed heading.line
+            return outlineHeadingIndexForLine(headings, Math.floor(getOutlineViewportLine()) + 1);
         }
 
         function updateOutlineActiveItem() {
             if (!documentHeadings.length || documentOutline?.classList.contains('hidden')) return;
             const activeIndex = activeOutlineHeadingIndex();
+            if (activeIndex < 0) return;
             const items = documentOutlineList?.querySelectorAll('.document-outline-item');
             if (!items?.length) return;
             items.forEach((item, index) => {
@@ -2073,6 +2082,7 @@ async function openRecentFile(recentIndex = null) {
                 clearPreviewFindHighlights();
                 syncPreviewScrollToEditor();
             }
+            updateOutlineActiveItem();
             end({
                 mode: handledIncrementally
                     ? largeDocument
@@ -2321,6 +2331,33 @@ async function openRecentFile(recentIndex = null) {
                 }
             }
             return last.top;
+        }
+
+        // Inverse of previewTopForLine: fractional source line at preview scrollTop.
+        function previewLineForTop(scrollTop) {
+            const map = previewLineMap;
+            if (!map.length) return null;
+            const targetTop = Math.max(0, scrollTop);
+            if (targetTop <= map[0].top) return map[0].line;
+            const last = map[map.length - 1];
+            if (targetTop >= last.top) return last.line;
+
+            let low = 0;
+            let high = map.length - 1;
+            while (low <= high) {
+                const mid = Math.floor((low + high) / 2);
+                if (map[mid].top <= targetTop) {
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+
+            const before = map[Math.max(0, high)];
+            const after = map[Math.min(map.length - 1, high + 1)];
+            const span = after.top - before.top;
+            if (span <= 0) return before.line;
+            return before.line + ((targetTop - before.top) / span) * (after.line - before.line);
         }
 
         function syncPreviewScrollToEditor(sourceOffset = null) {
@@ -6992,14 +7029,17 @@ document.addEventListener('click', (event) => {
                     // here would force a full-document reflow on every keystroke that
                     // scrolls. executePreviewRender() calls syncPreviewScrollToEditor()
                     // itself once the pending render actually runs.
-                    if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
-                    if (scheduleWindowedPreviewRefresh()) {
-                        // A re-window is queued; interim scroll sync still keeps the
-                        // currently rendered slice aligned until it lands.
-                        syncPreviewScrollToEditor();
-                        return;
+                    if (previewInputDebounceTimer == null && previewInputIdleHandle == null) {
+                        if (scheduleWindowedPreviewRefresh()) {
+                            // A re-window is queued; interim scroll sync still keeps the
+                            // currently rendered slice aligned until it lands.
+                            syncPreviewScrollToEditor();
+                        } else {
+                            syncPreviewScrollToEditor();
+                        }
                     }
-                    syncPreviewScrollToEditor();
+                    // After preview scrollTop is synced so scroll-spy uses the live pane.
+                    updateOutlineActiveItem();
                 });
             },
             { passive: true }
@@ -7009,11 +7049,11 @@ document.addEventListener('click', (event) => {
         preview.addEventListener(
             'scroll',
             () => {
-                if (previewScrollSyncFromEditor || !previewIsWindowed) return;
                 if (previewScrollWindowFrame != null) return;
                 previewScrollWindowFrame = requestAnimationFrame(() => {
                     previewScrollWindowFrame = null;
-                    if (previewScrollSyncFromEditor) return;
+                    updateOutlineActiveItem();
+                    if (previewScrollSyncFromEditor || !previewIsWindowed) return;
                     if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
                     const estimated = estimateFocusLineFromPreviewScroll();
                     if (estimated == null) return;

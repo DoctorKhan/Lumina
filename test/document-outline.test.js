@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import {
+    activeOutlineHeadingIndex,
     collectDocumentHeadings,
     shouldShowDocumentOutline
 } from '../src/documentOutline.js';
@@ -43,5 +44,13 @@ describe('documentOutline', () => {
             ]),
             true
         );
+    });
+
+    test('activeOutlineHeadingIndex tracks the last heading at or above a line', () => {
+        const headings = collectDocumentHeadings('# A\n\n## B\n\nbody\n\n### C\n');
+        assert.equal(activeOutlineHeadingIndex(headings, 1), 0);
+        assert.equal(activeOutlineHeadingIndex(headings, 3), 1);
+        assert.equal(activeOutlineHeadingIndex(headings, 7), 2);
+        assert.equal(activeOutlineHeadingIndex([], 1), -1);
     });
 });

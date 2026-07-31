@@ -293,6 +293,8 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /editorEditGeneration/);
   assert.match(main, /function markEditorEdited/);
   assert.match(main, /function updateOutlineActiveItem/);
+  assert.match(main, /function getOutlineViewportLine/);
+  assert.match(main, /function previewLineForTop/);
   assert.match(html, /id="toggle-outline-btn"/);
   assert.match(main, /from '\.\/editorPerf\.js'/);
   assert.match(main, /function setEditorPerfEnabled/);
