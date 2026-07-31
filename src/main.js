@@ -80,6 +80,8 @@ import {
             isLargeDocument,
             outlineRefreshDebounceMsForSize,
             PREVIEW_WINDOW_LINE_HEIGHT_PX,
+            PREVIEW_WINDOW_REFRESH_MS,
+            PREVIEW_WINDOW_REFRESH_URGENT_MS,
             previewInputDebounceMsForSize,
             selectPreviewTokenWindow
         } from './largeDocument.js';
@@ -90,7 +92,8 @@ import {
             estimateFocusLineFromSpacers,
             initialOutlineState,
             outlinePaneReduce,
-            resolveOutlineViewportLine
+            resolveOutlineViewportLine,
+            resolvePreviewScrollFocusLine
         } from './outlineViewport.js';
         import {
             initialPreviewWindow,
@@ -578,6 +581,8 @@ const maxRecentFilePaths = 10;
         let outlineRefreshTimer = null;
         let previewWindow = initialPreviewWindow();
         let scrollSync = initialScrollSync();
+        /** When set, the next windowed render restores preview scroll to this source line. */
+        let previewWindowScrollAnchorLine = null;
         const outlineVisibleKey = 'lumina-outline-visible';
         let outlineState = initialOutlineState({
             visible: localStorage.getItem(outlineVisibleKey) === 'true'
@@ -683,8 +688,17 @@ const maxRecentFilePaths = 10;
             editor.setSelectionRange(offset, offset);
             scrollEditorMatchIntoView(offset, offset);
             if (isLargeDocument(editor.value.length)) {
-                // Windowed preview is anchored on the viewport; force a re-window
-                // so outline/find jumps don't land on a dashed spacer.
+                // Drop any preview-scroll focus override so the jump re-windows
+                // around the destination, not a stale spacer estimate.
+                const jumpLine = Math.max(
+                    0,
+                    editor.value.slice(0, offset).split('\n').length - 1
+                );
+                previewWindow = previewWindowReduce(previewWindow, {
+                    type: 'SetFocusOverride',
+                    focusLine: jumpLine
+                });
+                previewWindowScrollAnchorLine = jumpLine;
                 void updatePreview();
                 return;
             }
@@ -699,7 +713,10 @@ const maxRecentFilePaths = 10;
             return resolvePreviewFocusLine(previewWindow, getEditorAnchorLine());
         }
 
-        function scheduleWindowedPreviewRefresh(focusLine = previewFocusLine()) {
+        function scheduleWindowedPreviewRefresh(
+            focusLine = previewFocusLine(),
+            { urgent = false } = {}
+        ) {
             if (previewWindow.mode === 'full') return false;
             if (!shouldRefreshWindow(previewWindow, focusLine)) return false;
             previewWindow = previewWindowReduce(previewWindow, {
@@ -707,12 +724,14 @@ const maxRecentFilePaths = 10;
                 focusLine,
                 inputRenderPending: false
             });
+            previewWindowScrollAnchorLine = Math.max(0, Math.round(focusLine));
             clearTimeout(previewWindowRefreshTimer);
+            const delay = urgent ? PREVIEW_WINDOW_REFRESH_URGENT_MS : PREVIEW_WINDOW_REFRESH_MS;
             previewWindowRefreshTimer = setTimeout(() => {
                 previewWindowRefreshTimer = null;
                 if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
                 void updatePreview();
-            }, 80);
+            }, delay);
             return true;
         }
 
@@ -736,6 +755,32 @@ const maxRecentFilePaths = 10;
                 windowEndLine: previewWindow.endLine,
                 lineHeightPx: PREVIEW_WINDOW_LINE_HEIGHT_PX
             });
+        }
+
+        function getPreviewScrollFocusLine() {
+            if (previewWindow.mode === 'full') return null;
+            return resolvePreviewScrollFocusLine({
+                spacerEstimate: estimateFocusLineFromPreviewScroll(),
+                previewLineFromMap: previewLineMap.length
+                    ? previewLineForTop(preview.scrollTop)
+                    : null
+            });
+        }
+
+        function restorePreviewScrollToAnchorLine(anchorLine) {
+            if (anchorLine == null || !Number.isFinite(anchorLine)) return false;
+            const targetTop = previewTopForLine(anchorLine);
+            if (targetTop == null) return false;
+            const maxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
+            scrollSync = scrollSyncReduce(scrollSync, { type: 'SyncFromEditorApplied' });
+            try {
+                preview.scrollTop = Math.max(0, Math.min(targetTop, maxScroll));
+            } finally {
+                requestAnimationFrame(() => {
+                    scrollSync = scrollSyncReduce(scrollSync, { type: 'ReleaseOwner' });
+                });
+            }
+            return true;
         }
 
         function getOutlineViewportLine() {
@@ -2081,9 +2126,18 @@ async function openRecentFile(recentIndex = null) {
                 const matches = collectFindMatches();
                 const index = findMatchIndex >= 0 ? findMatchIndex : activeFindMatchIndex(matches);
                 applyPreviewFindHighlights(matches, index);
+                previewWindowScrollAnchorLine = null;
             } else {
                 clearPreviewFindHighlights();
-                syncPreviewScrollToEditor();
+                const anchorLine = previewWindowScrollAnchorLine;
+                previewWindowScrollAnchorLine = null;
+                if (anchorLine != null && restorePreviewScrollToAnchorLine(anchorLine)) {
+                    // Preview-driven re-window: keep the scrolled focus line on screen
+                    // instead of yanking back to the editor caret (which is often still
+                    // outside the newly rendered slice and shows a blank spacer).
+                } else {
+                    syncPreviewScrollToEditor();
+                }
             }
             updateOutlineActiveItem();
             end({
@@ -7027,14 +7081,15 @@ document.addEventListener('click', (event) => {
                         return;
                     }
                     if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
-                    const estimated = estimateFocusLineFromPreviewScroll();
-                    if (estimated == null) return;
+                    const focusLine = getPreviewScrollFocusLine();
+                    if (focusLine == null) return;
+                    const inSpacer = estimateFocusLineFromPreviewScroll() != null;
                     scrollSync = scrollSyncReduce(scrollSync, { type: 'PreviewScrolled' });
                     previewWindow = previewWindowReduce(previewWindow, {
                         type: 'SetFocusOverride',
-                        focusLine: estimated
+                        focusLine
                     });
-                    scheduleWindowedPreviewRefresh(estimated);
+                    scheduleWindowedPreviewRefresh(focusLine, { urgent: inSpacer });
                 });
             },
             { passive: true }

@@ -68,6 +68,22 @@ export function resolveOutlineViewportLine({
     return Math.max(0, editorAnchorLine ?? 0);
 }
 
+/**
+ * Focus line for preview-driven window refresh (0-indexed).
+ * Prefers spacer estimates (already off the rendered slice), else the
+ * line-map position inside the rendered body. Returns null when unknown
+ * so callers do not fall back to the editor caret and yank the viewport.
+ */
+export function resolvePreviewScrollFocusLine({ spacerEstimate, previewLineFromMap }) {
+    if (spacerEstimate != null && Number.isFinite(spacerEstimate)) {
+        return spacerEstimate;
+    }
+    if (previewLineFromMap != null && Number.isFinite(previewLineFromMap)) {
+        return previewLineFromMap;
+    }
+    return null;
+}
+
 function withDerived(state) {
     const hasContent = shouldShowDocumentOutline(state.headings);
     const shown = hasContent && state.visible;

@@ -1,7 +1,7 @@
 /** Thresholds and helpers for keeping very large markdown files responsive. */
 
 export const LARGE_DOCUMENT_CHAR_THRESHOLD = 80_000;
-export const PREVIEW_WINDOW_BLOCK_RADIUS = 30;
+export const PREVIEW_WINDOW_BLOCK_RADIUS = 40;
 export const PREVIEW_INPUT_DEBOUNCE_MS = 500;
 export const PREVIEW_INPUT_DEBOUNCE_MS_LARGE = 1800;
 /** Always debounce char/word metrics — full scans must not run on every keystroke. */
@@ -15,6 +15,10 @@ export const OUTLINE_REFRESH_DEBOUNCE_MS_LARGE = 800;
 export const EDITOR_HISTORY_LIMIT_LARGE = 30;
 export const EDITOR_HISTORY_LIMIT_DEFAULT = 200;
 export const PREVIEW_WINDOW_LINE_HEIGHT_PX = 26;
+/** Debounce before re-windowing while still inside rendered content. */
+export const PREVIEW_WINDOW_REFRESH_MS = 32;
+/** Re-window immediately once the viewport is already on a spacer. */
+export const PREVIEW_WINDOW_REFRESH_URGENT_MS = 0;
 
 export function isLargeDocument(charCount) {
     return charCount >= LARGE_DOCUMENT_CHAR_THRESHOLD;
@@ -175,6 +179,8 @@ export function previewWindowNeedsRefresh(
 ) {
     if (linesBefore <= 0 && linesAfter <= 0) return false;
     const span = Math.max(1, endLine - startLine);
-    const margin = Math.max(8, Math.floor(span * 0.2));
+    // Prefetch while still in rendered content, but keep a usable middle so
+    // tiny windows are not constantly refreshing.
+    const margin = Math.max(8, Math.min(Math.floor(span * 0.35), Math.floor(span / 3)));
     return focusLine < startLine + margin || focusLine > endLine - margin;
 }

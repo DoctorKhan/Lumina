@@ -77,8 +77,9 @@ describe('largeDocument', () => {
             previewWindowNeedsRefresh(50, 0, 100, { linesBefore: 0, linesAfter: 0 }),
             false
         );
+        // Mid-window stays put (span 40 → margin 13).
         assert.equal(
-            previewWindowNeedsRefresh(50, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            previewWindowNeedsRefresh(60, 40, 80, { linesBefore: 40, linesAfter: 200 }),
             false
         );
         assert.equal(
@@ -92,6 +93,15 @@ describe('largeDocument', () => {
         assert.equal(
             previewWindowNeedsRefresh(10, 40, 80, { linesBefore: 40, linesAfter: 200 }),
             true
+        );
+        // Prefetch earlier than the old 20% margin once the window is large.
+        assert.equal(
+            previewWindowNeedsRefresh(50, 0, 300, { linesBefore: 10, linesAfter: 200 }),
+            true
+        );
+        assert.equal(
+            previewWindowNeedsRefresh(150, 0, 300, { linesBefore: 10, linesAfter: 200 }),
+            false
         );
     });
 

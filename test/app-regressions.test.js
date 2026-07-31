@@ -311,6 +311,10 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /function scheduleWindowedPreviewRefresh/);
   assert.match(main, /shouldRefreshWindow/);
   assert.match(main, /function estimateFocusLineFromPreviewScroll/);
+  assert.match(main, /function getPreviewScrollFocusLine/);
+  assert.match(main, /resolvePreviewScrollFocusLine/);
+  assert.match(main, /previewWindowScrollAnchorLine/);
+  assert.match(main, /restorePreviewScrollToAnchorLine/);
   assert.match(main, /shouldIgnorePreviewScroll/);
   assert.match(main, /function scheduleFindRefresh/);
   assert.match(main, /findRefreshDebounceMs/);

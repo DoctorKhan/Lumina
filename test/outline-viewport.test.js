@@ -4,7 +4,8 @@ import {
     estimateFocusLineFromSpacers,
     initialOutlineState,
     outlinePaneReduce,
-    resolveOutlineViewportLine
+    resolveOutlineViewportLine,
+    resolvePreviewScrollFocusLine
 } from '../src/outlineViewport.js';
 import { collectDocumentHeadings } from '../src/documentOutline.js';
 import { PREVIEW_WINDOW_LINE_HEIGHT_PX } from '../src/largeDocument.js';
@@ -101,6 +102,30 @@ describe('outlineViewport', () => {
                 editorAnchorLine: undefined
             }),
             0
+        );
+    });
+
+    test('resolvePreviewScrollFocusLine never falls back to the editor', () => {
+        assert.equal(
+            resolvePreviewScrollFocusLine({
+                spacerEstimate: 55,
+                previewLineFromMap: 10
+            }),
+            55
+        );
+        assert.equal(
+            resolvePreviewScrollFocusLine({
+                spacerEstimate: null,
+                previewLineFromMap: 12.5
+            }),
+            12.5
+        );
+        assert.equal(
+            resolvePreviewScrollFocusLine({
+                spacerEstimate: null,
+                previewLineFromMap: null
+            }),
+            null
         );
     });
 
