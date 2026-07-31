@@ -53,4 +53,17 @@ describe('documentOutline', () => {
         assert.equal(activeOutlineHeadingIndex(headings, 7), 2);
         assert.equal(activeOutlineHeadingIndex([], 1), -1);
     });
+
+    test('activeOutlineHeadingIndex handles edges and non-integers', () => {
+        const headings = collectDocumentHeadings('# A\n\n## B\n\nbody\n\n### C\n');
+        assert.equal(activeOutlineHeadingIndex(headings, 0), 0);
+        assert.equal(activeOutlineHeadingIndex(headings, -5), 0);
+        assert.equal(activeOutlineHeadingIndex(headings, 3.9), 1);
+        assert.equal(activeOutlineHeadingIndex(headings, 999), 2);
+        assert.equal(activeOutlineHeadingIndex([{ level: 1, title: 'Only', line: 1 }], 1), 0);
+    });
+
+    test('collectDocumentHeadings returns empty for prose-only docs', () => {
+        assert.deepEqual(collectDocumentHeadings('just prose\n\nmore prose\n'), []);
+    });
 });

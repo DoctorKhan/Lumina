@@ -81,14 +81,30 @@ import {
             outlineRefreshDebounceMsForSize,
             PREVIEW_WINDOW_LINE_HEIGHT_PX,
             previewInputDebounceMsForSize,
-            previewWindowNeedsRefresh,
             selectPreviewTokenWindow
         } from './largeDocument.js';
         import {
-            activeOutlineHeadingIndex as outlineHeadingIndexForLine,
-            collectDocumentHeadings,
-            shouldShowDocumentOutline
+            collectDocumentHeadings
         } from './documentOutline.js';
+        import {
+            estimateFocusLineFromSpacers,
+            initialOutlineState,
+            outlinePaneReduce,
+            resolveOutlineViewportLine
+        } from './outlineViewport.js';
+        import {
+            initialPreviewWindow,
+            previewWindowReduce,
+            resolvePreviewFocusLine,
+            shouldRefreshWindow
+        } from './previewWindowState.js';
+        import {
+            initialScrollSync,
+            previewLineForTop as previewLineForTopFromMap,
+            previewTopForLine as previewTopForLineFromMap,
+            scrollSyncReduce,
+            shouldIgnorePreviewScroll
+        } from './scrollSync.js';
         import { createEditorPerfLog, PERF_STORAGE_KEY } from './editorPerf.js';
         import { Terminal } from '@xterm/xterm';
         import { FitAddon } from '@xterm/addon-fit';
@@ -558,37 +574,39 @@ const maxRecentFilePaths = 10;
         let lastInputRenderedSource = null;
         const previewInputIdleTimeoutMs = 1000;
         let editorMetricsTimer = null;
-        let previewWindowStartLine = 0;
-        let previewWindowEndLine = 0;
-        let previewWindowTokenStart = 0;
-        let previewWindowTokenEnd = -1;
-        let previewWindowLinesBefore = 0;
-        let previewWindowLinesAfter = 0;
-        let previewIsWindowed = false;
-        let previewWindowFocusOverride = null;
         let previewWindowRefreshTimer = null;
-        let previewScrollSyncFromEditor = false;
         let outlineRefreshTimer = null;
-        let documentHeadings = [];
+        let previewWindow = initialPreviewWindow();
+        let scrollSync = initialScrollSync();
         const outlineVisibleKey = 'lumina-outline-visible';
-        let outlinePaneVisible = localStorage.getItem(outlineVisibleKey) === 'true';
+        let outlineState = initialOutlineState({
+            visible: localStorage.getItem(outlineVisibleKey) === 'true'
+        });
 
-        function syncOutlineToggleButton(hasContent = shouldShowDocumentOutline(documentHeadings)) {
+        function syncOutlineToggleButton(state = outlineState) {
             if (!toggleOutlineBtn) return;
-            toggleOutlineBtn.classList.toggle('hidden', !hasContent);
-            toggleOutlineBtn.setAttribute('aria-pressed', String(outlinePaneVisible && hasContent));
-            toggleOutlineBtn.title = outlinePaneVisible ? 'Hide outline' : 'Show outline';
+            toggleOutlineBtn.classList.toggle('hidden', !state.hasContent);
+            toggleOutlineBtn.setAttribute(
+                'aria-pressed',
+                String(state.shown)
+            );
+            toggleOutlineBtn.title = state.visible ? 'Hide outline' : 'Show outline';
         }
 
-        function isOutlinePaneShown(hasContent = shouldShowDocumentOutline(documentHeadings)) {
-            return hasContent && outlinePaneVisible;
+        function isOutlinePaneShown(state = outlineState) {
+            return state.shown;
         }
 
         function toggleOutlinePane(force) {
-            outlinePaneVisible = typeof force === 'boolean' ? force : !outlinePaneVisible;
-            localStorage.setItem(outlineVisibleKey, String(outlinePaneVisible));
+            outlineState =
+                typeof force === 'boolean'
+                    ? outlinePaneReduce(outlineState, { type: 'SetVisible', visible: force })
+                    : outlinePaneReduce(outlineState, { type: 'Toggle' });
+            localStorage.setItem(outlineVisibleKey, String(outlineState.visible));
             syncOutlineToggleButton();
-            renderDocumentOutline();
+            renderDocumentOutline(outlineState.headings.length
+                ? outlineState.headings
+                : collectDocumentHeadings(editor.value));
         }
 
         toggleOutlineBtn?.addEventListener('click', () => toggleOutlinePane());
@@ -674,33 +692,21 @@ const maxRecentFilePaths = 10;
         }
 
         function clearPreviewWindowState() {
-            previewIsWindowed = false;
-            previewWindowStartLine = 0;
-            previewWindowEndLine = 0;
-            previewWindowTokenStart = 0;
-            previewWindowTokenEnd = -1;
-            previewWindowLinesBefore = 0;
-            previewWindowLinesAfter = 0;
-            previewWindowFocusOverride = null;
+            previewWindow = previewWindowReduce(previewWindow, { type: 'Cleared' });
         }
 
         function previewFocusLine() {
-            if (previewWindowFocusOverride != null && Number.isFinite(previewWindowFocusOverride)) {
-                return Math.max(0, Math.round(previewWindowFocusOverride));
-            }
-            return Math.max(0, Math.round(getEditorAnchorLine()));
+            return resolvePreviewFocusLine(previewWindow, getEditorAnchorLine());
         }
 
         function scheduleWindowedPreviewRefresh(focusLine = previewFocusLine()) {
-            if (!previewIsWindowed) return false;
-            if (
-                !previewWindowNeedsRefresh(focusLine, previewWindowStartLine, previewWindowEndLine, {
-                    linesBefore: previewWindowLinesBefore,
-                    linesAfter: previewWindowLinesAfter
-                })
-            ) {
-                return false;
-            }
+            if (previewWindow.mode === 'full') return false;
+            if (!shouldRefreshWindow(previewWindow, focusLine)) return false;
+            previewWindow = previewWindowReduce(previewWindow, {
+                type: 'FocusNearEdge',
+                focusLine,
+                inputRenderPending: false
+            });
             clearTimeout(previewWindowRefreshTimer);
             previewWindowRefreshTimer = setTimeout(() => {
                 previewWindowRefreshTimer = null;
@@ -711,53 +717,49 @@ const maxRecentFilePaths = 10;
         }
 
         function estimateFocusLineFromPreviewScroll() {
-            if (!previewIsWindowed) return null;
+            if (previewWindow.mode === 'full') return null;
             const topSpacer = preview.querySelector('.preview-window-spacer-top');
             const bottomSpacer = preview.querySelector('.preview-window-spacer-bottom');
-            if (topSpacer) {
-                const spacerBottom = topSpacer.offsetTop + topSpacer.offsetHeight;
-                if (preview.scrollTop < spacerBottom - 48) {
-                    const y = Math.max(0, preview.scrollTop - topSpacer.offsetTop);
-                    return Math.max(
-                        0,
-                        Math.min(
-                            previewWindowStartLine,
-                            Math.floor(y / PREVIEW_WINDOW_LINE_HEIGHT_PX)
-                        )
-                    );
-                }
-            }
-            if (bottomSpacer) {
-                const viewBottom = preview.scrollTop + preview.clientHeight;
-                if (viewBottom > bottomSpacer.offsetTop + 48) {
-                    const y = Math.max(0, viewBottom - bottomSpacer.offsetTop);
-                    return previewWindowEndLine + Math.floor(y / PREVIEW_WINDOW_LINE_HEIGHT_PX);
-                }
-            }
-            return null;
+            return estimateFocusLineFromSpacers({
+                scrollTop: preview.scrollTop,
+                clientHeight: preview.clientHeight,
+                topSpacer: topSpacer
+                    ? { offsetTop: topSpacer.offsetTop, offsetHeight: topSpacer.offsetHeight }
+                    : null,
+                bottomSpacer: bottomSpacer
+                    ? {
+                          offsetTop: bottomSpacer.offsetTop,
+                          offsetHeight: bottomSpacer.offsetHeight
+                      }
+                    : null,
+                windowStartLine: previewWindow.startLine,
+                windowEndLine: previewWindow.endLine,
+                lineHeightPx: PREVIEW_WINDOW_LINE_HEIGHT_PX
+            });
         }
 
         function getOutlineViewportLine() {
-            // Prefer the live preview viewport — the outline sits beside it.
-            if (previewIsWindowed) {
-                const estimated = estimateFocusLineFromPreviewScroll();
-                if (estimated != null) return estimated;
-            }
-            if (previewLineMap.length) {
-                const fromPreview = previewLineForTop(preview.scrollTop);
-                if (fromPreview != null) return fromPreview;
-            }
-            return getEditorAnchorLine();
-        }
-
-        function activeOutlineHeadingIndex(headings = documentHeadings) {
-            // 0-indexed viewport line → 1-indexed heading.line
-            return outlineHeadingIndexForLine(headings, Math.floor(getOutlineViewportLine()) + 1);
+            const spacerEstimate =
+                previewWindow.mode !== 'full' ? estimateFocusLineFromPreviewScroll() : null;
+            const fromPreview = previewLineMap.length
+                ? previewLineForTop(preview.scrollTop)
+                : null;
+            return resolveOutlineViewportLine({
+                windowed: previewWindow.mode !== 'full',
+                spacerEstimate,
+                previewLineFromMap: fromPreview,
+                editorAnchorLine: getEditorAnchorLine()
+            });
         }
 
         function updateOutlineActiveItem() {
-            if (!documentHeadings.length || documentOutline?.classList.contains('hidden')) return;
-            const activeIndex = activeOutlineHeadingIndex();
+            if (!outlineState.headings.length || !outlineState.shown) return;
+            const viewportLine = getOutlineViewportLine();
+            outlineState = outlinePaneReduce(outlineState, {
+                type: 'ViewportLineChanged',
+                viewportLine
+            });
+            const activeIndex = outlineState.activeIndex;
             if (activeIndex < 0) return;
             const items = documentOutlineList?.querySelectorAll('.document-outline-item');
             if (!items?.length) return;
@@ -769,10 +771,15 @@ const maxRecentFilePaths = 10;
 
         function renderDocumentOutline(headings = collectDocumentHeadings(editor.value)) {
             const end = perf.startSpan('editor.outline.render', { chars: editor.value.length });
-            documentHeadings = headings;
-            const hasContent = shouldShowDocumentOutline(headings);
-            const shown = isOutlinePaneShown(hasContent);
-            syncOutlineToggleButton(hasContent);
+            const viewportLine = getOutlineViewportLine();
+            outlineState = outlinePaneReduce(outlineState, {
+                type: 'HeadingsChanged',
+                headings,
+                viewportLine
+            });
+            const hasContent = outlineState.hasContent;
+            const shown = outlineState.shown;
+            syncOutlineToggleButton();
             documentOutline?.classList.toggle('hidden', !shown);
             if (!documentOutlineList) return;
 
@@ -786,7 +793,7 @@ const maxRecentFilePaths = 10;
                 return;
             }
 
-            const activeIndex = activeOutlineHeadingIndex(headings);
+            const activeIndex = outlineState.activeIndex;
             const fragment = document.createDocumentFragment();
             headings.forEach((heading, index) => {
                 const item = document.createElement('button');
@@ -812,7 +819,7 @@ const maxRecentFilePaths = 10;
 
             const activeItem = documentOutlineList.querySelector('.document-outline-item.is-active');
             activeItem?.scrollIntoView({ block: 'nearest' });
-            end({ headings: headings.length, shown: isOutlinePaneShown(hasContent) });
+            end({ headings: headings.length, shown });
         }
 
         function scheduleDocumentOutlineRefresh({ rebuild = true } = {}) {
@@ -1955,14 +1962,10 @@ async function openRecentFile(recentIndex = null) {
         async function renderWindowedPreview(normalizedValue, sourceTokens) {
             const focusLine = previewFocusLine();
             const window = selectPreviewTokenWindow(sourceTokens, focusLine);
-            previewIsWindowed = true;
-            previewWindowStartLine = window.startLine;
-            previewWindowEndLine = window.endLine;
-            previewWindowTokenStart = window.start;
-            previewWindowTokenEnd = window.end;
-            previewWindowLinesBefore = window.linesBefore;
-            previewWindowLinesAfter = window.linesAfter;
-            previewWindowFocusOverride = null;
+            previewWindow = previewWindowReduce(previewWindow, {
+                type: 'RenderedWindow',
+                window
+            });
 
             const fragment = document.createDocumentFragment();
             const bodyHost = document.createElement('div');
@@ -2243,7 +2246,7 @@ async function openRecentFile(recentIndex = null) {
             const children = preview.children;
             const editorPaddingTop = parseFloat(getComputedStyle(editor).paddingTop) || 0;
             const { metadata, body, frontmatterLineCount } = splitYamlFrontmatter(editor.value);
-            let line = previewWindowStartLine;
+            let line = previewWindow.startLine;
             let childIndex = 0;
             let tokens;
             const largeDocument = isLargeDocument(editor.value.length);
@@ -2265,8 +2268,11 @@ async function openRecentFile(recentIndex = null) {
                 return;
             }
 
-            if (previewIsWindowed && previewWindowTokenEnd >= previewWindowTokenStart) {
-                tokens = tokens.slice(previewWindowTokenStart, previewWindowTokenEnd + 1);
+            if (
+                previewWindow.mode !== 'full' &&
+                previewWindow.tokenEnd >= previewWindow.tokenStart
+            ) {
+                tokens = tokens.slice(previewWindow.tokenStart, previewWindow.tokenEnd + 1);
             }
 
             if (metadata && children[childIndex]?.classList.contains('document-frontmatter')) {
@@ -2316,48 +2322,12 @@ async function openRecentFile(recentIndex = null) {
         // Convert a source line into a preview scrollTop by interpolating
         // between the two mapped blocks that bracket it.
         function previewTopForLine(anchorLine) {
-            const map = previewLineMap;
-            if (!map.length) return null;
-            if (anchorLine <= map[0].line) return map[0].top;
-            const last = map[map.length - 1];
-            if (anchorLine >= last.line) return last.top;
-            for (let i = 0; i < map.length - 1; i += 1) {
-                const a = map[i];
-                const b = map[i + 1];
-                if (anchorLine >= a.line && anchorLine < b.line) {
-                    const span = b.line - a.line || 1;
-                    const fraction = (anchorLine - a.line) / span;
-                    return a.top + fraction * (b.top - a.top);
-                }
-            }
-            return last.top;
+            return previewTopForLineFromMap(previewLineMap, anchorLine);
         }
 
         // Inverse of previewTopForLine: fractional source line at preview scrollTop.
         function previewLineForTop(scrollTop) {
-            const map = previewLineMap;
-            if (!map.length) return null;
-            const targetTop = Math.max(0, scrollTop);
-            if (targetTop <= map[0].top) return map[0].line;
-            const last = map[map.length - 1];
-            if (targetTop >= last.top) return last.line;
-
-            let low = 0;
-            let high = map.length - 1;
-            while (low <= high) {
-                const mid = Math.floor((low + high) / 2);
-                if (map[mid].top <= targetTop) {
-                    low = mid + 1;
-                } else {
-                    high = mid - 1;
-                }
-            }
-
-            const before = map[Math.max(0, high)];
-            const after = map[Math.min(map.length - 1, high + 1)];
-            const span = after.top - before.top;
-            if (span <= 0) return before.line;
-            return before.line + ((targetTop - before.top) / span) * (after.line - before.line);
+            return previewLineForTopFromMap(previewLineMap, scrollTop);
         }
 
         function syncPreviewScrollToEditor(sourceOffset = null) {
@@ -2369,7 +2339,7 @@ async function openRecentFile(recentIndex = null) {
             const maxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
             const targetTop = previewTopForLine(anchorLine);
 
-            previewScrollSyncFromEditor = true;
+            scrollSync = scrollSyncReduce(scrollSync, { type: 'SyncFromEditorApplied' });
             try {
                 if (targetTop == null) {
                     // No block map (e.g. empty document): fall back to proportional.
@@ -2382,7 +2352,7 @@ async function openRecentFile(recentIndex = null) {
                 preview.scrollTop = Math.max(0, Math.min(targetTop, maxScroll));
             } finally {
                 requestAnimationFrame(() => {
-                    previewScrollSyncFromEditor = false;
+                    scrollSync = scrollSyncReduce(scrollSync, { type: 'ReleaseOwner' });
                 });
             }
         }
@@ -7053,11 +7023,17 @@ document.addEventListener('click', (event) => {
                 previewScrollWindowFrame = requestAnimationFrame(() => {
                     previewScrollWindowFrame = null;
                     updateOutlineActiveItem();
-                    if (previewScrollSyncFromEditor || !previewIsWindowed) return;
+                    if (shouldIgnorePreviewScroll(scrollSync) || previewWindow.mode === 'full') {
+                        return;
+                    }
                     if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
                     const estimated = estimateFocusLineFromPreviewScroll();
                     if (estimated == null) return;
-                    previewWindowFocusOverride = estimated;
+                    scrollSync = scrollSyncReduce(scrollSync, { type: 'PreviewScrolled' });
+                    previewWindow = previewWindowReduce(previewWindow, {
+                        type: 'SetFocusOverride',
+                        focusLine: estimated
+                    });
                     scheduleWindowedPreviewRefresh(estimated);
                 });
             },

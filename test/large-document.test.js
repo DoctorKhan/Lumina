@@ -7,12 +7,15 @@ import {
     editorHistoryLimitForSize,
     editorMetricsDebounceMsForSize,
     isLargeDocument,
+    outlineRefreshDebounceMsForSize,
     previewInputDebounceMsForSize,
     selectPreviewTokenWindow,
     previewWindowNeedsRefresh,
     EDITOR_METRICS_DEBOUNCE_MS,
     EDITOR_METRICS_DEBOUNCE_MS_LARGE,
-    LARGE_DOCUMENT_CHAR_THRESHOLD
+    LARGE_DOCUMENT_CHAR_THRESHOLD,
+    OUTLINE_REFRESH_DEBOUNCE_MS,
+    OUTLINE_REFRESH_DEBOUNCE_MS_LARGE
 } from '../src/largeDocument.js';
 
 describe('largeDocument', () => {
@@ -90,5 +93,58 @@ describe('largeDocument', () => {
             previewWindowNeedsRefresh(10, 40, 80, { linesBefore: 40, linesAfter: 200 }),
             true
         );
+    });
+
+    test('outline refresh debounce scales for large documents', () => {
+        assert.equal(outlineRefreshDebounceMsForSize(1000), OUTLINE_REFRESH_DEBOUNCE_MS);
+        assert.equal(
+            outlineRefreshDebounceMsForSize(LARGE_DOCUMENT_CHAR_THRESHOLD),
+            OUTLINE_REFRESH_DEBOUNCE_MS_LARGE
+        );
+    });
+
+    test('selectPreviewTokenWindow handles empty tokens and doc edges', () => {
+        assert.deepEqual(selectPreviewTokenWindow([], 0), {
+            start: 0,
+            end: -1,
+            startLine: 0,
+            endLine: 0,
+            linesBefore: 0,
+            linesAfter: 0,
+            markdown: ''
+        });
+
+        const tokens = [
+            { type: 'space', raw: '\n\n' },
+            { type: 'heading', raw: '# Start\n\n' },
+            { type: 'paragraph', raw: 'Body\n\n' },
+            { type: 'space', raw: '\n' },
+            { type: 'heading', raw: '# End\n' }
+        ];
+        const atStart = selectPreviewTokenWindow(tokens, 0, 1);
+        assert.equal(atStart.start, 0);
+        assert.match(atStart.markdown, /Start/);
+
+        const lastLine =
+            countNewlines(tokens.map((t) => t.raw).join(''));
+        const atEnd = selectPreviewTokenWindow(tokens, lastLine, 1);
+        assert.match(atEnd.markdown, /End/);
+        assert.ok(atEnd.linesBefore >= 0);
+    });
+
+    test('selectPreviewTokenWindow skips space tokens when counting radius', () => {
+        const tokens = [
+            { type: 'heading', raw: '# A\n\n' },
+            { type: 'space', raw: '\n\n' },
+            { type: 'paragraph', raw: 'one\n\n' },
+            { type: 'space', raw: '\n\n' },
+            { type: 'paragraph', raw: 'two\n\n' },
+            { type: 'heading', raw: '# B\n' }
+        ];
+        // radius 2: focus heading counts as 1, next non-space paragraph as 2; spaces are free
+        const window = selectPreviewTokenWindow(tokens, 0, 2);
+        assert.ok(window.end >= 2);
+        assert.match(window.markdown, /one/);
+        assert.ok(window.markdown.includes('\n\n'));
     });
 });
