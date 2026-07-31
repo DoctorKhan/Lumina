@@ -80,6 +80,7 @@ import {
             isLargeDocument,
             outlineRefreshDebounceMsForSize,
             PREVIEW_WINDOW_LINE_HEIGHT_PX,
+            PREVIEW_WINDOW_PREFETCH_MS,
             PREVIEW_WINDOW_REFRESH_MS,
             PREVIEW_WINDOW_REFRESH_URGENT_MS,
             previewInputDebounceMsForSize,
@@ -715,18 +716,29 @@ const maxRecentFilePaths = 10;
 
         function scheduleWindowedPreviewRefresh(
             focusLine = previewFocusLine(),
-            { urgent = false } = {}
+            { urgent = false, source = 'editor' } = {}
         ) {
             if (previewWindow.mode === 'full') return false;
-            if (!shouldRefreshWindow(previewWindow, focusLine)) return false;
+            if (!shouldRefreshWindow(previewWindow, focusLine, source)) return false;
             previewWindow = previewWindowReduce(previewWindow, {
                 type: 'FocusNearEdge',
                 focusLine,
-                inputRenderPending: false
+                inputRenderPending: false,
+                policy: source
             });
-            previewWindowScrollAnchorLine = Math.max(0, Math.round(focusLine));
+            // Only preview-driven refreshes should restore scroll to the focus
+            // line. Editor-driven ones sync to the caret after render.
+            if (source === 'preview') {
+                previewWindowScrollAnchorLine = Math.max(0, Math.round(focusLine));
+            } else {
+                previewWindowScrollAnchorLine = null;
+            }
             clearTimeout(previewWindowRefreshTimer);
-            const delay = urgent ? PREVIEW_WINDOW_REFRESH_URGENT_MS : PREVIEW_WINDOW_REFRESH_MS;
+            const delay = urgent
+                ? PREVIEW_WINDOW_REFRESH_URGENT_MS
+                : source === 'preview'
+                  ? PREVIEW_WINDOW_PREFETCH_MS
+                  : PREVIEW_WINDOW_REFRESH_MS;
             previewWindowRefreshTimer = setTimeout(() => {
                 previewWindowRefreshTimer = null;
                 if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
@@ -1152,6 +1164,10 @@ const maxRecentFilePaths = 10;
             // subsequent focus() doesn't scroll the textarea to the bottom.
             editor.setSelectionRange(0, 0);
             editor.scrollTop = 0;
+            // Drop any prior file's window focus so open/reload re-windows from
+            // the top instead of a stale preview-scroll override.
+            previewWindow = previewWindowReduce(previewWindow, { type: 'Cleared' });
+            previewWindowScrollAnchorLine = null;
             setFilenameLabel(label, fullPath);
             charCount.textContent = `${content.length} chars`;
             resetEditorHistory();
@@ -7054,13 +7070,10 @@ document.addEventListener('click', (event) => {
                     // scrolls. executePreviewRender() calls syncPreviewScrollToEditor()
                     // itself once the pending render actually runs.
                     if (previewInputDebounceTimer == null && previewInputIdleHandle == null) {
-                        if (scheduleWindowedPreviewRefresh()) {
-                            // A re-window is queued; interim scroll sync still keeps the
-                            // currently rendered slice aligned until it lands.
-                            syncPreviewScrollToEditor();
-                        } else {
-                            syncPreviewScrollToEditor();
-                        }
+                        scheduleWindowedPreviewRefresh(previewFocusLine(), {
+                            source: 'editor'
+                        });
+                        syncPreviewScrollToEditor();
                     }
                     // After preview scrollTop is synced so scroll-spy uses the live pane.
                     updateOutlineActiveItem();
@@ -7089,7 +7102,10 @@ document.addEventListener('click', (event) => {
                         type: 'SetFocusOverride',
                         focusLine
                     });
-                    scheduleWindowedPreviewRefresh(focusLine, { urgent: inSpacer });
+                    scheduleWindowedPreviewRefresh(focusLine, {
+                        urgent: inSpacer,
+                        source: 'preview'
+                    });
                 });
             },
             { passive: true }

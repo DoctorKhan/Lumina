@@ -1,7 +1,8 @@
 /** Thresholds and helpers for keeping very large markdown files responsive. */
 
 export const LARGE_DOCUMENT_CHAR_THRESHOLD = 80_000;
-export const PREVIEW_WINDOW_BLOCK_RADIUS = 40;
+/** Blocks kept on each side of the focus block in a windowed preview. */
+export const PREVIEW_WINDOW_BLOCK_RADIUS = 30;
 export const PREVIEW_INPUT_DEBOUNCE_MS = 500;
 export const PREVIEW_INPUT_DEBOUNCE_MS_LARGE = 1800;
 /** Always debounce char/word metrics — full scans must not run on every keystroke. */
@@ -15,9 +16,11 @@ export const OUTLINE_REFRESH_DEBOUNCE_MS_LARGE = 800;
 export const EDITOR_HISTORY_LIMIT_LARGE = 30;
 export const EDITOR_HISTORY_LIMIT_DEFAULT = 200;
 export const PREVIEW_WINDOW_LINE_HEIGHT_PX = 26;
-/** Debounce before re-windowing while still inside rendered content. */
-export const PREVIEW_WINDOW_REFRESH_MS = 32;
-/** Re-window immediately once the viewport is already on a spacer. */
+/** Editor-driven re-window debounce — keep off the typing/scroll hot path. */
+export const PREVIEW_WINDOW_REFRESH_MS = 100;
+/** Preview-driven prefetch while still inside rendered content. */
+export const PREVIEW_WINDOW_PREFETCH_MS = 32;
+/** Re-window immediately once the preview viewport is already on a spacer. */
 export const PREVIEW_WINDOW_REFRESH_URGENT_MS = 0;
 
 export function isLargeDocument(charCount) {
@@ -170,17 +173,21 @@ export function selectPreviewTokenWindow(
     };
 }
 
-/** True when the viewport/focus line is near or past the edge of the rendered window. */
+/**
+ * True when the viewport/focus line is near or past the edge of the rendered window.
+ * @param {'editor' | 'preview'} [policy] editor = conservative (avoid scroll thrash);
+ *   preview = prefetch earlier so live-preview scrolling rarely hits a blank spacer.
+ */
 export function previewWindowNeedsRefresh(
     focusLine,
     startLine,
     endLine,
-    { linesBefore = 0, linesAfter = 0 } = {}
+    { linesBefore = 0, linesAfter = 0 } = {},
+    policy = 'editor'
 ) {
     if (linesBefore <= 0 && linesAfter <= 0) return false;
     const span = Math.max(1, endLine - startLine);
-    // Prefetch while still in rendered content, but keep a usable middle so
-    // tiny windows are not constantly refreshing.
-    const margin = Math.max(8, Math.min(Math.floor(span * 0.35), Math.floor(span / 3)));
+    const ratio = policy === 'preview' ? 0.35 : 0.2;
+    const margin = Math.max(8, Math.min(Math.floor(span * ratio), Math.floor(span / 3)));
     return focusLine < startLine + margin || focusLine > endLine - margin;
 }

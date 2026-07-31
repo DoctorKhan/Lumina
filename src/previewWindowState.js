@@ -86,7 +86,7 @@ export function previewWindowReduce(state, event) {
                 !previewWindowNeedsRefresh(focusLine, state.startLine, state.endLine, {
                     linesBefore: state.linesBefore,
                     linesAfter: state.linesAfter
-                })
+                }, event.policy === 'preview' ? 'preview' : 'editor')
             ) {
                 return state;
             }
@@ -114,12 +114,18 @@ export function selectWindowForFocus(tokens, focusLine, blockRadius) {
     return selectPreviewTokenWindow(tokens, focusLine, blockRadius);
 }
 
-export function shouldRefreshWindow(state, focusLine) {
+export function shouldRefreshWindow(state, focusLine, policy = 'editor') {
     if (state.mode === 'full') return false;
-    return previewWindowNeedsRefresh(focusLine, state.startLine, state.endLine, {
-        linesBefore: state.linesBefore,
-        linesAfter: state.linesAfter
-    });
+    return previewWindowNeedsRefresh(
+        focusLine,
+        state.startLine,
+        state.endLine,
+        {
+            linesBefore: state.linesBefore,
+            linesAfter: state.linesAfter
+        },
+        policy
+    );
 }
 
 export function resolvePreviewFocusLine(state, editorAnchorLine) {

@@ -77,30 +77,43 @@ describe('largeDocument', () => {
             previewWindowNeedsRefresh(50, 0, 100, { linesBefore: 0, linesAfter: 0 }),
             false
         );
-        // Mid-window stays put (span 40 → margin 13).
+        // Editor policy: mid-window (span 40 → margin 8) stays put.
         assert.equal(
-            previewWindowNeedsRefresh(60, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            previewWindowNeedsRefresh(50, 40, 80, { linesBefore: 40, linesAfter: 200 }, 'editor'),
             false
         );
         assert.equal(
-            previewWindowNeedsRefresh(42, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            previewWindowNeedsRefresh(42, 40, 80, { linesBefore: 40, linesAfter: 200 }, 'editor'),
             true
         );
         assert.equal(
-            previewWindowNeedsRefresh(78, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            previewWindowNeedsRefresh(78, 40, 80, { linesBefore: 40, linesAfter: 200 }, 'editor'),
             true
         );
         assert.equal(
-            previewWindowNeedsRefresh(10, 40, 80, { linesBefore: 40, linesAfter: 200 }),
+            previewWindowNeedsRefresh(10, 40, 80, { linesBefore: 40, linesAfter: 200 }, 'editor'),
             true
         );
-        // Prefetch earlier than the old 20% margin once the window is large.
+        // Preview policy prefetches earlier on large windows.
         assert.equal(
-            previewWindowNeedsRefresh(50, 0, 300, { linesBefore: 10, linesAfter: 200 }),
+            previewWindowNeedsRefresh(50, 0, 300, { linesBefore: 10, linesAfter: 200 }, 'preview'),
+            true
+        );
+        // Editor policy waits longer (20% → margin 60); line 50 is still near the edge.
+        assert.equal(
+            previewWindowNeedsRefresh(50, 0, 300, { linesBefore: 10, linesAfter: 200 }, 'editor'),
             true
         );
         assert.equal(
-            previewWindowNeedsRefresh(150, 0, 300, { linesBefore: 10, linesAfter: 200 }),
+            previewWindowNeedsRefresh(80, 0, 300, { linesBefore: 10, linesAfter: 200 }, 'editor'),
+            false
+        );
+        assert.equal(
+            previewWindowNeedsRefresh(80, 0, 300, { linesBefore: 10, linesAfter: 200 }, 'preview'),
+            true
+        );
+        assert.equal(
+            previewWindowNeedsRefresh(150, 0, 300, { linesBefore: 10, linesAfter: 200 }, 'preview'),
             false
         );
     });
