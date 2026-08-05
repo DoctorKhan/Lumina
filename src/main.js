@@ -80,9 +80,8 @@ import {
             isLargeDocument,
             outlineRefreshDebounceMsForSize,
             PREVIEW_WINDOW_LINE_HEIGHT_PX,
-            PREVIEW_WINDOW_PREFETCH_MS,
-            PREVIEW_WINDOW_REFRESH_MS,
-            PREVIEW_WINDOW_REFRESH_URGENT_MS,
+            PREVIEW_WINDOW_IDLE_MS,
+            PREVIEW_SCROLL_RESTORE_QUIET_MS,
             previewInputDebounceMsForSize,
             selectPreviewTokenWindow
         } from './largeDocument.js';
@@ -100,7 +99,8 @@ import {
             initialPreviewWindow,
             previewWindowReduce,
             resolvePreviewFocusLine,
-            shouldRefreshWindow
+            shouldRefreshWindow,
+            shouldScheduleIdleRewindow
         } from './previewWindowState.js';
         import {
             initialScrollSync,
@@ -468,6 +468,8 @@ const maxRecentFilePaths = 10;
                 chars: editor.value.length,
                 gen: editorEditGeneration
             });
+            clearPreviewFocusOverride();
+            previewWindowScrollAnchorLine = null;
             scheduleEditorMetrics();
             scheduleEditorHistory();
             refreshFindHighlights({ source: 'editor-input' });
@@ -578,12 +580,16 @@ const maxRecentFilePaths = 10;
         let lastInputRenderedSource = null;
         const previewInputIdleTimeoutMs = 1000;
         let editorMetricsTimer = null;
-        let previewWindowRefreshTimer = null;
+        let previewWindowIdleTimer = null;
         let outlineRefreshTimer = null;
         let previewWindow = initialPreviewWindow();
         let scrollSync = initialScrollSync();
         /** When set, the next windowed render restores preview scroll to this source line. */
         let previewWindowScrollAnchorLine = null;
+        /** performance.now() until which scroll must not arm idle re-windows. */
+        let previewScrollQuietUntil = 0;
+        /** Last scroll source that armed the idle re-window ('editor' | 'preview'). */
+        let previewWindowIdleSource = 'editor';
         const outlineVisibleKey = 'lumina-outline-visible';
         let outlineState = initialOutlineState({
             visible: localStorage.getItem(outlineVisibleKey) === 'true'
@@ -714,36 +720,82 @@ const maxRecentFilePaths = 10;
             return resolvePreviewFocusLine(previewWindow, getEditorAnchorLine());
         }
 
-        function scheduleWindowedPreviewRefresh(
-            focusLine = previewFocusLine(),
-            { urgent = false, source = 'editor' } = {}
-        ) {
+        function clearPreviewFocusOverride() {
+            if (previewWindow.focusOverride == null) return;
+            previewWindow = previewWindowReduce(previewWindow, {
+                type: 'SetFocusOverride',
+                focusLine: null
+            });
+        }
+
+        /**
+         * Scroll handlers only note intent. Heavy re-window runs after idle
+         * (VS Code: scroll sync is cheap; content updates are separate).
+         */
+        function noteWindowedScrollFocus(focusLine, source = 'editor') {
             if (previewWindow.mode === 'full') return false;
-            if (!shouldRefreshWindow(previewWindow, focusLine, source)) return false;
+            if (performance.now() < previewScrollQuietUntil) return false;
+            if (!Number.isFinite(focusLine)) return false;
+            const roundedFocus = Math.max(0, Math.round(focusLine));
+            if (!shouldRefreshWindow(previewWindow, roundedFocus, source)) return false;
+
             previewWindow = previewWindowReduce(previewWindow, {
                 type: 'FocusNearEdge',
-                focusLine,
+                focusLine: roundedFocus,
                 inputRenderPending: false,
                 policy: source
             });
-            // Only preview-driven refreshes should restore scroll to the focus
-            // line. Editor-driven ones sync to the caret after render.
             if (source === 'preview') {
-                previewWindowScrollAnchorLine = Math.max(0, Math.round(focusLine));
+                previewWindow = previewWindowReduce(previewWindow, {
+                    type: 'SetFocusOverride',
+                    focusLine: roundedFocus
+                });
+                previewWindowScrollAnchorLine = roundedFocus;
             } else {
+                clearPreviewFocusOverride();
                 previewWindowScrollAnchorLine = null;
             }
-            clearTimeout(previewWindowRefreshTimer);
-            const delay = urgent
-                ? PREVIEW_WINDOW_REFRESH_URGENT_MS
-                : source === 'preview'
-                  ? PREVIEW_WINDOW_PREFETCH_MS
-                  : PREVIEW_WINDOW_REFRESH_MS;
-            previewWindowRefreshTimer = setTimeout(() => {
-                previewWindowRefreshTimer = null;
-                if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
-                void updatePreview();
-            }, delay);
+            previewWindowIdleSource = source;
+            armWindowedPreviewIdle();
+            return true;
+        }
+
+        function armWindowedPreviewIdle() {
+            clearTimeout(previewWindowIdleTimer);
+            previewWindowIdleTimer = setTimeout(() => {
+                previewWindowIdleTimer = null;
+                flushWindowedPreviewIdle();
+            }, PREVIEW_WINDOW_IDLE_MS);
+        }
+
+        function flushWindowedPreviewIdle() {
+            const focusLine =
+                previewWindow.pendingFocusLine != null
+                    ? previewWindow.pendingFocusLine
+                    : previewFocusLine();
+            const needsRefresh =
+                previewWindow.mode === 'refreshQueued' ||
+                shouldRefreshWindow(previewWindow, focusLine, previewWindowIdleSource);
+            if (
+                !shouldScheduleIdleRewindow({
+                    quietUntil: previewScrollQuietUntil,
+                    now: performance.now(),
+                    needsRefresh,
+                    pipelineBusy: previewPipelineBusy,
+                    inputRenderPending:
+                        previewInputDebounceTimer != null || previewInputIdleHandle != null
+                })
+            ) {
+                return false;
+            }
+            if (previewWindowIdleSource === 'preview' && focusLine != null) {
+                previewWindowScrollAnchorLine = Math.max(0, Math.round(focusLine));
+                previewWindow = previewWindowReduce(previewWindow, {
+                    type: 'SetFocusOverride',
+                    focusLine: previewWindowScrollAnchorLine
+                });
+            }
+            void updatePreview();
             return true;
         }
 
@@ -784,6 +836,9 @@ const maxRecentFilePaths = 10;
             const targetTop = previewTopForLine(anchorLine);
             if (targetTop == null) return false;
             const maxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
+            previewScrollQuietUntil = performance.now() + PREVIEW_SCROLL_RESTORE_QUIET_MS;
+            clearTimeout(previewWindowIdleTimer);
+            previewWindowIdleTimer = null;
             scrollSync = scrollSyncReduce(scrollSync, { type: 'SyncFromEditorApplied' });
             try {
                 preview.scrollTop = Math.max(0, Math.min(targetTop, maxScroll));
@@ -2409,6 +2464,7 @@ async function openRecentFile(recentIndex = null) {
             const maxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
             const targetTop = previewTopForLine(anchorLine);
 
+            previewScrollQuietUntil = performance.now() + PREVIEW_SCROLL_RESTORE_QUIET_MS;
             scrollSync = scrollSyncReduce(scrollSync, { type: 'SyncFromEditorApplied' });
             try {
                 if (targetTop == null) {
@@ -4040,16 +4096,20 @@ async function dispatchAgentMessage(message, { fromQueue = false } = {}) {
         }
     }
     const isHermes = activeAiProvider === 'hermes';
-    agentRunProvider = isHermes ? 'hermes' : 'cursor';
     try {
-        await invoke('cursor_agent_send', {
-            text: message,
-            filePath: currentFilePath || null,
-            mode: isHermes ? null : agentModeSelect?.value || null,
-            force: isHermes ? false : Boolean(agentForceCheckbox?.checked),
-            provider: agentRunProvider,
-            cwd: developLuminaMode && luminaSourceDir ? luminaSourceDir : null
-        });
+        if (isHermes) {
+            await invokeHermesAgentTurn(message, developLuminaMode && luminaSourceDir ? luminaSourceDir : null);
+        } else {
+            agentRunProvider = 'cursor';
+            await invoke('cursor_agent_send', {
+                text: message,
+                filePath: currentFilePath || null,
+                mode: agentModeSelect?.value || null,
+                force: Boolean(agentForceCheckbox?.checked),
+                provider: 'cursor',
+                cwd: developLuminaMode && luminaSourceDir ? luminaSourceDir : null
+            });
+        }
     } catch (error) {
         if (agentChatState) {
             agentChatState.error = `Send failed: ${error?.message || error}`;
@@ -4061,6 +4121,41 @@ async function dispatchAgentMessage(message, { fromQueue = false } = {}) {
         if (agentMessageQueue.length) {
             await drainAgentMessageQueue();
         }
+    }
+}
+
+async function invokeHermesAgentTurn(prompt, cwd) {
+    agentRunProvider = 'hermes';
+    let stderr = '';
+    const listener = await listen('cursor-agent-chat', async (event) => {
+        let payload = event.payload;
+        if (payload && typeof payload === 'object' && payload.type === '__stderr') {
+            stderr = payload.text ?? stderr;
+            return;
+        }
+        if (!payload || typeof payload !== 'string') return;
+        const trimmed = payload.trim();
+        if (!trimmed) return;
+        if (trimmed === '{"type":"__exit"}') {
+            listener();
+            if (stderr && agentChatState) {
+                agentChatState.error = stderr;
+            }
+            return;
+        }
+    });
+    try {
+        await invoke('cursor_agent_send', {
+            text: prompt,
+            filePath: currentFilePath || null,
+            mode: null,
+            force: false,
+            provider: 'hermes',
+            cwd
+        });
+    } catch (error) {
+        listener();
+        throw error;
     }
 }
 
@@ -6048,6 +6143,8 @@ document.addEventListener('click', (event) => {
             editor.setSelectionRange(selectionStart, selectionEnd);
             markEditorVisualLineMapDirty();
             markEditorEdited();
+            clearPreviewFocusOverride();
+            previewWindowScrollAnchorLine = null;
             scheduleEditorMetrics();
             scheduleInputPreviewRender();
             scheduleDocumentPersistence();
@@ -7064,18 +7161,12 @@ document.addEventListener('click', (event) => {
                 if (editorScrollSyncFrame != null) return;
                 editorScrollSyncFrame = requestAnimationFrame(() => {
                     editorScrollSyncFrame = null;
-                    // Skip the resync while a debounced preview render is pending: it's
-                    // the auto-scroll-while-typing case, rebuilding the visual line map
-                    // here would force a full-document reflow on every keystroke that
-                    // scrolls. executePreviewRender() calls syncPreviewScrollToEditor()
-                    // itself once the pending render actually runs.
+                    // Cheap path only: never start a markdown re-window mid-scroll.
+                    // executePreviewRender() syncs after a settled idle re-window or input render.
                     if (previewInputDebounceTimer == null && previewInputIdleHandle == null) {
-                        scheduleWindowedPreviewRefresh(previewFocusLine(), {
-                            source: 'editor'
-                        });
                         syncPreviewScrollToEditor();
+                        noteWindowedScrollFocus(previewFocusLine(), 'editor');
                     }
-                    // After preview scrollTop is synced so scroll-spy uses the live pane.
                     updateOutlineActiveItem();
                 });
             },
@@ -7093,19 +7184,12 @@ document.addEventListener('click', (event) => {
                     if (shouldIgnorePreviewScroll(scrollSync) || previewWindow.mode === 'full') {
                         return;
                     }
+                    if (performance.now() < previewScrollQuietUntil) return;
                     if (previewInputDebounceTimer != null || previewInputIdleHandle != null) return;
                     const focusLine = getPreviewScrollFocusLine();
                     if (focusLine == null) return;
-                    const inSpacer = estimateFocusLineFromPreviewScroll() != null;
                     scrollSync = scrollSyncReduce(scrollSync, { type: 'PreviewScrolled' });
-                    previewWindow = previewWindowReduce(previewWindow, {
-                        type: 'SetFocusOverride',
-                        focusLine
-                    });
-                    scheduleWindowedPreviewRefresh(focusLine, {
-                        urgent: inSpacer,
-                        source: 'preview'
-                    });
+                    noteWindowedScrollFocus(focusLine, 'preview');
                 });
             },
             { passive: true }

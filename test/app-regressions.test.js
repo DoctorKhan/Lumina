@@ -308,17 +308,38 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /from '\.\/largeDocument\.js'/);
   assert.match(main, /function renderWindowedPreview/);
   assert.match(main, /preview-window-spacer/);
-  assert.match(main, /function scheduleWindowedPreviewRefresh/);
+  assert.match(main, /function noteWindowedScrollFocus/);
+  assert.match(main, /function armWindowedPreviewIdle/);
+  assert.match(main, /function flushWindowedPreviewIdle/);
+  assert.match(main, /shouldScheduleIdleRewindow/);
   assert.match(main, /shouldRefreshWindow/);
-  assert.match(main, /source: 'editor'/);
-  assert.match(main, /source: 'preview'/);
-  assert.match(main, /PREVIEW_WINDOW_PREFETCH_MS/);
+  assert.match(main, /noteWindowedScrollFocus\(previewFocusLine\(\), 'editor'\)/);
+  assert.match(main, /noteWindowedScrollFocus\(focusLine, 'preview'\)/);
+  assert.match(main, /PREVIEW_WINDOW_IDLE_MS/);
+  assert.match(main, /PREVIEW_SCROLL_RESTORE_QUIET_MS/);
+  assert.match(main, /previewScrollQuietUntil/);
+  assert.match(main, /previewPipelineBusy/);
+  assert.match(main, /clearPreviewFocusOverride/);
   assert.match(main, /function estimateFocusLineFromPreviewScroll/);
   assert.match(main, /function getPreviewScrollFocusLine/);
   assert.match(main, /resolvePreviewScrollFocusLine/);
   assert.match(main, /previewWindowScrollAnchorLine/);
   assert.match(main, /restorePreviewScrollToAnchorLine/);
   assert.match(main, /shouldIgnorePreviewScroll/);
+  // Scroll rAF paths must not start the heavy markdown pipeline mid-scroll.
+  assert.doesNotMatch(main, /function scheduleWindowedPreviewRefresh/);
+  const editorScrollHandler = main.match(
+    /editor\.addEventListener\(\s*['"]scroll['"],\s*\(\)\s*=>\s*\{([\s\S]*?)\},\s*\{\s*passive:\s*true\s*\}\s*\)/
+  );
+  assert.ok(editorScrollHandler, 'editor scroll listener must exist');
+  assert.doesNotMatch(editorScrollHandler[1], /updatePreview\s*\(/);
+  assert.match(editorScrollHandler[1], /noteWindowedScrollFocus/);
+  const previewScrollHandler = main.match(
+    /preview\.addEventListener\(\s*['"]scroll['"],\s*\(\)\s*=>\s*\{([\s\S]*?)\},\s*\{\s*passive:\s*true\s*\}\s*\)/
+  );
+  assert.ok(previewScrollHandler, 'preview scroll listener must exist');
+  assert.doesNotMatch(previewScrollHandler[1], /updatePreview\s*\(/);
+  assert.match(previewScrollHandler[1], /noteWindowedScrollFocus/);
   assert.match(main, /function scheduleFindRefresh/);
   assert.match(main, /findRefreshDebounceMs/);
   assert.match(main, /flushScheduledFindRefresh/);

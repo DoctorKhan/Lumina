@@ -128,6 +128,23 @@ export function shouldRefreshWindow(state, focusLine, policy = 'editor') {
     );
 }
 
+/**
+ * VS Code-style gate: heavy re-window only after scroll has settled and the
+ * quiet window from the last programmatic scroll has elapsed.
+ */
+export function shouldScheduleIdleRewindow({
+    quietUntil = 0,
+    now = 0,
+    needsRefresh = false,
+    pipelineBusy = false,
+    inputRenderPending = false
+} = {}) {
+    if (pipelineBusy) return false;
+    if (inputRenderPending) return false;
+    if (now < quietUntil) return false;
+    return Boolean(needsRefresh);
+}
+
 export function resolvePreviewFocusLine(state, editorAnchorLine) {
     if (state.focusOverride != null && Number.isFinite(state.focusOverride)) {
         return Math.max(0, Math.round(state.focusOverride));

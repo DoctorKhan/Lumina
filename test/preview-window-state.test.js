@@ -4,7 +4,8 @@ import {
     initialPreviewWindow,
     previewWindowReduce,
     resolvePreviewFocusLine,
-    shouldRefreshWindow
+    shouldRefreshWindow,
+    shouldScheduleIdleRewindow
 } from '../src/previewWindowState.js';
 import {
     LARGE_DOCUMENT_CHAR_THRESHOLD,
@@ -176,5 +177,53 @@ describe('previewWindowState', () => {
         });
         assert.equal(state.mode, 'windowed');
         assert.ok(state.tokenEnd >= state.tokenStart);
+    });
+
+    test('shouldScheduleIdleRewindow follows VS Code settle + quiet rules', () => {
+        assert.equal(
+            shouldScheduleIdleRewindow({
+                quietUntil: 0,
+                now: 100,
+                needsRefresh: true,
+                pipelineBusy: false,
+                inputRenderPending: false
+            }),
+            true
+        );
+        assert.equal(
+            shouldScheduleIdleRewindow({
+                quietUntil: 200,
+                now: 100,
+                needsRefresh: true,
+                pipelineBusy: false
+            }),
+            false
+        );
+        assert.equal(
+            shouldScheduleIdleRewindow({
+                quietUntil: 0,
+                now: 100,
+                needsRefresh: true,
+                pipelineBusy: true
+            }),
+            false
+        );
+        assert.equal(
+            shouldScheduleIdleRewindow({
+                quietUntil: 0,
+                now: 100,
+                needsRefresh: true,
+                inputRenderPending: true
+            }),
+            false
+        );
+        assert.equal(
+            shouldScheduleIdleRewindow({
+                quietUntil: 0,
+                now: 100,
+                needsRefresh: false
+            }),
+            false
+        );
     });
 });

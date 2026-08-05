@@ -16,12 +16,13 @@ export const OUTLINE_REFRESH_DEBOUNCE_MS_LARGE = 800;
 export const EDITOR_HISTORY_LIMIT_LARGE = 30;
 export const EDITOR_HISTORY_LIMIT_DEFAULT = 200;
 export const PREVIEW_WINDOW_LINE_HEIGHT_PX = 26;
-/** Editor-driven re-window debounce — keep off the typing/scroll hot path. */
-export const PREVIEW_WINDOW_REFRESH_MS = 100;
-/** Preview-driven prefetch while still inside rendered content. */
-export const PREVIEW_WINDOW_PREFETCH_MS = 32;
-/** Re-window immediately once the preview viewport is already on a spacer. */
-export const PREVIEW_WINDOW_REFRESH_URGENT_MS = 0;
+/**
+ * After scroll stops, wait this long before one windowed re-render.
+ * Matches VS Code’s separation of scroll sync from content updates.
+ */
+export const PREVIEW_WINDOW_IDLE_MS = 180;
+/** Ignore programmatic preview scroll restores (VS Code scrollDisabled ~200ms). */
+export const PREVIEW_SCROLL_RESTORE_QUIET_MS = 200;
 
 export function isLargeDocument(charCount) {
     return charCount >= LARGE_DOCUMENT_CHAR_THRESHOLD;
