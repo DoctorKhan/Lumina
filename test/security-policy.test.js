@@ -50,6 +50,9 @@ test("git commit message generation uses Hermes one-shot chat mode", () => {
   assert.match(rust, /fn infer_local_commit_message/);
   assert.match(rust, /GeneratedCommitMessage/);
   assert.match(rust, /Command::new\("hermes"\)/);
+  assert.match(rust, /fn hermes_agent_turn_args/);
+  assert.match(rust, /"-q"/);
+  assert.match(rust, /"-Q"/);
   assert.match(rust, /\.arg\("-q"\)/);
   assert.match(rust, /\.arg\("-Q"\)/);
   assert.match(rust, /fn normalize_commit_message/);

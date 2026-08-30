@@ -221,6 +221,13 @@ test("terminal and Claude share a resizable right-side rail", () => {
   assert.match(main, /function syncAgentPaneLabels\(/);
   assert.match(main, /type: 'plain_text'/);
   assert.match(rust, /Command::new\("hermes"\)/);
+  assert.match(rust, /fn hermes_agent_turn_args/);
+  assert.match(rust, /command\.args\(hermes_agent_turn_args\(/);
+  assert.match(rust, /command\.stdin\(Stdio::null\(\)\)/);
+  assert.doesNotMatch(
+    rust,
+    /Deliver the message on stdin and close it so hermes ends the turn at EOF/
+  );
   assert.match(main, /sidePane\.classList\.toggle\('side-pane-split', visibleCount > 1\)/);
   assert.match(main, /sidePanePercent = Math\.min\(65, Math\.max\(24, rawPercent\)\)/);
   assert.match(main, /editorPane\.style\.flex = `1 1 \$\{editorPercent\}%`/);
@@ -232,6 +239,12 @@ test("terminal and Claude share a resizable right-side rail", () => {
   assert.match(main, /tab\.lastFitCols/);
   assert.match(main, /tab\.terminal\.cols === tab\.lastFitCols && tab\.terminal\.rows === tab\.lastFitRows/);
   assert.match(main, /resizeTerminals\(\{ settle: false \}\)/);
+  assert.match(main, /function scheduleTerminalResizeAfterLayout\(/);
+  assert.match(main, /function flushAppMenuSync\(/);
+  assert.match(main, /APP_MENU_SYNC_DEBOUNCE_MS/);
+  assert.match(main, /syncAppMenu\(undefined, \{ immediate: true \}\)/);
+  assert.match(main, /schedulePreviewUpdate\(\{ preferIdle: true \}\)/);
+  assert.match(main, /void maybeOfferRecoveryRestore\(file\.path, file\.content\)/);
   assert.match(main, /sidePaneResizer\?\.addEventListener/);
   assert.match(main, /\(workspacePanes \|\| editorContainer\)\.getBoundingClientRect\(\)/);
 });
@@ -410,7 +423,7 @@ test("assistant composers accept pasted screenshots", () => {
   assert.match(security, /fn validate_pasted_image_attachment_path/);
   assert.match(rust, /extract_pasted_image_paths\(&text\)/);
   assert.match(rust, /validate_pasted_image_attachment_path\(&path\)/);
-  assert.match(rust, /\.arg\("--image"\)/);
+  assert.match(rust, /args\.push\("--image"\.to_string\(\)\)/);
 });
 
 test("example guide documents the app features that have regressed before", () => {

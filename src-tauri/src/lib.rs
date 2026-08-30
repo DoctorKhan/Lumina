@@ -1311,8 +1311,36 @@ fn cursor_agent_cwd(
     fs::canonicalize(&cwd).map_err(|error| error.to_string())
 }
 
+/// Non-interactive Hermes Agent turn. Interactive `hermes chat` requires a TTY
+/// and exits with "Input is not a terminal (fd=0)" when stdin is a pipe; `-q`
+/// is the one-shot query API, and `-Q` keeps stdout to the final response.
+fn hermes_agent_turn_args(query: &str, image_paths: &[PathBuf]) -> Vec<String> {
+    let mut args = vec![
+        "chat".to_string(),
+        "-q".to_string(),
+        query.to_string(),
+        "-Q".to_string(),
+        "--yolo".to_string(),
+        "--accept-hooks".to_string(),
+        "--source".to_string(),
+        "tool".to_string(),
+    ];
+    for path in image_paths {
+        args.push("--image".to_string());
+        args.push(path.to_string_lossy().into_owned());
+    }
+    args
+}
+
+fn is_hermes_quiet_noise_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("session_id:")
+        || trimmed.starts_with("Warning: Input is not a terminal")
+}
+
 /// Runs one Cursor Agent turn via `cursor agent --print --output-format stream-json`.
 /// The first turn starts a fresh session; later turns pass `--continue`.
+/// Hermes turns use `hermes chat -q` instead of an interactive TTY session.
 #[tauri::command(async)]
 fn cursor_agent_send(
     app: AppHandle,
@@ -1340,16 +1368,13 @@ fn cursor_agent_send(
 
     let mut command;
     if is_hermes {
-        command = Command::new("hermes");
-        // `hermes chat` takes no positional message (argparse rejects one with
-        // "unrecognized arguments"); it reads the message from stdin, and end of
-        // input ends the turn.
-        command.arg("chat");
+        let mut image_paths = Vec::new();
         for path in extract_pasted_image_paths(&text) {
-            let validated = validate_pasted_image_attachment_path(&path)?;
-            command.arg("--image").arg(validated);
+            image_paths.push(validate_pasted_image_attachment_path(&path)?);
         }
-        command.stdin(Stdio::piped());
+        command = Command::new("hermes");
+        command.args(hermes_agent_turn_args(&text, &image_paths));
+        command.stdin(Stdio::null());
     } else {
         command = Command::new("cursor");
         command
@@ -1390,18 +1415,6 @@ fn cursor_agent_send(
             )
         }
     })?;
-    if is_hermes {
-        // Deliver the message on stdin and close it so hermes ends the turn at EOF.
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Hermes stdin is unavailable.".to_string())?;
-        let message = text.clone();
-        thread::spawn(move || {
-            let _ = stdin.write_all(message.as_bytes());
-            let _ = stdin.write_all(b"\n");
-        });
-    }
     let stdout = child
         .stdout
         .take()
@@ -1417,6 +1430,9 @@ fn cursor_agent_send(
         for line in reader.lines() {
             match line {
                 Ok(line) if !line.trim().is_empty() => {
+                    if is_hermes && is_hermes_quiet_noise_line(&line) {
+                        continue;
+                    }
                     let _ = app_out.emit("cursor-agent-chat", line);
                 }
                 Ok(_) => {}
@@ -1443,6 +1459,9 @@ fn cursor_agent_send(
         let reader = BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
             if line.trim().is_empty() {
+                continue;
+            }
+            if is_hermes && is_hermes_quiet_noise_line(&line) {
                 continue;
             }
             let payload = serde_json::json!({ "type": "__stderr", "text": line }).to_string();
@@ -3178,5 +3197,49 @@ mod commit_message_tests {
         assert!(message.contains("- notes.md"));
 
         let _ = fs::remove_dir_all(&repo);
+    }
+}
+
+#[cfg(test)]
+mod hermes_agent_tests {
+    use super::{hermes_agent_turn_args, is_hermes_quiet_noise_line};
+    use std::path::PathBuf;
+
+    #[test]
+    fn agent_turn_uses_noninteractive_query_flags() {
+        let args = hermes_agent_turn_args("hello from lumina", &[]);
+        assert_eq!(
+            args,
+            vec![
+                "chat",
+                "-q",
+                "hello from lumina",
+                "-Q",
+                "--yolo",
+                "--accept-hooks",
+                "--source",
+                "tool",
+            ]
+        );
+    }
+
+    #[test]
+    fn agent_turn_attaches_validated_images() {
+        let args = hermes_agent_turn_args(
+            "look at this",
+            &[PathBuf::from("/tmp/paste.png")],
+        );
+        assert!(args.windows(2).any(|pair| pair == ["--image", "/tmp/paste.png"]));
+        assert_eq!(args[0], "chat");
+        assert_eq!(args[1], "-q");
+    }
+
+    #[test]
+    fn drops_quiet_mode_session_and_tty_noise() {
+        assert!(is_hermes_quiet_noise_line("session_id: abc123"));
+        assert!(is_hermes_quiet_noise_line(
+            "Warning: Input is not a terminal (fd=0)."
+        ));
+        assert!(!is_hermes_quiet_noise_line("Here is the edited paragraph."));
     }
 }

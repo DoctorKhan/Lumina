@@ -616,9 +616,15 @@ const maxRecentFilePaths = 10;
                     : outlinePaneReduce(outlineState, { type: 'Toggle' });
             localStorage.setItem(outlineVisibleKey, String(outlineState.visible));
             syncOutlineToggleButton();
-            renderDocumentOutline(outlineState.headings.length
-                ? outlineState.headings
-                : collectDocumentHeadings(editor.value));
+            if (!outlineState.visible) {
+                documentOutline?.classList.add('hidden');
+                return;
+            }
+            if (outlineState.headings.length) {
+                renderDocumentOutline(outlineState.headings);
+            } else {
+                scheduleDocumentOutlineRefresh({ rebuild: true });
+            }
         }
 
         toggleOutlineBtn?.addEventListener('click', () => toggleOutlinePane());
@@ -632,15 +638,31 @@ const maxRecentFilePaths = 10;
         let prevPreviewNormalized = null;
         let prevPreviewTokens = null;
 
-        function schedulePreviewUpdate() {
+        let previewOpenIdleHandle = null;
+
+        function schedulePreviewUpdate({ preferIdle = false } = {}) {
             preview.innerHTML = '<p class="text-slate-500">Rendering preview...</p>';
             // The placeholder replaced the rendered DOM, so the incremental cache
             // no longer describes what's on screen.
             prevPreviewTokens = null;
             prevPreviewNormalized = null;
-            requestAnimationFrame(() => {
+            if (previewOpenIdleHandle != null && 'cancelIdleCallback' in window) {
+                window.cancelIdleCallback(previewOpenIdleHandle);
+            }
+            previewOpenIdleHandle = null;
+            const run = () => {
+                previewOpenIdleHandle = null;
                 void updatePreview();
-            });
+            };
+            if (preferIdle && 'requestIdleCallback' in window) {
+                requestAnimationFrame(() => {
+                    previewOpenIdleHandle = window.requestIdleCallback(run, {
+                        timeout: previewInputIdleTimeoutMs
+                    });
+                });
+            } else {
+                requestAnimationFrame(run);
+            }
         }
 
         // Re-rendering the whole document while the user is mid-keystroke makes
@@ -1227,8 +1249,8 @@ const maxRecentFilePaths = 10;
             charCount.textContent = `${content.length} chars`;
             resetEditorHistory();
             syncDocumentDirtyFromContent();
-            schedulePreviewUpdate();
-            renderDocumentOutline();
+            schedulePreviewUpdate({ preferIdle: true });
+            scheduleDocumentOutlineRefresh();
         }
 
         function loadExampleGuide() {
@@ -1283,7 +1305,11 @@ function readRecentFilePaths() {
     }
 }
 
-function syncAppMenu(paths = readRecentFilePaths()) {
+let appMenuSyncTimer = null;
+const APP_MENU_SYNC_DEBOUNCE_MS = 120;
+
+function flushAppMenuSync(paths = readRecentFilePaths()) {
+    appMenuSyncTimer = null;
     invoke('sync_app_menu', {
         params: {
             paths,
@@ -1295,6 +1321,19 @@ function syncAppMenu(paths = readRecentFilePaths()) {
     }).catch((error) => {
         setUpdateStatus(`Unable to update menu: ${error?.message || error}`);
     });
+}
+
+function syncAppMenu(paths = readRecentFilePaths(), { immediate = false } = {}) {
+    if (immediate) {
+        if (appMenuSyncTimer != null) {
+            clearTimeout(appMenuSyncTimer);
+            appMenuSyncTimer = null;
+        }
+        flushAppMenuSync(paths);
+        return;
+    }
+    clearTimeout(appMenuSyncTimer);
+    appMenuSyncTimer = setTimeout(() => flushAppMenuSync(), APP_MENU_SYNC_DEBOUNCE_MS);
 }
 
 function writeRecentFilePaths(paths) {
@@ -1743,7 +1782,7 @@ async function refreshEditorFromDisk(file, { identical = false } = {}) {
         markDocumentPersisted(editor.value);
     }
     schedulePreviewUpdate();
-    renderDocumentOutline();
+    scheduleDocumentOutlineRefresh();
     editor.focus();
 }
 
@@ -1814,15 +1853,15 @@ async function startFileWatcher(path) {
 async function openFilePath(path) {
     hideDocumentAlertBanner();
     setFilenameLabel(`Opening: ${path}`, path);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
     const file = await invoke('open_file_path', { path });
     currentFileMtime = file.modifiedMs ?? 0;
     setEditorContent(file.content, `Editing: ${file.path}`, file.path);
     markDocumentPersisted(file.content);
     rememberOpenedPath(file.path);
-    startFileWatcher(file.path, currentFileMtime);
-    await maybeOfferRecoveryRestore(file.path, file.content);
+    void startFileWatcher(file.path);
     editor.focus();
+    void maybeOfferRecoveryRestore(file.path, file.content);
 }
 
 async function flushPendingOpenPathsFromBackend() {
@@ -1914,7 +1953,7 @@ async function openRecentFile(recentIndex = null) {
                     filters: [
                         {
                             name: 'Markdown Documents',
-                            extensions: ['md', 'markdown', 'txt']
+                            extensions: ['md', 'markdown', 'mdown', 'mkd', 'mkdn', 'mdx', 'txt']
                         }
                     ]
                 });
@@ -3544,6 +3583,23 @@ async function checkForUpdate({ background = false, force = false } = {}) {
             resizeTerminal(options);
         }
 
+        let terminalLayoutSettleFrame = 0;
+
+        // Pane toggles and layout writes resize flex children immediately via CSS;
+        // defer the expensive xterm fit until after layout settles, and coalesce
+        // bursts (e.g. toggling multiple panes) into one settled pass.
+        function scheduleTerminalResizeAfterLayout() {
+            resizeTerminals({ settle: false });
+            if (!terminalVisible) return;
+            cancelAnimationFrame(terminalLayoutSettleFrame);
+            terminalLayoutSettleFrame = requestAnimationFrame(() => {
+                terminalLayoutSettleFrame = requestAnimationFrame(() => {
+                    terminalLayoutSettleFrame = 0;
+                    resizeTerminals({ settle: true });
+                });
+            });
+        }
+
         // Live drag path: fitAddon.fit() reflows the whole xterm scrollback, which is
         // far too expensive to run on every mousemove (~60fps). The panes still resize
         // visually via CSS at full frame rate; we only reflow the terminals a few times
@@ -4948,7 +5004,7 @@ async function replaceSelectionFromClipboard() {
             const visibleCount = visibleSidePaneCount();
             const sidePaneVisible = visibleCount > 0;
             if (!sidePane) {
-                resizeTerminals();
+                scheduleTerminalResizeAfterLayout();
                 return;
             }
             sidePane.classList.toggle('hidden', !sidePaneVisible);
@@ -4956,7 +5012,7 @@ async function replaceSelectionFromClipboard() {
             sidePane.classList.toggle('side-pane-split', visibleCount > 1);
             sidePane.style.flexBasis = sidePaneVisible ? `${sidePanePercent}%` : '';
             applyVerticalPaneSizing();
-            resizeTerminals();
+            scheduleTerminalResizeAfterLayout();
         }
 
         // Apply the relative flex weights to the visible stacked panes and show a
@@ -5601,7 +5657,7 @@ async function replaceSelectionFromClipboard() {
         function toggleSource() {
             sourceCollapsed = !sourceCollapsed;
             editorContainer.classList.toggle('editor-collapsed', sourceCollapsed);
-            resizeTerminals();
+            scheduleTerminalResizeAfterLayout();
             syncPaneToggleButtons();
         }
 
@@ -5727,7 +5783,7 @@ async function replaceSelectionFromClipboard() {
         }).catch((error) => {
             setUpdateStatus(`Open-file events unavailable: ${error?.message || error}`);
         });
-        syncAppMenu();
+        syncAppMenu(undefined, { immediate: true });
 appVersionBadge.addEventListener('click', () => { void handleVersionBadgeClick(); });
 installUpdateBadge.addEventListener('click', installDetectedUpdate);
 shareRepoLink?.addEventListener('click', (event) => {
