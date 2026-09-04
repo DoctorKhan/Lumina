@@ -337,8 +337,15 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.match(main, /function getPreviewScrollFocusLine/);
   assert.match(main, /resolvePreviewScrollFocusLine/);
   assert.match(main, /previewWindowScrollAnchorLine/);
+  assert.match(main, /previewScrollAnchorLocked/);
   assert.match(main, /restorePreviewScrollToAnchorLine/);
   assert.match(main, /shouldIgnorePreviewScroll/);
+  const outlineClickHandler = main.match(
+    /scrollEditorToOffset\(heading\.offset\);\s*([\s\S]*?)\}\);/
+  );
+  assert.ok(outlineClickHandler, 'outline click handler must exist');
+  assert.doesNotMatch(outlineClickHandler[1], /scheduleInputPreviewRender/);
+  assert.doesNotMatch(outlineClickHandler[1], /renderDocumentOutline\(headings\)/);
   // Scroll rAF paths must not start the heavy markdown pipeline mid-scroll.
   assert.doesNotMatch(main, /function scheduleWindowedPreviewRefresh/);
   const editorScrollHandler = main.match(
@@ -347,6 +354,7 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.ok(editorScrollHandler, 'editor scroll listener must exist');
   assert.doesNotMatch(editorScrollHandler[1], /updatePreview\s*\(/);
   assert.match(editorScrollHandler[1], /noteWindowedScrollFocus/);
+  assert.match(editorScrollHandler[1], /previewScrollAnchorLocked/);
   const previewScrollHandler = main.match(
     /preview\.addEventListener\(\s*['"]scroll['"],\s*\(\)\s*=>\s*\{([\s\S]*?)\},\s*\{\s*passive:\s*true\s*\}\s*\)/
   );

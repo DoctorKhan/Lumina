@@ -41,6 +41,10 @@ import {
             splitYamlFrontmatter
         } from './previewFrontmatter.js';
         import { sanitizePreviewHtml } from './previewSanitize.js';
+        import {
+            lineNumberFromPreviewFragment,
+            resolvePreviewDocumentLink
+        } from './previewLinks.js';
         import { escapeAttr, escapeHtml, isAllowedInitialFileParam } from './htmlEscape.js';
         import {
             appendUserTurn,
@@ -586,6 +590,12 @@ const maxRecentFilePaths = 10;
         let scrollSync = initialScrollSync();
         /** When set, the next windowed render restores preview scroll to this source line. */
         let previewWindowScrollAnchorLine = null;
+        /**
+         * True while an outline/find jump is re-windowing preview. Prevents the
+         * editor scroll listener from clearing the anchor or syncing preview
+         * against a stale slice before updatePreview() finishes.
+         */
+        let previewScrollAnchorLocked = false;
         /** performance.now() until which scroll must not arm idle re-windows. */
         let previewScrollQuietUntil = 0;
         /** Last scroll source that armed the idle re-window ('editor' | 'preview'). */
@@ -715,10 +725,11 @@ const maxRecentFilePaths = 10;
         function scrollEditorToOffset(offset) {
             editor.focus();
             editor.setSelectionRange(offset, offset);
-            scrollEditorMatchIntoView(offset, offset);
-            if (isLargeDocument(editor.value.length)) {
-                // Drop any preview-scroll focus override so the jump re-windows
-                // around the destination, not a stale spacer estimate.
+            const largeDocument = isLargeDocument(editor.value.length);
+            // Windowed preview must re-render before scroll sync; syncing against
+            // the old slice clamps to the first visible section.
+            scrollEditorMatchIntoView(offset, offset, { syncPreview: !largeDocument });
+            if (largeDocument) {
                 const jumpLine = Math.max(
                     0,
                     editor.value.slice(0, offset).split('\n').length - 1
@@ -727,12 +738,49 @@ const maxRecentFilePaths = 10;
                     type: 'SetFocusOverride',
                     focusLine: jumpLine
                 });
+                previewScrollAnchorLocked = true;
                 previewWindowScrollAnchorLine = jumpLine;
-                void updatePreview();
+                void updatePreview().finally(() => {
+                    previewScrollAnchorLocked = false;
+                });
                 return;
             }
             syncPreviewScrollToEditor(offset);
         }
+
+        function editorOffsetForLine(line) {
+            const targetLine = Math.max(1, Math.floor(Number(line) || 1));
+            let offset = 0;
+            for (let currentLine = 1; currentLine < targetLine; currentLine += 1) {
+                const newline = editor.value.indexOf('\n', offset);
+                if (newline === -1) return editor.value.length;
+                offset = newline + 1;
+            }
+            return offset;
+        }
+
+        async function openPreviewDocumentLink(event, link) {
+            const href = link.getAttribute('href');
+            const target = resolvePreviewDocumentLink(href, currentFilePath || '');
+            if (!target) return;
+
+            event.preventDefault();
+            try {
+                await openFilePath(target.path);
+                const line = lineNumberFromPreviewFragment(target.fragment);
+                if (line != null) {
+                    scrollEditorToOffset(editorOffsetForLine(line));
+                }
+            } catch (error) {
+                setUpdateStatus(`Unable to open ${target.path}: ${error?.message || error}`);
+            }
+        }
+
+        preview.addEventListener('click', (event) => {
+            const link = event.target?.closest?.('a');
+            if (!link || !preview.contains(link)) return;
+            void openPreviewDocumentLink(event, link);
+        });
 
         function clearPreviewWindowState() {
             previewWindow = previewWindowReduce(previewWindow, { type: 'Cleared' });
@@ -775,7 +823,9 @@ const maxRecentFilePaths = 10;
                 previewWindowScrollAnchorLine = roundedFocus;
             } else {
                 clearPreviewFocusOverride();
-                previewWindowScrollAnchorLine = null;
+                if (!previewScrollAnchorLocked) {
+                    previewWindowScrollAnchorLine = null;
+                }
             }
             previewWindowIdleSource = source;
             armWindowedPreviewIdle();
@@ -939,11 +989,21 @@ const maxRecentFilePaths = 10;
                 item.title = heading.title;
                 item.addEventListener('click', () => {
                     scrollEditorToOffset(heading.offset);
-                    renderDocumentOutline(headings);
-                    lastInputRenderedSource = null;
-                    if (isLargeDocument(editor.value.length)) {
-                        scheduleInputPreviewRender();
-                    }
+                    outlineState = outlinePaneReduce(outlineState, {
+                        type: 'ViewportLineChanged',
+                        viewportLine: heading.line - 1
+                    });
+                    documentOutlineList
+                        ?.querySelectorAll('.document-outline-item')
+                        .forEach((el, itemIndex) => {
+                            el.classList.toggle(
+                                'is-active',
+                                itemIndex === outlineState.activeIndex
+                            );
+                        });
+                    documentOutlineList
+                        ?.querySelector('.document-outline-item.is-active')
+                        ?.scrollIntoView({ block: 'nearest' });
                 });
                 const li = document.createElement('li');
                 li.appendChild(item);
@@ -1862,6 +1922,7 @@ async function openFilePath(path) {
     void startFileWatcher(file.path);
     editor.focus();
     void maybeOfferRecoveryRestore(file.path, file.content);
+    return file;
 }
 
 async function flushPendingOpenPathsFromBackend() {
@@ -2408,7 +2469,7 @@ async function openRecentFile(recentIndex = null) {
         function rebuildPreviewLineMap(sourceTokens = null) {
             const map = [];
             const children = preview.children;
-            const editorPaddingTop = parseFloat(getComputedStyle(editor).paddingTop) || 0;
+            const previewPaddingTop = parseFloat(getComputedStyle(preview).paddingTop) || 0;
             const { metadata, body, frontmatterLineCount } = splitYamlFrontmatter(editor.value);
             let line = previewWindow.startLine;
             let childIndex = 0;
@@ -2441,7 +2502,7 @@ async function openRecentFile(recentIndex = null) {
 
             if (metadata && children[childIndex]?.classList.contains('document-frontmatter')) {
                 const el = children[childIndex];
-                const top = el.offsetTop - editorPaddingTop;
+                const top = el.offsetTop - previewPaddingTop;
                 map.push({ line: 0, top });
                 map.push({ line: frontmatterLineCount, top: top + el.offsetHeight });
                 line = frontmatterLineCount;
@@ -2468,7 +2529,7 @@ async function openRecentFile(recentIndex = null) {
                     for (let i = 0; i < trimmed.length; i += 1) {
                         if (trimmed[i] === '\n') contentNewlines += 1;
                     }
-                    const top = el.offsetTop - editorPaddingTop;
+                    const top = el.offsetTop - previewPaddingTop;
                     map.push({ line: startLine, top });
                     map.push({ line: startLine + contentNewlines + 1, top: top + el.offsetHeight });
                 }
@@ -6683,7 +6744,7 @@ document.addEventListener('click', (event) => {
             return !isFindReplaceTarget(document.activeElement);
         }
 
-        function scrollEditorMatchIntoView(start, end = start) {
+        function scrollEditorMatchIntoView(start, end = start, { syncPreview = true } = {}) {
             const style = getComputedStyle(editor);
             const parsedLineHeight = parseFloat(style.lineHeight);
             const lineHeight =
@@ -6696,7 +6757,7 @@ document.addEventListener('click', (event) => {
             const maxScroll = Math.max(0, editor.scrollHeight - editor.clientHeight);
             editor.scrollTop = Math.min(maxScroll, Math.max(0, targetTop));
             syncHighlightLayerScroll();
-            syncPreviewScrollToEditor(start);
+            if (syncPreview) syncPreviewScrollToEditor(start);
         }
 
         function revealMatchAtCursor({ focusEditor } = {}) {
@@ -7220,7 +7281,9 @@ document.addEventListener('click', (event) => {
                     // Cheap path only: never start a markdown re-window mid-scroll.
                     // executePreviewRender() syncs after a settled idle re-window or input render.
                     if (previewInputDebounceTimer == null && previewInputIdleHandle == null) {
-                        syncPreviewScrollToEditor();
+                        if (!previewScrollAnchorLocked) {
+                            syncPreviewScrollToEditor();
+                        }
                         noteWindowedScrollFocus(previewFocusLine(), 'editor');
                     }
                     updateOutlineActiveItem();
