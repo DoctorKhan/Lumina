@@ -362,7 +362,8 @@ test("editor find and replace is wired with hotkeys and Edit menu items", () => 
   assert.doesNotMatch(previewScrollHandler[1], /updatePreview\s*\(/);
   assert.match(previewScrollHandler[1], /noteWindowedScrollFocus/);
   assert.match(main, /function scheduleFindRefresh/);
-  assert.match(main, /findRefreshDebounceMs/);
+  assert.match(main, /findRefreshDebounceMsForSize/);
+  assert.match(main, /shouldUseHeavyFindHighlights/);
   assert.match(main, /flushScheduledFindRefresh/);
   assert.match(main, /editorMetricsDebounceMsForSize/);
   assert.match(main, /countWords/);

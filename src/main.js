@@ -81,13 +81,15 @@ import {
             editorHistoryDebounceMsForSize,
             editorHistoryLimitForSize,
             editorMetricsDebounceMsForSize,
+            findRefreshDebounceMsForSize,
             isLargeDocument,
             outlineRefreshDebounceMsForSize,
             PREVIEW_WINDOW_LINE_HEIGHT_PX,
             PREVIEW_WINDOW_IDLE_MS,
             PREVIEW_SCROLL_RESTORE_QUIET_MS,
             previewInputDebounceMsForSize,
-            selectPreviewTokenWindow
+            selectPreviewTokenWindow,
+            shouldUseHeavyFindHighlights
         } from './largeDocument.js';
         import {
             collectDocumentHeadings
@@ -2293,7 +2295,11 @@ async function openRecentFile(recentIndex = null) {
             rebuildPreviewLineMap(
                 normalizedValue === rawValue ? prevPreviewTokens : null
             );
-            if (findBarVisible && findNeedle()) {
+            if (
+                findBarVisible &&
+                findNeedle() &&
+                shouldUseHeavyFindHighlights(rawValue.length)
+            ) {
                 const matches = collectFindMatches();
                 const index = findMatchIndex >= 0 ? findMatchIndex : activeFindMatchIndex(matches);
                 applyPreviewFindHighlights(matches, index);
@@ -2346,6 +2352,29 @@ async function openRecentFile(recentIndex = null) {
             }
 
             const style = getComputedStyle(editor);
+            const parsedLineHeight = parseFloat(style.lineHeight);
+            const lineHeight =
+                Number.isFinite(parsedLineHeight) && parsedLineHeight > 0
+                    ? parsedLineHeight
+                    : PREVIEW_WINDOW_LINE_HEIGHT_PX;
+
+            // Large docs: hard-line estimate only. Building a DOM mirror and reading
+            // offsetTop per line freezes the UI on pane toggles / scroll sync.
+            if (isLargeDocument(value.length)) {
+                const map = [{ line: 0, top: 0 }];
+                let line = 0;
+                for (let index = 0; index < value.length; index += 1) {
+                    if (value[index] !== '\n') continue;
+                    line += 1;
+                    map.push({ line, top: line * lineHeight });
+                }
+                editorVisualLineMap = map;
+                editorVisualLineMapText = value;
+                editorVisualLineMapWidth = width;
+                editorVisualLineMapDirty = false;
+                return editorVisualLineMap;
+            }
+
             const paddingTop = parseFloat(style.paddingTop) || 0;
             const fragment = document.createDocumentFragment();
             let cursor = 0;
@@ -2397,6 +2426,23 @@ async function openRecentFile(recentIndex = null) {
             });
             const value = editor.value;
             const clamped = Math.max(0, Math.min(offset, value.length));
+
+            // Large docs: avoid cloning the whole document into a measure element.
+            if (isLargeDocument(value.length)) {
+                const style = getComputedStyle(editor);
+                const parsedLineHeight = parseFloat(style.lineHeight);
+                const lineHeight =
+                    Number.isFinite(parsedLineHeight) && parsedLineHeight > 0
+                        ? parsedLineHeight
+                        : PREVIEW_WINDOW_LINE_HEIGHT_PX;
+                let line = 0;
+                for (let i = 0; i < clamped; i += 1) {
+                    if (value[i] === '\n') line += 1;
+                }
+                end({ approximated: true });
+                return line * lineHeight;
+            }
+
             const paddingTop = parseFloat(getComputedStyle(editor).paddingTop) || 0;
             const fragment = document.createDocumentFragment();
 
@@ -5718,6 +5764,12 @@ async function replaceSelectionFromClipboard() {
         function toggleSource() {
             sourceCollapsed = !sourceCollapsed;
             editorContainer.classList.toggle('editor-collapsed', sourceCollapsed);
+            // Width change invalidates the soft-wrap map; rebuild lazily on next scroll.
+            markEditorVisualLineMapDirty();
+            // Drop a stale full-document find overlay before the pane paints again.
+            if (!shouldUseHeavyFindHighlights(editor.value.length) && editorHighlightLayer?.firstChild) {
+                editorHighlightLayer.textContent = '';
+            }
             scheduleTerminalResizeAfterLayout();
             syncPaneToggleButtons();
         }
@@ -6314,7 +6366,6 @@ document.addEventListener('click', (event) => {
         let suppressFindSelectHandler = false;
         let findRefreshTimer = null;
         let findRefreshPending = { reveal: false };
-        const findRefreshDebounceMs = 80;
         const findOptions = { caseSensitive: false, wholeWord: false, regex: false };
 
         function cancelScheduledFindRefresh() {
@@ -6335,7 +6386,8 @@ document.addEventListener('click', (event) => {
                 end({ empty: true });
                 return;
             }
-            if (reveal) {
+            // Revealing scrolls + measures offsets; skip while typing on large docs.
+            if (reveal && shouldUseHeavyFindHighlights(editor.value.length)) {
                 revealMatchAtCursor({ focusEditor: false });
             } else {
                 updateFindMatchStatus();
@@ -6348,7 +6400,10 @@ document.addEventListener('click', (event) => {
         // can queue characters that spill into whatever field gets focus next.
         function scheduleFindRefresh({ reveal = false, immediate = false, deferMs = null } = {}) {
             findRefreshPending.reveal = findRefreshPending.reveal || reveal;
-            const delay = immediate ? 0 : deferMs ?? findRefreshDebounceMs;
+            const delay =
+                immediate
+                    ? 0
+                    : deferMs ?? findRefreshDebounceMsForSize(editor.value.length);
             if (immediate) {
                 cancelScheduledFindRefresh();
                 const pending = { ...findRefreshPending };
@@ -6570,6 +6625,8 @@ document.addEventListener('click', (event) => {
         function applyPreviewFindHighlights(sourceMatches = collectFindMatches(), currentIndex = findMatchIndex) {
             clearPreviewFindHighlights();
             if (!findBarVisible || !preview) return;
+            // Walking/rewriting every preview text node is too expensive on large docs.
+            if (!shouldUseHeavyFindHighlights(editor.value.length)) return;
 
             const needle = findNeedle();
             if (!needle) return;
@@ -6700,6 +6757,16 @@ document.addEventListener('click', (event) => {
             }
 
             const value = editor.value;
+            // Escaping + innerHTML of the whole document blocks typing on large files.
+            // Keep the match counter and selection navigation; skip the mirror overlay.
+            if (!shouldUseHeavyFindHighlights(value.length)) {
+                if (editorHighlightLayer.firstChild) {
+                    editorHighlightLayer.textContent = '';
+                }
+                end({ skipped: true, detail: 'large' });
+                return;
+            }
+
             let html = '';
             let cursor = 0;
             for (let i = 0; i < matches.length; i += 1) {
@@ -7057,7 +7124,11 @@ document.addEventListener('click', (event) => {
                 updateFindMatchStatus();
                 return;
             }
-            scheduleFindRefresh({ reveal: true });
+            // Large docs: update the match counter only — revealing scrolls/measures
+            // and rebuilds highlight mirrors, which stalls the find field.
+            scheduleFindRefresh({
+                reveal: shouldUseHeavyFindHighlights(editor.value.length)
+            });
         });
         findInput.addEventListener('blur', flushScheduledFindRefresh);
         replaceInput.addEventListener('input', () => scheduleFindRefresh());

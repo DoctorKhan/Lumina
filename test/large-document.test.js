@@ -6,13 +6,17 @@ import {
     editorHistoryDebounceMsForSize,
     editorHistoryLimitForSize,
     editorMetricsDebounceMsForSize,
+    findRefreshDebounceMsForSize,
     isLargeDocument,
     outlineRefreshDebounceMsForSize,
     previewInputDebounceMsForSize,
     selectPreviewTokenWindow,
+    shouldUseHeavyFindHighlights,
     previewWindowNeedsRefresh,
     EDITOR_METRICS_DEBOUNCE_MS,
     EDITOR_METRICS_DEBOUNCE_MS_LARGE,
+    FIND_REFRESH_DEBOUNCE_MS,
+    FIND_REFRESH_DEBOUNCE_MS_LARGE,
     LARGE_DOCUMENT_CHAR_THRESHOLD,
     OUTLINE_REFRESH_DEBOUNCE_MS,
     OUTLINE_REFRESH_DEBOUNCE_MS_LARGE
@@ -124,6 +128,19 @@ describe('largeDocument', () => {
             outlineRefreshDebounceMsForSize(LARGE_DOCUMENT_CHAR_THRESHOLD),
             OUTLINE_REFRESH_DEBOUNCE_MS_LARGE
         );
+    });
+
+    test('find refresh debounce scales for large documents', () => {
+        assert.equal(findRefreshDebounceMsForSize(1000), FIND_REFRESH_DEBOUNCE_MS);
+        assert.equal(
+            findRefreshDebounceMsForSize(LARGE_DOCUMENT_CHAR_THRESHOLD),
+            FIND_REFRESH_DEBOUNCE_MS_LARGE
+        );
+    });
+
+    test('heavy find highlights are skipped on large documents', () => {
+        assert.equal(shouldUseHeavyFindHighlights(1000), true);
+        assert.equal(shouldUseHeavyFindHighlights(LARGE_DOCUMENT_CHAR_THRESHOLD), false);
     });
 
     test('selectPreviewTokenWindow handles empty tokens and doc edges', () => {

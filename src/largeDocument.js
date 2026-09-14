@@ -15,6 +15,15 @@ export const OUTLINE_REFRESH_DEBOUNCE_MS = 250;
 export const OUTLINE_REFRESH_DEBOUNCE_MS_LARGE = 800;
 export const EDITOR_HISTORY_LIMIT_LARGE = 30;
 export const EDITOR_HISTORY_LIMIT_DEFAULT = 200;
+/** Find status/highlight refresh while typing in the find field. */
+export const FIND_REFRESH_DEBOUNCE_MS = 80;
+export const FIND_REFRESH_DEBOUNCE_MS_LARGE = 280;
+/**
+ * Full-document find highlight mirrors (editor overlay + preview marks) clone or
+ * rewrite the whole document as DOM/HTML. Skip them past this size and keep the
+ * match counter + selection-based navigation instead.
+ */
+export const FIND_HEAVY_HIGHLIGHT_CHAR_THRESHOLD = LARGE_DOCUMENT_CHAR_THRESHOLD;
 export const PREVIEW_WINDOW_LINE_HEIGHT_PX = 26;
 /**
  * After scroll stops, wait this long before one windowed re-render.
@@ -84,6 +93,17 @@ export function outlineRefreshDebounceMsForSize(charCount) {
     return isLargeDocument(charCount)
         ? OUTLINE_REFRESH_DEBOUNCE_MS_LARGE
         : OUTLINE_REFRESH_DEBOUNCE_MS;
+}
+
+export function findRefreshDebounceMsForSize(charCount) {
+    return isLargeDocument(charCount)
+        ? FIND_REFRESH_DEBOUNCE_MS_LARGE
+        : FIND_REFRESH_DEBOUNCE_MS;
+}
+
+/** True when full-document find highlight DOM work is cheap enough to run live. */
+export function shouldUseHeavyFindHighlights(charCount) {
+    return charCount < FIND_HEAVY_HIGHLIGHT_CHAR_THRESHOLD;
 }
 
 export function countNewlines(text) {
