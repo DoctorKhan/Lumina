@@ -20,7 +20,11 @@ portable-pty = "0.9.0"
 tauri-plugin-dialog = "2.7.0"
 tauri-plugin-process = "2"
 notify-debouncer-full = "0.3"
-gpui = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+# Native document tabs: title-bar file proxy, edited dot, and tab grouping.
+# Versions match what tauri already pulls in, so nothing new is compiled.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSGraphics", "NSResponder", "NSWindow"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }

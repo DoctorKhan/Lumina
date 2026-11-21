@@ -1,3 +1,4 @@
+mod document_windows;
 mod security;
 
 use security::{
@@ -20,7 +21,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError},
     thread,
     time::{Duration, Instant},
 };
@@ -29,10 +30,13 @@ use tauri::{
     menu::{
         AboutMetadata, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder,
     },
-    AppHandle, Emitter, Manager, Runtime, State, Wry,
+    AppHandle, Emitter, EventTarget, Manager, Runtime, State, WebviewWindow, Wry,
 };
 
+/// File > New Tab (⌘T). Kept as `lumina_new_file` so existing handlers apply.
 const MENU_NEW_FILE: &str = "lumina_new_file";
+const MENU_NEW_WINDOW: &str = "lumina_new_window";
+const MENU_WINDOW: &str = "lumina_window_menu";
 const MENU_OPEN_FILE: &str = "lumina_open_file";
 const MENU_OPEN_LAST_FILE: &str = "lumina_open_last_file";
 const MENU_OPEN_RECENT_FILE_PREFIX: &str = "lumina_open_recent_file:";
@@ -89,12 +93,78 @@ struct CursorAgentChat {
     has_session: Mutex<bool>,
 }
 
+/// Everything one document window owns: its terminal tabs, assistant
+/// processes, and working directory. Each window (a native macOS tab or a
+/// separate window) gets its own, so windows never share shells or chats.
 #[derive(Default)]
-struct TerminalState {
+struct WindowSession {
     tabs: Mutex<HashMap<String, PtySession>>,
     claude_chat: ClaudeChat,
     cursor_agent: CursorAgentChat,
     cwd: Mutex<Option<PathBuf>>,
+}
+
+impl WindowSession {
+    /// Kills every process this window started. Called when the window closes.
+    fn shutdown(&self) {
+        if let Ok(mut tabs) = self.tabs.lock() {
+            for (_, session) in tabs.drain() {
+                let _ = kill_pty_session(&session);
+            }
+        }
+        if let Ok(mut guard) = self.claude_chat.stdin.lock() {
+            *guard = None;
+        }
+        if let Ok(mut guard) = self.claude_chat.child.lock() {
+            if let Some(mut child) = guard.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        kill_cursor_agent_turn(self);
+    }
+}
+
+/// Per-window sessions, keyed by window label.
+#[derive(Default)]
+struct TerminalState {
+    windows: Mutex<HashMap<String, Arc<WindowSession>>>,
+}
+
+impl TerminalState {
+    fn session(&self, label: &str) -> Arc<WindowSession> {
+        let mut windows = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
+        windows.entry(label.to_string()).or_default().clone()
+    }
+
+    fn remove(&self, label: &str) -> Option<Arc<WindowSession>> {
+        self.windows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(label)
+    }
+}
+
+/// Emits events to one window only. A plain `app.emit` reaches every window,
+/// which would mix one window's terminal output or chat into another.
+#[derive(Clone)]
+struct WindowEmitter {
+    app: AppHandle,
+    label: String,
+}
+
+impl WindowEmitter {
+    fn new(app: &AppHandle, label: &str) -> Self {
+        Self {
+            app: app.clone(),
+            label: label.to_string(),
+        }
+    }
+
+    fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) -> tauri::Result<()> {
+        self.app
+            .emit_to(EventTarget::webview_window(&self.label), event, payload)
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -110,18 +180,13 @@ struct TerminalHangupEvent {
     tab_id: String,
 }
 
-/// Paths passed in from the OS (`open -a Lumina.app file.md` on macOS, argv elsewhere)
-/// until the webview drains them.
-#[derive(Default)]
-struct PendingOpenPaths(Mutex<Vec<String>>);
-
 /// Holds the live filesystem watcher for the currently open document. The
 /// debouncer is boxed as `Any` so we don't have to name its generic watcher/cache
 /// types; keeping it here keeps the background watch thread alive, and replacing
 /// or clearing it stops the previous watch.
 #[derive(Default)]
 struct FileWatchState {
-    debouncer: Mutex<Option<Box<dyn std::any::Any + Send>>>,
+    debouncers: Mutex<HashMap<String, Box<dyn std::any::Any + Send>>>,
 }
 
 /// Recursive watch on the Lumina source checkout for auto-rebuild. Kept separate
@@ -129,7 +194,7 @@ struct FileWatchState {
 /// each other.
 #[derive(Default)]
 struct SourceWatchState {
-    debouncer: Mutex<Option<Box<dyn std::any::Any + Send>>>,
+    debouncers: Mutex<HashMap<String, Box<dyn std::any::Any + Send>>>,
 }
 
 fn collect_cli_document_paths() -> Vec<String> {
@@ -151,30 +216,6 @@ fn collect_cli_document_paths() -> Vec<String> {
         }
         paths
     }
-}
-
-fn notify_open_paths_pending(app: &AppHandle<Wry>, mut paths: Vec<String>) {
-    paths.retain(|path| !path.trim().is_empty());
-    if paths.is_empty() {
-        return;
-    }
-
-    {
-        let pending = app.state::<PendingOpenPaths>();
-        let mut guard = pending.0.lock().unwrap_or_else(PoisonError::into_inner);
-        guard.append(&mut paths);
-    }
-
-    let _ = app.emit("lumina-pending-open-files", ());
-}
-
-#[tauri::command]
-fn drain_pending_open_paths(state: State<'_, PendingOpenPaths>) -> Result<Vec<String>, String> {
-    let mut guard = state
-        .0
-        .lock()
-        .map_err(|_| "Pending open paths lock poisoned.".to_string())?;
-    Ok(std::mem::take(&mut *guard))
 }
 
 #[derive(Serialize, Clone)]
@@ -351,7 +392,8 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
     claude_shown: bool,
     agent_shown: bool,
 ) -> tauri::Result<Menu<R>> {
-    let new_file = menu_item(manager, MENU_NEW_FILE, "New", Some("CmdOrCtrl+N"))?;
+    let new_file = menu_item(manager, MENU_NEW_FILE, "New Tab", Some("CmdOrCtrl+T"))?;
+    let new_window = menu_item(manager, MENU_NEW_WINDOW, "New Window", Some("CmdOrCtrl+N"))?;
     let open_file = menu_item(manager, MENU_OPEN_FILE, "Open…", Some("CmdOrCtrl+O"))?;
     let open_last_file = menu_item(manager, MENU_OPEN_LAST_FILE, "Reopen Last File", None)?;
     let recent_files_menu = build_recent_files_menu(manager, recent_file_paths)?;
@@ -435,10 +477,12 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
 
     let file_menu = SubmenuBuilder::new(manager, "File")
         .item(&new_file)
+        .item(&new_window)
         .item(&open_file)
         .item(&open_last_file)
         .item(&recent_files_menu)
         .separator()
+        .close_window_with_text("Close Tab")
         .item(&save)
         .item(&save_as)
         .separator()
@@ -478,6 +522,14 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .item(&ai_apply_clipboard)
         .build()?;
 
+    // Registered as the app's Windows menu (see `install_app_menu`), so macOS
+    // adds Show Tab Bar, Show Previous/Next Tab, Move Tab to New Window, Merge
+    // All Windows, and the open-window list.
+    let window_menu = SubmenuBuilder::with_id(manager, MENU_WINDOW, "Window")
+        .minimize()
+        .maximize_with_text("Zoom")
+        .build()?;
+
     let help_menu = SubmenuBuilder::new(manager, "Help")
         .item(&open_example_guide)
         .build()?;
@@ -488,20 +540,15 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .item(&edit_menu)
         .item(&view_menu)
         .item(&assistant_menu)
+        .item(&window_menu)
         .item(&help_menu)
         .build()
 }
 
 fn emit_lumina_menu_command(app: &AppHandle, id: &str) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.emit("lumina-menu", id);
-        return;
+    if let Some(window) = document_windows::active_window(app) {
+        let _ = WindowEmitter::new(app, window.label()).emit("lumina-menu", id);
     }
-    if let Some(window) = app.webview_windows().into_values().next() {
-        let _ = window.emit("lumina-menu", id);
-        return;
-    }
-    let _ = app.emit("lumina-menu", id);
 }
 
 fn is_lumina_menu_id(id: &str) -> bool {
@@ -509,6 +556,7 @@ fn is_lumina_menu_id(id: &str) -> bool {
         || matches!(
             id,
             MENU_NEW_FILE
+                | MENU_NEW_WINDOW
                 | MENU_OPEN_FILE
                 | MENU_OPEN_LAST_FILE
                 | MENU_SAVE
@@ -598,7 +646,7 @@ fn session_live_cwd(session: &PtySession) -> Option<PathBuf> {
 /// the terminal or types into the open-file box. Prefers the terminal shell's
 /// *actual* working directory (read from the OS), falling back to the cwd we
 /// track from `cd` keystrokes when that lookup is unavailable.
-fn resolve_relative_base(state: &TerminalState) -> Option<PathBuf> {
+fn resolve_relative_base(state: &WindowSession) -> Option<PathBuf> {
     if let Ok(tabs) = state.tabs.lock() {
         for session in tabs.values() {
             if let Some(cwd) = session_live_cwd(session) {
@@ -686,7 +734,7 @@ fn default_cwd() -> PathBuf {
 }
 
 fn spawn_pty_session(
-    app: AppHandle,
+    app: WindowEmitter,
     session: &PtySession,
     tab_id: String,
     mut command: CommandBuilder,
@@ -867,7 +915,7 @@ fn kill_pty_session(session: &PtySession) -> Result<(), String> {
 }
 
 fn terminal_tab_session<'a>(
-    state: &'a TerminalState,
+    state: &'a WindowSession,
 ) -> Result<std::sync::MutexGuard<'a, HashMap<String, PtySession>>, String> {
     state
         .tabs
@@ -886,11 +934,14 @@ fn get_pty_tab_mut<'a>(
 #[tauri::command(async)]
 fn terminal_spawn(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     tab_id: String,
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
+    let state = state.session(window.label());
+    let app = WindowEmitter::new(&app, window.label());
     let tab_id = tab_id.trim().to_string();
     if tab_id.is_empty() {
         return Err("Terminal tab id is required.".to_string());
@@ -933,7 +984,7 @@ fn terminal_spawn(
 /// to the shared terminal cwd. Returns the resolved cwd and, when a file was
 /// given, the workspace info the webview shows in the pane header.
 fn resolve_claude_cwd(
-    state: &State<'_, TerminalState>,
+    state: &WindowSession,
     file_path: Option<String>,
     cwd: Option<String>,
 ) -> Result<(PathBuf, Option<ClaudeWorkspaceInfo>), String> {
@@ -978,6 +1029,7 @@ fn resolve_claude_cwd(
 #[tauri::command(async)]
 fn claude_chat_start(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     file_path: Option<String>,
     cwd: Option<String>,
@@ -985,6 +1037,8 @@ fn claude_chat_start(
     permission_mode: Option<String>,
     model: Option<String>,
 ) -> Result<Option<ClaudeWorkspaceInfo>, String> {
+    let state = state.session(window.label());
+    let app = WindowEmitter::new(&app, window.label());
     if state
         .claude_chat
         .child
@@ -1132,7 +1186,9 @@ naming a file, they mean that document — read it directly from disk.",
 }
 
 #[tauri::command]
-fn terminal_set_cwd(state: State<'_, TerminalState>, path: String) -> Result<(), String> {
+fn terminal_set_cwd(window: WebviewWindow,
+    state: State<'_, TerminalState>, path: String) -> Result<(), String> {
+    let state = state.session(window.label());
     let mut cwd = state
         .cwd
         .lock()
@@ -1150,10 +1206,12 @@ fn terminal_set_cwd(state: State<'_, TerminalState>, path: String) -> Result<(),
 
 #[tauri::command]
 fn terminal_write(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     tab_id: String,
     data: String,
 ) -> Result<(), String> {
+    let state = state.session(window.label());
     let tab_id = tab_id.trim().to_string();
     let mut tabs = terminal_tab_session(&state)?;
     let session = get_pty_tab_mut(&mut tabs, &tab_id)?;
@@ -1162,11 +1220,13 @@ fn terminal_write(
 
 #[tauri::command]
 fn terminal_resize(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     tab_id: String,
     rows: u16,
     cols: u16,
 ) -> Result<(), String> {
+    let state = state.session(window.label());
     let tab_id = tab_id.trim().to_string();
     let mut tabs = terminal_tab_session(&state)?;
     let session = get_pty_tab_mut(&mut tabs, &tab_id)?;
@@ -1174,7 +1234,9 @@ fn terminal_resize(
 }
 
 #[tauri::command]
-fn terminal_kill(state: State<'_, TerminalState>, tab_id: String) -> Result<(), String> {
+fn terminal_kill(window: WebviewWindow,
+    state: State<'_, TerminalState>, tab_id: String) -> Result<(), String> {
+    let state = state.session(window.label());
     let tab_id = tab_id.trim().to_string();
     let mut tabs = terminal_tab_session(&state)?;
     if let Some(session) = tabs.get(&tab_id) {
@@ -1185,7 +1247,9 @@ fn terminal_kill(state: State<'_, TerminalState>, tab_id: String) -> Result<(), 
 }
 
 #[tauri::command]
-fn terminal_kill_all(state: State<'_, TerminalState>) -> Result<(), String> {
+fn terminal_kill_all(window: WebviewWindow,
+    state: State<'_, TerminalState>) -> Result<(), String> {
+    let state = state.session(window.label());
     let mut tabs = state
         .tabs
         .lock()
@@ -1198,7 +1262,9 @@ fn terminal_kill_all(state: State<'_, TerminalState>) -> Result<(), String> {
 
 /// Sends one user turn to the running Claude chat as a `stream-json` line.
 #[tauri::command]
-fn claude_chat_send(state: State<'_, TerminalState>, text: String) -> Result<(), String> {
+fn claude_chat_send(window: WebviewWindow,
+    state: State<'_, TerminalState>, text: String) -> Result<(), String> {
+    let state = state.session(window.label());
     let mut guard = state
         .claude_chat
         .stdin
@@ -1221,7 +1287,9 @@ fn claude_chat_send(state: State<'_, TerminalState>, text: String) -> Result<(),
 
 /// Stops the running Claude chat (kills the process, drops the stdin writer).
 #[tauri::command]
-fn claude_chat_stop(state: State<'_, TerminalState>) -> Result<(), String> {
+fn claude_chat_stop(window: WebviewWindow,
+    state: State<'_, TerminalState>) -> Result<(), String> {
+    let state = state.session(window.label());
     if let Ok(mut guard) = state.claude_chat.stdin.lock() {
         *guard = None;
     }
@@ -1271,7 +1339,7 @@ fn claude_save_pasted_image(bytes: Vec<u8>, extension: String) -> Result<String,
     Ok(path.to_string_lossy().to_string())
 }
 
-fn kill_cursor_agent_turn(state: &TerminalState) {
+fn kill_cursor_agent_turn(state: &WindowSession) {
     if let Ok(mut guard) = state.cursor_agent.child.lock() {
         if let Some(mut child) = guard.take() {
             let _ = child.kill();
@@ -1281,7 +1349,7 @@ fn kill_cursor_agent_turn(state: &TerminalState) {
 }
 
 fn cursor_agent_cwd(
-    state: &State<'_, TerminalState>,
+    state: &WindowSession,
     file_path: Option<String>,
     cwd: Option<String>,
 ) -> Result<PathBuf, String> {
@@ -1344,6 +1412,7 @@ fn is_hermes_quiet_noise_line(line: &str) -> bool {
 #[tauri::command(async)]
 fn cursor_agent_send(
     app: AppHandle,
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     text: String,
     file_path: Option<String>,
@@ -1352,6 +1421,8 @@ fn cursor_agent_send(
     provider: Option<String>,
     cwd: Option<String>,
 ) -> Result<(), String> {
+    let state = state.session(window.label());
+    let app = WindowEmitter::new(&app, window.label());
     let text = validate_agent_message(&text)?;
     validate_cursor_agent_mode(mode.as_deref())?;
 
@@ -1424,6 +1495,7 @@ fn cursor_agent_send(
         .take()
         .ok_or_else(|| "Cursor Agent stderr is unavailable.".to_string())?;
 
+    let session_out = state.clone();
     let app_out = app.clone();
     thread::spawn(move || {
         let reader = BufReader::new(stdout);
@@ -1442,12 +1514,7 @@ fn cursor_agent_send(
         // `--continue` only exists for the cursor CLI, so a Hermes run must not
         // mark the session as resumable.
         if !is_hermes {
-            if let Ok(mut guard) = app_out
-                .state::<TerminalState>()
-                .cursor_agent
-                .has_session
-                .lock()
-            {
+            if let Ok(mut guard) = session_out.cursor_agent.has_session.lock() {
                 *guard = true;
             }
         }
@@ -1480,7 +1547,9 @@ fn cursor_agent_send(
 
 /// Stops the in-flight Cursor Agent turn and clears conversation context.
 #[tauri::command]
-fn cursor_agent_stop(state: State<'_, TerminalState>) -> Result<(), String> {
+fn cursor_agent_stop(window: WebviewWindow,
+    state: State<'_, TerminalState>) -> Result<(), String> {
+    let state = state.session(window.label());
     kill_cursor_agent_turn(&state);
     if let Ok(mut guard) = state.cursor_agent.has_session.lock() {
         *guard = false;
@@ -1540,10 +1609,12 @@ fn home_dir_path() -> Result<String, String> {
 
 #[tauri::command(async)]
 fn complete_file_path(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<String>, String> {
+    let state = state.session(window.label());
     let limit = limit.unwrap_or(25).min(50);
     let base = resolve_relative_base(&state);
     let query = query.trim();
@@ -1617,9 +1688,11 @@ struct DirListing {
 /// pane only shows things the editor can actually open.
 #[tauri::command(async)]
 fn list_directory(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     path: Option<String>,
 ) -> Result<DirListing, String> {
+    let state = state.session(window.label());
     let base = resolve_relative_base(&state);
     let raw = path.as_deref().map(|p| p.trim()).filter(|p| !p.is_empty());
 
@@ -1672,7 +1745,9 @@ fn list_directory(
 }
 
 #[tauri::command(async)]
-fn open_file_path(state: State<'_, TerminalState>, path: String) -> Result<OpenedFile, String> {
+fn open_file_path(window: WebviewWindow,
+    state: State<'_, TerminalState>, path: String) -> Result<OpenedFile, String> {
+    let state = state.session(window.label());
     let path = path
         .trim()
         .trim_matches(|character| matches!(character, '"' | '\'' | '`' | '<' | '>' | ')' | '('));
@@ -2250,6 +2325,7 @@ fn poll_file_for_changes(
 #[tauri::command(async)]
 fn watch_file(
     app: AppHandle<Wry>,
+    window: WebviewWindow,
     state: State<'_, FileWatchState>,
     path: String,
 ) -> Result<(), String> {
@@ -2260,7 +2336,7 @@ fn watch_file(
         .to_path_buf();
     let target_name = path.file_name().map(|name| name.to_os_string());
 
-    let app_handle = app.clone();
+    let app_handle = WindowEmitter::new(&app, window.label());
     let watched = path.clone();
     let mut debouncer = new_debouncer(
         Duration::from_millis(200),
@@ -2291,22 +2367,22 @@ fn watch_file(
         .map_err(|error| error.to_string())?;
 
     let mut guard = state
-        .debouncer
+        .debouncers
         .lock()
         .map_err(|_| "File watch state is unavailable.".to_string())?;
-    *guard = Some(Box::new(debouncer));
+    guard.insert(window.label().to_string(), Box::new(debouncer));
     Ok(())
 }
 
 /// Stops watching the current document, if any. Dropping the stored debouncer
 /// shuts down its background watch thread.
 #[tauri::command]
-fn unwatch_file(state: State<'_, FileWatchState>) -> Result<(), String> {
+fn unwatch_file(window: WebviewWindow, state: State<'_, FileWatchState>) -> Result<(), String> {
     let mut guard = state
-        .debouncer
+        .debouncers
         .lock()
         .map_err(|_| "File watch state is unavailable.".to_string())?;
-    *guard = None;
+    guard.remove(window.label());
     Ok(())
 }
 
@@ -2343,6 +2419,7 @@ fn is_relevant_source_change(root: &Path, changed: &Path) -> bool {
 #[tauri::command(async)]
 fn watch_source_checkout(
     app: AppHandle<Wry>,
+    window: WebviewWindow,
     state: State<'_, SourceWatchState>,
     path: String,
 ) -> Result<(), String> {
@@ -2351,7 +2428,7 @@ fn watch_source_checkout(
         return Err("Path does not look like a Lumina source checkout.".to_string());
     }
 
-    let app_handle = app.clone();
+    let app_handle = WindowEmitter::new(&app, window.label());
     let watched_root = root.clone();
     let mut debouncer = new_debouncer(
         Duration::from_millis(1200),
@@ -2379,20 +2456,23 @@ fn watch_source_checkout(
         .map_err(|error| error.to_string())?;
 
     let mut guard = state
-        .debouncer
+        .debouncers
         .lock()
         .map_err(|_| "Source watch state is unavailable.".to_string())?;
-    *guard = Some(Box::new(debouncer));
+    guard.insert(window.label().to_string(), Box::new(debouncer));
     Ok(())
 }
 
 #[tauri::command]
-fn unwatch_source_checkout(state: State<'_, SourceWatchState>) -> Result<(), String> {
+fn unwatch_source_checkout(
+    window: WebviewWindow,
+    state: State<'_, SourceWatchState>,
+) -> Result<(), String> {
     let mut guard = state
-        .debouncer
+        .debouncers
         .lock()
         .map_err(|_| "Source watch state is unavailable.".to_string())?;
-    *guard = None;
+    guard.remove(window.label());
     Ok(())
 }
 
@@ -2407,9 +2487,16 @@ fn sync_app_menu(app: AppHandle<Wry>, params: AppMenuParams) -> Result<(), Strin
         params.agent_shown,
     )
     .map_err(|error| error.to_string())?;
-    app.set_menu(menu)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    install_app_menu(&app, menu).map_err(|error| error.to_string())
+}
+
+fn install_app_menu(app: &AppHandle, menu: Menu<Wry>) -> tauri::Result<()> {
+    app.set_menu(menu.clone())?;
+    #[cfg(target_os = "macos")]
+    if let Some(window_menu) = menu.get(MENU_WINDOW).and_then(|item| item.as_submenu().cloned()) {
+        window_menu.set_as_windows_menu_for_nsapp()?;
+    }
+    Ok(())
 }
 
 #[derive(Serialize, Clone)]
@@ -2457,7 +2544,7 @@ fn git_repo_root(start: &Path) -> Result<PathBuf, String> {
 }
 
 fn resolve_git_root(
-    state: &State<'_, TerminalState>,
+    state: &WindowSession,
     cwd_override: Option<&str>,
 ) -> Result<PathBuf, String> {
     let start = if let Some(path) = cwd_override.map(str::trim).filter(|p| !p.is_empty()) {
@@ -2558,9 +2645,11 @@ fn parse_porcelain_path(rest: &str) -> String {
 
 #[tauri::command]
 async fn git_status(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     cwd: Option<String>,
 ) -> Result<GitStatusInfo, String> {
+    let state = state.session(window.label());
     let repo = resolve_git_root(&state, cwd.as_deref())?;
     let output = run_git(
         &repo,
@@ -2637,12 +2726,14 @@ async fn git_status(
 
 #[tauri::command]
 async fn git_diff(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     path: String,
     staged: bool,
     untracked: bool,
     cwd: Option<String>,
 ) -> Result<String, String> {
+    let state = state.session(window.label());
     let repo = resolve_git_root(&state, cwd.as_deref())?;
     if untracked {
         // git diff doesn't show untracked files; emulate it by diffing against /dev/null.
@@ -2666,10 +2757,12 @@ async fn git_diff(
 
 #[tauri::command]
 async fn git_stage(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     paths: Vec<String>,
     cwd: Option<String>,
 ) -> Result<(), String> {
+    let state = state.session(window.label());
     if paths.is_empty() {
         return Ok(());
     }
@@ -2684,10 +2777,12 @@ async fn git_stage(
 
 #[tauri::command]
 async fn git_unstage(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     paths: Vec<String>,
     cwd: Option<String>,
 ) -> Result<(), String> {
+    let state = state.session(window.label());
     if paths.is_empty() {
         return Ok(());
     }
@@ -2702,10 +2797,12 @@ async fn git_unstage(
 
 #[tauri::command]
 async fn git_commit(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     message: String,
     cwd: Option<String>,
 ) -> Result<String, String> {
+    let state = state.session(window.label());
     if message.trim().is_empty() {
         return Err("Commit message is empty.".to_string());
     }
@@ -2715,14 +2812,18 @@ async fn git_commit(
 }
 
 #[tauri::command]
-async fn git_pull(state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
+async fn git_pull(window: WebviewWindow,
+    state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
+    let state = state.session(window.label());
     let repo = resolve_git_root(&state, cwd.as_deref())?;
     let output = run_git(&repo, &["pull", "--ff-only"], None)?;
     ok_git_output(output)
 }
 
 #[tauri::command]
-async fn git_push(state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
+async fn git_push(window: WebviewWindow,
+    state: State<'_, TerminalState>, cwd: Option<String>) -> Result<String, String> {
+    let state = state.session(window.label());
     let repo = resolve_git_root(&state, cwd.as_deref())?;
     let output = run_git(&repo, &["push"], None)?;
     ok_git_output(output)
@@ -2914,9 +3015,11 @@ fn hermes_print_text(prompt: &str, cwd: &Path) -> Result<String, String> {
 
 #[tauri::command]
 async fn git_generate_commit_message(
+    window: WebviewWindow,
     state: State<'_, TerminalState>,
     cwd: Option<String>,
 ) -> Result<GeneratedCommitMessage, String> {
+    let state = state.session(window.label());
     let repo = resolve_git_root(&state, cwd.as_deref())?;
 
     let staged = ok_git_output(run_git(&repo, &["diff", "--cached", "--no-color"], None)?)?;
@@ -3028,21 +3131,38 @@ fn reveal_in_file_manager(path: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(TerminalState::default())
-        .manage(PendingOpenPaths::default())
+        .manage(document_windows::DocumentWindows::default())
         .manage(FileWatchState::default())
         .manage(SourceWatchState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let menu = build_app_menu(app, &[], true, false, false, false)?;
-            app.set_menu(menu)?;
-            notify_open_paths_pending(app.handle(), collect_cli_document_paths());
+            install_app_menu(app.handle(), menu)?;
+            document_windows::register_existing_windows(app.handle());
+            document_windows::route_open_paths(app.handle(), collect_cli_document_paths());
             Ok(())
         })
         .on_menu_event(|app, event| {
             let id = event.id().as_ref();
             if is_lumina_menu_id(id) {
                 emit_lumina_menu_command(app, id);
+            }
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                let label = window.label();
+                let app = window.app_handle();
+                if let Some(session) = app.state::<TerminalState>().remove(label) {
+                    session.shutdown();
+                }
+                if let Ok(mut watchers) = app.state::<FileWatchState>().debouncers.lock() {
+                    watchers.remove(label);
+                }
+                if let Ok(mut watchers) = app.state::<SourceWatchState>().debouncers.lock() {
+                    watchers.remove(label);
+                }
+                app.state::<document_windows::DocumentWindows>().forget(label);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -3070,7 +3190,10 @@ pub fn run() {
             export_pdf,
             reveal_in_file_manager,
             sync_app_menu,
-            drain_pending_open_paths,
+            document_windows::drain_pending_open_paths,
+            document_windows::open_document_window,
+            document_windows::focus_document_window,
+            document_windows::set_window_document,
             poll_file_for_changes,
             watch_file,
             unwatch_file,
@@ -3101,7 +3224,7 @@ pub fn run() {
                     .filter(|path| path.is_file() && is_supported_document_path(path))
                     .map(|path| path.to_string_lossy().to_string())
                     .collect::<Vec<_>>();
-                notify_open_paths_pending(app, paths);
+                document_windows::route_open_paths(app, paths);
             }
             _ => {}
         });

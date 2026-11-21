@@ -2,7 +2,14 @@
         import { getVersion } from '@tauri-apps/api/app';
         import pkg from '../package.json' with { type: 'json' };
         import { invoke } from '@tauri-apps/api/core';
-        import { listen } from '@tauri-apps/api/event';
+        import {
+            focusWindowWithDocument,
+            guardWindowClose,
+            isPrimaryWindow,
+            listenToWindow as listen,
+            openDocumentWindow,
+            reportWindowDocument
+        } from './documentWindow.ts';
         import { relaunch } from '@tauri-apps/plugin-process';
         import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { compareVersions, isInstallableFromGitHub, parseVersion, selectLatestUpdateTag } from './update.js';
@@ -130,12 +137,30 @@ import {
         const editorPerfPanel = document.getElementById('editor-perf-panel');
         const editorPerfLog = document.getElementById('editor-perf-log');
         const editorPerfSummary = document.getElementById('editor-perf-summary');
+        const editorPerfSaveBtn = document.getElementById('editor-perf-save-btn');
         const editorPerfCopyBtn = document.getElementById('editor-perf-copy-btn');
         const editorPerfClearBtn = document.getElementById('editor-perf-clear-btn');
         const editorPerfCloseBtn = document.getElementById('editor-perf-close-btn');
         const perf = createEditorPerfLog({
             enabled: localStorage.getItem(PERF_STORAGE_KEY) === 'true'
         });
+        const editorPerfLogPath = '~/lumina-perf-log.txt';
+        let perfAutoSaveTimer = null;
+        // Debounced, event-driven flush: writes settle 500ms after the last
+        // recorded event instead of polling on a fixed interval, so a live
+        // `tail -f` on the log file shows real activity without idle noise.
+        function flushPerfLogNow() {
+            if (!perf.entries.length) return;
+            void invoke('write_document', {
+                path: editorPerfLogPath,
+                content: perf.exportText()
+            }).catch(() => {});
+        }
+        function schedulePerfAutoSave() {
+            if (!perf.isEnabled()) return;
+            clearTimeout(perfAutoSaveTimer);
+            perfAutoSaveTimer = setTimeout(flushPerfLogNow, 500);
+        }
 const fixLatexBtn = document.getElementById('fix-latex-btn');
 const reloadFileBtn = document.getElementById('reload-file-btn');
 const documentAlertBanner = document.getElementById('document-alert-banner');
@@ -439,10 +464,18 @@ const maxRecentFilePaths = 10;
             if (enabled) {
                 perf.record('perf.panel_open', { chars: editor.value.length });
                 refreshEditorPerfPanel();
+            } else {
+                // Flush immediately (not the 500ms-debounced path) so whatever
+                // happened right before the panel was closed isn't lost.
+                clearTimeout(perfAutoSaveTimer);
+                flushPerfLogNow();
             }
         }
 
-        perf.onChange(() => refreshEditorPerfPanel());
+        perf.onChange(() => {
+            refreshEditorPerfPanel();
+            schedulePerfAutoSave();
+        });
         if (perf.isEnabled()) {
             editorPerfPanel?.classList.remove('hidden');
             charCount?.classList.add('editor-perf-active');
@@ -453,6 +486,17 @@ const maxRecentFilePaths = 10;
             if (!event.altKey) return;
             event.preventDefault();
             setEditorPerfEnabled(!perf.isEnabled());
+        });
+        editorPerfSaveBtn?.addEventListener('click', async () => {
+            try {
+                const saved = await invoke('write_document', {
+                    path: editorPerfLogPath,
+                    content: perf.exportText()
+                });
+                setUpdateStatus(`Saved performance log to ${saved.path}`);
+            } catch (error) {
+                setUpdateStatus(`Save failed: ${error?.message || error}`);
+            }
         });
         editorPerfCopyBtn?.addEventListener('click', async () => {
             try {
@@ -725,6 +769,10 @@ const maxRecentFilePaths = 10;
         }
 
         function scrollEditorToOffset(offset) {
+            const end = perf.startSpan('editor.outline.jump', {
+                offset,
+                chars: editor.value.length
+            });
             editor.focus();
             editor.setSelectionRange(offset, offset);
             const largeDocument = isLargeDocument(editor.value.length);
@@ -744,10 +792,18 @@ const maxRecentFilePaths = 10;
                 previewWindowScrollAnchorLine = jumpLine;
                 void updatePreview().finally(() => {
                     previewScrollAnchorLocked = false;
+                    end({
+                        detail: `jumpLine=${jumpLine} windowed`,
+                        // Non-null here means the anchor was never consumed by
+                        // restorePreviewScrollToAnchorLine (e.g. find-highlight
+                        // branch took over), so the preview never actually scrolled.
+                        skipped: previewWindowScrollAnchorLine != null
+                    });
                 });
                 return;
             }
             syncPreviewScrollToEditor(offset);
+            end({ detail: 'sync' });
         }
 
         function editorOffsetForLine(line) {
@@ -768,7 +824,12 @@ const maxRecentFilePaths = 10;
 
             event.preventDefault();
             try {
-                await openFilePath(target.path);
+                // ⌘-click opens the linked document in a new tab.
+                const opened = await openDocument(target.path, {
+                    inPlace: true,
+                    newTab: event.metaKey || event.ctrlKey
+                });
+                if (!opened) return;
                 const line = lineNumberFromPreviewFragment(target.fragment);
                 if (line != null) {
                     scrollEditorToOffset(editorOffsetForLine(line));
@@ -850,16 +911,19 @@ const maxRecentFilePaths = 10;
             const needsRefresh =
                 previewWindow.mode === 'refreshQueued' ||
                 shouldRefreshWindow(previewWindow, focusLine, previewWindowIdleSource);
-            if (
-                !shouldScheduleIdleRewindow({
-                    quietUntil: previewScrollQuietUntil,
-                    now: performance.now(),
-                    needsRefresh,
-                    pipelineBusy: previewPipelineBusy,
-                    inputRenderPending:
-                        previewInputDebounceTimer != null || previewInputIdleHandle != null
-                })
-            ) {
+            const scheduled = shouldScheduleIdleRewindow({
+                quietUntil: previewScrollQuietUntil,
+                now: performance.now(),
+                needsRefresh,
+                pipelineBusy: previewPipelineBusy,
+                inputRenderPending:
+                    previewInputDebounceTimer != null || previewInputIdleHandle != null
+            });
+            perf.record('preview.window.idle_flush', {
+                detail: `source=${previewWindowIdleSource} focusLine=${focusLine} needsRefresh=${needsRefresh} scheduled=${scheduled} mode=${previewWindow.mode}`,
+                skipped: !scheduled
+            });
+            if (!scheduled) {
                 return false;
             }
             if (previewWindowIdleSource === 'preview' && focusLine != null) {
@@ -908,7 +972,13 @@ const maxRecentFilePaths = 10;
         function restorePreviewScrollToAnchorLine(anchorLine) {
             if (anchorLine == null || !Number.isFinite(anchorLine)) return false;
             const targetTop = previewTopForLine(anchorLine);
-            if (targetTop == null) return false;
+            if (targetTop == null) {
+                perf.record('preview.scroll.restore', {
+                    detail: `anchorLine=${anchorLine} mapLen=${previewLineMap.length}`,
+                    skipped: true
+                });
+                return false;
+            }
             const maxScroll = Math.max(0, preview.scrollHeight - preview.clientHeight);
             previewScrollQuietUntil = performance.now() + PREVIEW_SCROLL_RESTORE_QUIET_MS;
             clearTimeout(previewWindowIdleTimer);
@@ -921,6 +991,9 @@ const maxRecentFilePaths = 10;
                     scrollSync = scrollSyncReduce(scrollSync, { type: 'ReleaseOwner' });
                 });
             }
+            perf.record('preview.scroll.restore', {
+                detail: `anchorLine=${anchorLine} targetTop=${targetTop.toFixed(0)} mapLen=${previewLineMap.length}`
+            });
             return true;
         }
 
@@ -1199,7 +1272,7 @@ const maxRecentFilePaths = 10;
 
             closeFilenamePathNavigator({ restoreFocus: false });
             try {
-                await openFilePath(raw);
+                await openDocument(raw);
             } catch (error) {
                 setUpdateStatus(`Unable to open ${raw}: ${error?.message || error}`);
                 editor.focus();
@@ -1320,27 +1393,11 @@ const maxRecentFilePaths = 10;
             currentFilePath = null;
             currentFileMtime = 0;
             stopFileWatcher();
-            setEditorContent(exampleMarkdown, 'Example Guide (Lumina Help)');
+            setEditorContent(exampleMarkdown, 'Lumina Help');
             markDocumentPersisted(exampleMarkdown);
             delete filenameDisplay.dataset.fullPath;
             filenameDisplay.title = 'Bundled Lumina example guide';
             setUpdateStatus('Loaded the Lumina example guide.');
-            notifyActiveFileChanged();
-            editor.focus();
-        }
-
-        function newUntitledDocument() {
-            hideDocumentAlertBanner();
-            currentFilePath = null;
-            currentFileMtime = 0;
-            stopFileWatcher();
-            editor.value = '';
-            setFilenameLabel('Editor (Markdown + LaTeX)');
-            resetEditorHistory();
-            markDocumentPersisted('');
-            updateEditorMetrics();
-            schedulePreviewUpdate();
-            setUpdateStatus('New document.');
             notifyActiveFileChanged();
             editor.focus();
         }
@@ -1424,6 +1481,7 @@ function writeRecentFilePaths(paths) {
         // label, and Claude's own context in sync without each call site needing
         // to know about all three.
         function notifyActiveFileChanged() {
+            syncWindowDocument();
             // Reload only makes sense for a file that exists on disk.
             reloadFileBtn.classList.toggle('hidden', !currentFilePath);
             if (typeof highlightCurrentFileRow === 'function') highlightCurrentFileRow();
@@ -1607,7 +1665,18 @@ function currentRecoveryPath() {
     return recoveryPathForDocument(currentFilePath);
 }
 
+// Title, file proxy icon, and unsaved dot of this native window/tab.
+function syncWindowDocument() {
+    reportWindowDocument({
+        path: currentFilePath,
+        fallbackName: !currentFilePath && editor.value === exampleMarkdown ? 'Lumina Help' : '',
+        dirty: isDocumentDirty(),
+        pristine: !currentFilePath && editor.value.length === 0 && !isDocumentDirty()
+    });
+}
+
 function refreshDirtyIndicator() {
+    syncWindowDocument();
     const path = filenameDisplay.dataset.fullPath;
     if (!path) return;
     const name = basename(path);
@@ -1913,18 +1982,40 @@ async function startFileWatcher(path) {
 }
 
 async function openFilePath(path) {
+    const endInvoke = perf.startSpan('app.open_file.invoke', { detail: path });
     hideDocumentAlertBanner();
     setFilenameLabel(`Opening: ${path}`, path);
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const file = await invoke('open_file_path', { path });
+    endInvoke({ chars: file.content.length });
     currentFileMtime = file.modifiedMs ?? 0;
+    const endSetContent = perf.startSpan('app.open_file.set_content', {
+        chars: file.content.length
+    });
     setEditorContent(file.content, `Editing: ${file.path}`, file.path);
+    endSetContent();
     markDocumentPersisted(file.content);
     rememberOpenedPath(file.path);
     void startFileWatcher(file.path);
     editor.focus();
     void maybeOfferRecoveryRestore(file.path, file.content);
     return file;
+}
+
+function isWindowPristine() {
+    return !currentFilePath && editor.value.length === 0 && !isDocumentDirty();
+}
+
+// Open dialog, Open Recent, path box: a file already open in another tab is
+// focused there; otherwise it loads here if this window is empty, or in a new
+// tab. With `inPlace` (Files pane, preview links) it replaces this document.
+async function openDocument(path, { inPlace = false, newTab = false } = {}) {
+    if (await focusWindowWithDocument(path)) return null;
+    if (newTab || (!inPlace && !isWindowPristine() && path !== currentFilePath)) {
+        await openDocumentWindow({ path });
+        return null;
+    }
+    return openFilePath(path);
 }
 
 async function flushPendingOpenPathsFromBackend() {
@@ -1962,7 +2053,7 @@ async function openLastOpenedFile() {
         return true;
     } catch (error) {
         forgetOpenedPath(path);
-        setFilenameLabel('Editor (Markdown + LaTeX)');
+        setFilenameLabel('Untitled');
         setUpdateStatus(`Unable to reopen ${basename(path)}: ${error?.message || error}`);
         return false;
     }
@@ -1992,9 +2083,9 @@ async function openRecentFile(recentIndex = null) {
     }
 
     try {
-        await openFilePath(path);
+        await openDocument(path);
     } catch (error) {
-        setFilenameLabel('Editor (Markdown + LaTeX)');
+        setFilenameLabel('Untitled');
         const message = String(error?.message || error);
         if (/no such file|os error 2|cannot find|not found/i.test(message)) {
             // The file moved or was renamed. Tell the user plainly and keep the
@@ -2022,9 +2113,9 @@ async function openRecentFile(recentIndex = null) {
                 });
                 if (!selectedPath || Array.isArray(selectedPath)) return;
 
-        await openFilePath(selectedPath);
+        await openDocument(selectedPath);
             } catch (error) {
-                setFilenameLabel('Editor (Markdown + LaTeX)');
+                setFilenameLabel('Untitled');
                 setUpdateStatus(`Open failed: ${error?.message || error}`);
                 fileInput.click();
             }
@@ -2184,6 +2275,9 @@ async function openRecentFile(recentIndex = null) {
                 type: 'RenderedWindow',
                 window
             });
+            perf.record('preview.window.render', {
+                detail: `focusLine=${focusLine} start=${previewWindow.startLine} end=${previewWindow.endLine} linesBefore=${window.linesBefore} linesAfter=${window.linesAfter}`
+            });
 
             const fragment = document.createDocumentFragment();
             const bodyHost = document.createElement('div');
@@ -2250,11 +2344,25 @@ async function openRecentFile(recentIndex = null) {
                 if (largeDocument && !metadata) {
                     let sourceTokens;
                     try {
-                        sourceTokens = marked.lexer(normalizedValue);
+                        // Scroll-driven re-windows re-render with the same source
+                        // text over and over; re-lexing the whole document on each
+                        // one is the dominant cost once a doc has real content past
+                        // the first window. Reuse the tokens from the last render
+                        // when the text hasn't actually changed.
+                        sourceTokens =
+                            normalizedValue === prevPreviewNormalized && prevPreviewTokens
+                                ? prevPreviewTokens
+                                : marked.lexer(normalizedValue);
                     } catch {
                         sourceTokens = null;
                     }
                     if (sourceTokens) {
+                        perf.record('preview.window.lex', {
+                            detail:
+                                sourceTokens === prevPreviewTokens
+                                    ? 'cached'
+                                    : `relexed chars=${normalizedValue.length}`
+                        });
                         await renderWindowedPreview(normalizedValue, sourceTokens);
                         handledIncrementally = true;
                     }
@@ -3565,7 +3673,7 @@ async function checkForUpdate({ background = false, force = false } = {}) {
                     rememberOpenedPath(file.path);
                     editor.focus();
                 } catch (error) {
-                    setFilenameLabel('Editor (Markdown + LaTeX)');
+                    setFilenameLabel('Untitled');
                     terminal?.write(`\r\nUnable to open ${cleanPath}: ${error}\r\n`);
                     scheduleTerminalScrollToBottom();
                 }
@@ -5406,7 +5514,7 @@ async function replaceSelectionFromClipboard() {
                 name.textContent = entry.name;
                 row.appendChild(name);
 
-                row.addEventListener('click', () => handleFilesRowClick(entry, row));
+                row.addEventListener('click', (event) => handleFilesRowClick(entry, row, event));
                 li.appendChild(row);
 
                 if (entry.isDir && filesExpanded.has(entry.path)) {
@@ -5429,7 +5537,7 @@ async function replaceSelectionFromClipboard() {
             return nodes;
         }
 
-        async function handleFilesRowClick(entry, row) {
+        async function handleFilesRowClick(entry, row, event) {
             if (entry.isDir) {
                 if (filesExpanded.has(entry.path)) filesExpanded.delete(entry.path);
                 else filesExpanded.add(entry.path);
@@ -5438,7 +5546,11 @@ async function replaceSelectionFromClipboard() {
                 return;
             }
             try {
-                await openFilePath(entry.path);
+                // ⌘-click opens the file in a new tab.
+                await openDocument(entry.path, {
+                    inPlace: true,
+                    newTab: Boolean(event?.metaKey || event?.ctrlKey)
+                });
             } catch (error) {
                 setFilesMessage(`Unable to open ${entry.name}: ${error?.message || error}`, true);
             }
@@ -5802,7 +5914,10 @@ async function replaceSelectionFromClipboard() {
 
             switch (id) {
                 case 'lumina_new_file':
-                    newUntitledDocument();
+                    void openDocumentWindow({ tab: true });
+                    break;
+                case 'lumina_new_window':
+                    void openDocumentWindow({ tab: false });
                     break;
                 case 'lumina_open_file':
                     openFileWithDialog();
@@ -7305,9 +7420,12 @@ document.addEventListener('click', (event) => {
                 } else {
                     undoEditor();
                 }
+            } else if (event.key.toLowerCase() === 't' && !event.shiftKey) {
+                event.preventDefault();
+                void openDocumentWindow({ tab: true });
             } else if (event.key.toLowerCase() === 'n' && !event.shiftKey) {
                 event.preventDefault();
-                newUntitledDocument();
+                void openDocumentWindow({ tab: false });
             } else if (event.key.toLowerCase() === 'o') {
                 event.preventDefault();
                 openFileWithDialog();
@@ -7413,11 +7531,19 @@ document.addEventListener('click', (event) => {
                 if (await flushPendingOpenPathsFromBackend()) {
                     return;
                 }
+                // New tabs and windows start empty; only the first window
+                // reopens the last file and offers untitled recovery.
+                if (!isPrimaryWindow) {
+                    syncWindowDocument();
+                    void updatePreview();
+                    return;
+                }
                 if (await openLastOpenedFile()) {
                     return;
                 }
 
                 await maybeOfferUntitledRecovery();
+                syncWindowDocument();
                 void updatePreview();
                 return;
             }
@@ -7458,6 +7584,21 @@ document.addEventListener('click', (event) => {
 
         window.addEventListener('blur', () => {
             void flushDocumentPersistence();
+        });
+        window.addEventListener('focus', () => {
+            syncAppMenu(undefined, { immediate: true });
+        });
+        // Closing a tab with unsaved changes: saved files autosave first;
+        // an untitled document asks before its text is discarded.
+        guardWindowClose(async () => {
+            await flushDocumentPersistence();
+            if (!isDocumentDirty()) return true;
+            const name = currentFilePath ? basename(currentFilePath) : 'this untitled document';
+            const discard = window.confirm(
+                `Close without saving ${name}? Your changes will be lost.`
+            );
+            if (discard) await deleteRecoveryForCurrentFile();
+            return discard;
         });
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {

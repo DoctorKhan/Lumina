@@ -57,10 +57,12 @@ test("PDF export avoids the native print panel and times out hung renderers", ()
 
 test("CLI and Open With pass file paths into the editor via pending open queue", () => {
   const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const windows = fs.readFileSync("src-tauri/src/document_windows.rs", "utf8");
   const main = fs.readFileSync("src/main.js", "utf8");
 
   assert.match(rust, /RunEvent::Opened/);
-  assert.match(rust, /fn drain_pending_open_paths/);
+  assert.match(rust, /document_windows::route_open_paths/);
+  assert.match(windows, /fn drain_pending_open_paths/);
   assert.match(main, /invoke\('drain_pending_open_paths'/);
   assert.match(main, /listen\('lumina-pending-open-files'/);
 });
@@ -152,9 +154,9 @@ test("app top chrome and pane layout are locked in app CSS, not only Tailwind", 
   const css = fs.readFileSync("src/styles.css", "utf8");
 
   assert.match(css, /html\s*\{[^}]*overflow:\s*hidden/);
-  assert.match(css, /body > header/);
-  assert.match(css, /body > header[^}]*flex:\s*0 0 auto/);
-  assert.match(css, /body > header[^}]*min-height:\s*4rem/);
+  assert.match(css, /\.app-toolbar\s*\{[^}]*flex:\s*0 0 auto/);
+  assert.match(css, /\.app-toolbar\s*\{[^}]*height:\s*2\.5rem/);
+  assert.match(css, /\.app-status-bar\s*\{[^}]*flex:\s*0 0 auto/);
   assert.match(css, /max-height:\s*100dvh/);
   assert.match(css, /\.editor-container[^}]*overflow:\s*hidden/);
   assert.match(css, /\.workspace-panes[^}]*min-height:\s*0/);
@@ -480,4 +482,36 @@ test("main.js relative imports resolve to files in src/", () => {
       `missing ${absolutePath} imported from src/main.js`
     );
   }
+});
+
+test("each document is a native window: tabs, per-window state, scoped events", () => {
+  const rust = fs.readFileSync("src-tauri/src/lib.rs", "utf8");
+  const windows = fs.readFileSync("src-tauri/src/document_windows.rs", "utf8");
+  const conf = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8"));
+  const capabilities = JSON.parse(fs.readFileSync("src-tauri/capabilities/default.json", "utf8"));
+  const main = fs.readFileSync("src/main.js", "utf8");
+
+  // Windows share a tab group, and new windows get the same permissions.
+  assert.equal(conf.app.windows[0].tabbingIdentifier, "lumina-documents");
+  assert.match(windows, /TABBING_IDENTIFIER: &str = "lumina-documents"/);
+  assert.ok(capabilities.windows.includes("doc-*"));
+  assert.ok(capabilities.permissions.includes("core:window:allow-destroy"));
+
+  // Terminals and assistants are per window and are killed when it closes.
+  assert.match(rust, /struct WindowSession/);
+  assert.match(rust, /WindowEvent::Destroyed/);
+  assert.match(rust, /session\.shutdown\(\)/);
+  // Events go to one window; the webview listens on its own window only.
+  assert.match(rust, /emit_to\(EventTarget::webview_window/);
+  assert.match(rust, /fn spawn_pty_session\(\s*app: WindowEmitter,/);
+  assert.equal((rust.match(/let app = WindowEmitter::new\(&app, window\.label\(\)\);/g) || []).length, 3);
+  assert.equal((rust.match(/let app_handle = WindowEmitter::new\(&app, window\.label\(\)\);/g) || []).length, 2);
+  assert.doesNotMatch(main, /from '@tauri-apps\/api\/event'/);
+  assert.match(main, /listenToWindow as listen/);
+
+  // Standard menu: New Tab, New Window, Close Tab, and a Window menu.
+  assert.match(rust, /"New Tab", Some\("CmdOrCtrl\+T"\)/);
+  assert.match(rust, /"New Window", Some\("CmdOrCtrl\+N"\)/);
+  assert.match(rust, /close_window_with_text\("Close Tab"\)/);
+  assert.match(rust, /set_as_windows_menu_for_nsapp/);
 });

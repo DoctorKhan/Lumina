@@ -9,62 +9,39 @@
 
 </head>
 <body>
-    <header class="min-h-16 shrink-0 border-b border-slate-800/80 flex items-center justify-between gap-3 px-4 sm:px-6 py-2 bg-slate-900/75 backdrop-blur min-w-0 relative z-20">
-        <div class="flex items-center gap-3 min-w-0 flex-1">
-            <div class="w-8 h-8 shrink-0 bg-gradient-to-br from-indigo-500 to-sky-500 rounded-lg flex items-center justify-center font-bold text-white shadow-lg shadow-indigo-500/30">L</div>
-            <h1 class="text-xl font-semibold tracking-tight text-slate-100 flex items-center gap-2 min-w-0">
-                <span class="min-w-0 truncate">Lumina <button type="button" id="app-version-badge" class="app-version-badge text-slate-500 font-normal text-sm ml-2" title="Check for updates from the git repository">v0.5.17</button></span>
-                <button id="install-update-badge" type="button" class="update-install-badge hidden shrink-0" title="Install available update"></button>
-                <a
-                    id="share-repo-link"
-                    href="https://github.com/DoctorKhan/Lumina"
-                    class="share-repo-link shrink-0 rounded-md p-1.5 text-slate-500 hover:text-slate-100 hover:bg-slate-800 transition-colors"
-                    title="Share Lumina — open on GitHub"
-                    aria-label="Share Lumina on GitHub"
-                    rel="noopener noreferrer"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-                </a>
-            </h1>
-        </div>
-        <div class="flex items-center gap-2 min-w-0">
-            <div class="flex flex-col items-end gap-1 min-w-0 w-full max-w-[min(20rem,calc(100vw-7rem))]">
-                <div
-                    id="install-progress"
-                    class="install-progress hidden w-full min-w-0"
-                    aria-label="Install progress"
-                    role="status"
-                    aria-live="polite"
-                >
-                    <div class="install-progress-card">
-                        <div class="install-progress-card-head">
-                            <div class="install-progress-card-label">
-                                <span class="install-progress-icon" aria-hidden="true">
-                                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                                        <path
-                                            d="M12 3v10m0 0l-3.5-3.5M12 13l3.5-3.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"
-                                            stroke="currentColor"
-                                            stroke-width="1.8"
-                                            stroke-linecap="round"
-                                            stroke-linejoin="round"
-                                        />
-                                    </svg>
-                                </span>
-                                <span class="install-progress-eyebrow">Update</span>
-                            </div>
-                            <span id="install-progress-percent" class="install-progress-pct" translate="no">—</span>
-                            <button id="install-progress-dismiss" type="button" class="install-progress-dismiss" title="Dismiss" aria-label="Dismiss install progress">×</button>
+    <header class="app-toolbar" data-tauri-drag-region>
+        <div class="app-toolbar-doc">
+            <div class="filename-display-wrap min-w-0 flex-1">
+                        <div id="filename-path-view" class="filename-path-view">
+                            <button type="button" id="filename-display" class="filename-display-btn" title="Click to open another file by path">
+                                <span id="filename-name" class="filename-name">Untitled</span>
+                                <span id="filename-dir" class="filename-dir"></span>
+                            </button>
+                            <button type="button" id="filename-copy-btn" class="filename-copy-btn hidden" title="Copy full path" aria-label="Copy full path">⎘</button>
                         </div>
-                        <div class="install-progress-track" aria-hidden="true">
-                            <div id="install-progress-fill" class="install-progress-fill" style="width: 0%"></div>
+                        <div id="filename-path-editor" class="filename-path-editor hidden">
+                            <input id="filename-path-input" class="filename-path-input" type="text" spellcheck="false" autocomplete="off" aria-label="File path" />
+                            <button type="button" id="filename-path-open-btn" class="filename-path-action-btn">Open</button>
+                            <button type="button" id="filename-path-cancel-btn" class="filename-path-action-btn">Cancel</button>
                         </div>
-                        <p id="install-progress-detail" class="install-progress-detail" title=""></p>
+                        <ul id="filename-path-suggestions" class="filename-path-suggestions hidden" role="listbox" aria-label="Path suggestions"></ul>
                     </div>
-                </div>
-                <span id="update-status" class="update-status-line text-xs text-slate-500" title="">Not checked</span>
-            </div>
-            <div class="h-6 w-px shrink-0 bg-slate-800" aria-hidden="true"></div>
-            <div class="flex items-center gap-1 shrink-0" aria-label="Pane controls">
+                    <button id="reload-file-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Reload from disk — shows a diff when the file differs">Reload</button>
+                    <button id="fix-latex-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors" title="Normalize LaTeX delimiters in source (converts \[…\] and \(…\) to $$ and $)">Fix LaTeX</button>
+                    <button id="toggle-editor-mode-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Switch editor mode (textarea / CodeMirror 6)">Editor: textarea</button>
+        </div>
+        <div class="app-toolbar-panes" aria-label="Pane controls">
+            <button
+                id="toggle-outline-btn"
+                type="button"
+                class="pane-toggle-btn preview-outline-toggle hidden rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+                title="Hide outline"
+                aria-label="Toggle document outline"
+                aria-pressed="true"
+            >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" x2="21" y1="6" y2="6"/><line x1="11" x2="21" y1="12" y2="12"/><line x1="11" x2="21" y1="18" y2="18"/><line x1="3" x2="4" y1="6" y2="6"/><line x1="6" x2="7" y1="12" y2="12"/><line x1="6" x2="7" y1="18" y2="18"/></svg>
+            </button>
+            <div class="app-toolbar-divider" aria-hidden="true"></div>
                 <button id="toggle-source-btn" type="button" class="pane-toggle-btn rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors" title="Hide source pane" aria-label="Toggle source pane" aria-pressed="true">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3"/><path d="m10 8-4 4 4 4"/><path d="m14 8 4 4-4 4"/></svg>
                 </button>
@@ -86,42 +63,21 @@
                 <button id="toggle-files-btn" type="button" class="pane-toggle-btn rounded-md p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors" title="Show Files" aria-label="Toggle Files pane" aria-pressed="false">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
                 </button>
-            </div>
-            <input type="file" id="file-input" accept=".md,.txt,.markdown">
         </div>
+        <input type="file" id="file-input" accept=".md,.txt,.markdown">
     </header>
 
     <main class="editor-container flex w-full">
         <div id="workspace-panes" class="workspace-panes flex min-w-0">
             <div class="editor-pane flex-1 flex flex-col min-w-0">
-                <div class="editor-meta-bar bg-slate-800/85 flex flex-col border-b border-slate-700/70">
-                    <div class="editor-meta-bar-row h-10 flex items-center gap-3 px-4 text-xs font-medium uppercase tracking-wider text-slate-400 justify-between">
-                    <div class="filename-display-wrap min-w-0 flex-1">
-                        <div id="filename-path-view" class="filename-path-view">
-                            <button type="button" id="filename-display" class="filename-display-btn" title="Click to open another file by path">
-                                <span id="filename-name" class="filename-name">Editor (Markdown + LaTeX)</span>
-                                <span id="filename-dir" class="filename-dir"></span>
-                            </button>
-                            <button type="button" id="filename-copy-btn" class="filename-copy-btn hidden" title="Copy full path" aria-label="Copy full path">⎘</button>
-                        </div>
-                        <div id="filename-path-editor" class="filename-path-editor hidden">
-                            <input id="filename-path-input" class="filename-path-input" type="text" spellcheck="false" autocomplete="off" aria-label="File path" />
-                            <button type="button" id="filename-path-open-btn" class="filename-path-action-btn">Open</button>
-                            <button type="button" id="filename-path-cancel-btn" class="filename-path-action-btn">Cancel</button>
-                        </div>
-                        <ul id="filename-path-suggestions" class="filename-path-suggestions hidden" role="listbox" aria-label="Path suggestions"></ul>
-                    </div>
-                    <button id="reload-file-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Reload from disk — shows a diff when the file differs">Reload</button>
-                    <button id="fix-latex-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors" title="Normalize LaTeX delimiters in source (converts \[…\] and \(…\) to $$ and $)">Fix LaTeX</button>
-                    <button id="toggle-editor-mode-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Switch editor mode (textarea / CodeMirror 6)">Editor: textarea</button>
-                    <span id="char-count" class="shrink-0 whitespace-nowrap text-right normal-case tracking-normal cursor-default" title="Alt+click to toggle editor performance log">0 chars</span>
-                    </div>
+                <div class="editor-meta-bar flex flex-col">
                     <div id="filename-path-toast" class="filename-path-toast hidden" role="status" aria-live="polite"></div>
                     <div id="editor-perf-panel" class="editor-perf-panel hidden" aria-label="Editor performance log">
                         <div class="editor-perf-head">
                             <span class="editor-perf-title">Editor performance log</span>
                             <span id="editor-perf-summary" class="editor-perf-summary"></span>
                             <div class="editor-perf-actions">
+                                <button id="editor-perf-save-btn" type="button" class="editor-perf-btn">Save Log</button>
                                 <button id="editor-perf-copy-btn" type="button" class="editor-perf-btn">Copy</button>
                                 <button id="editor-perf-clear-btn" type="button" class="editor-perf-btn">Clear</button>
                                 <button id="editor-perf-close-btn" type="button" class="editor-perf-btn" aria-label="Close performance log">×</button>
@@ -189,17 +145,6 @@
             <div id="pane-resizer" class="pane-resizer" aria-hidden="true"></div>
 
             <div class="preview-pane flex-1 flex flex-col min-w-0 border-l border-slate-800">
-                <div class="preview-pane-head h-10 bg-slate-100 flex items-center justify-between gap-3 px-4 text-xs font-medium uppercase tracking-wider text-slate-600 border-b border-slate-200">
-                    <span>Live Preview</span>
-                    <button
-                        id="toggle-outline-btn"
-                        type="button"
-                        class="preview-outline-toggle hidden normal-case tracking-normal"
-                        title="Hide outline"
-                        aria-label="Toggle document outline"
-                        aria-pressed="true"
-                    >Outline</button>
-                </div>
                 <div class="preview-body flex flex-1 min-h-0 min-w-0">
                     <nav id="document-outline" class="document-outline hidden" aria-label="Document outline">
                         <ul id="document-outline-list" class="document-outline-list"></ul>
@@ -377,6 +322,55 @@
             </aside>
         </div>
     </main>
+
+    <footer class="app-status-bar" role="contentinfo">
+        <span id="update-status" class="update-status-line" title="" role="status" aria-live="polite"></span>
+        <span id="char-count" class="status-bar-item" title="Alt+click to toggle editor performance log">0 chars</span>
+        <button id="install-update-badge" type="button" class="update-install-badge hidden shrink-0" title="Install available update"></button>
+        <button type="button" id="app-version-badge" class="app-version-badge status-bar-item" title="Check for updates from the git repository">v0.5.17</button>
+        <a
+                    id="share-repo-link"
+                    href="https://github.com/DoctorKhan/Lumina"
+                    class="share-repo-link status-bar-icon"
+                    title="Share Lumina — open on GitHub"
+                    aria-label="Share Lumina on GitHub"
+                    rel="noopener noreferrer"
+                >
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+                </a>
+                <div
+                    id="install-progress"
+                    class="install-progress hidden w-full min-w-0"
+                    aria-label="Install progress"
+                    role="status"
+                    aria-live="polite"
+                >
+                    <div class="install-progress-card">
+                        <div class="install-progress-card-head">
+                            <div class="install-progress-card-label">
+                                <span class="install-progress-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path
+                                            d="M12 3v10m0 0l-3.5-3.5M12 13l3.5-3.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"
+                                            stroke="currentColor"
+                                            stroke-width="1.8"
+                                            stroke-linecap="round"
+                                            stroke-linejoin="round"
+                                        />
+                                    </svg>
+                                </span>
+                                <span class="install-progress-eyebrow">Update</span>
+                            </div>
+                            <span id="install-progress-percent" class="install-progress-pct" translate="no">—</span>
+                            <button id="install-progress-dismiss" type="button" class="install-progress-dismiss" title="Dismiss" aria-label="Dismiss install progress">×</button>
+                        </div>
+                        <div class="install-progress-track" aria-hidden="true">
+                            <div id="install-progress-fill" class="install-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <p id="install-progress-detail" class="install-progress-detail" title=""></p>
+                    </div>
+                </div>
+    </footer>
 
     <script type="module" src="/src/main.js"></script>
 
