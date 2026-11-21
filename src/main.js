@@ -10,6 +10,7 @@
             openDocumentWindow,
             reportWindowDocument
         } from './documentWindow.ts';
+        import { isMacOS, releasePageUrl } from './platform.ts';
         import { relaunch } from '@tauri-apps/plugin-process';
         import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { compareVersions, isInstallableFromGitHub, parseVersion, selectLatestUpdateTag } from './update.js';
@@ -3557,6 +3558,13 @@ async function checkForUpdate({ background = false, force = false } = {}) {
                 setUpdateStatus('Check for updates first.');
                 return;
             }
+            // install.sh builds a macOS app; elsewhere, download the release build.
+            if (!isMacOS) {
+                const url = releasePageUrl(latestReleaseTag);
+                setUpdateStatus(`Download Lumina ${latestReleaseTag} from the release page.`);
+                invoke('open_external_url', { url }).catch(() => window.open(url, '_blank'));
+                return;
+            }
 
             const sameVersion = compareVersions(latestReleaseTag, currentVersion) === 0;
             const confirmed = window.confirm(
@@ -3589,6 +3597,10 @@ async function checkForUpdate({ background = false, force = false } = {}) {
         }
 
         async function installCurrentCheckout() {
+            if (!isMacOS) {
+                setUpdateStatus('Installing from a local build is only supported on macOS.');
+                return;
+            }
             if (!currentCheckoutInstallCommand) {
                 setUpdateStatus('Local checkout install is only available in development builds.');
                 return;

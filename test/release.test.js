@@ -6,6 +6,7 @@ import {
   readIndexBadgeVersion,
   RELEASE_FILES,
   releaseCommandPlan,
+  releaseNotes,
   resolveReleaseVersion
 } from "../scripts/release.mjs";
 
@@ -71,4 +72,12 @@ test("readIndexBadgeVersion reads semver from the version button", () => {
   const version = readIndexBadgeVersion();
   assert.match(version, /^\d+\.\d+\.\d+$/);
   assert.equal(version, JSON.parse(fs.readFileSync("package.json", "utf8")).version);
+});
+
+test("release notes mark Windows and Linux builds as experimental", () => {
+  const notes = releaseNotes("v0.2.5");
+  assert.match(notes, /^Release v0\.2\.5/);
+  assert.match(notes, /macOS\*\* \(supported\)/);
+  assert.match(notes, /Windows\*\* \(experimental\)/);
+  assert.match(notes, /Linux\*\* \(experimental\)/);
 });

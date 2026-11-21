@@ -1,0 +1,87 @@
+name: Release builds
+
+# `just release` publishes a GitHub release; this builds the app for macOS,
+# Windows, and Linux and attaches the installers to it. Run it by hand
+# (Actions > Release builds > Run workflow) to rebuild an existing tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build, e.g. v0.6.0
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (Apple silicon + Intel)
+            platform: macos-latest
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: --target universal-apple-darwin
+          - name: Linux
+            platform: ubuntu-22.04
+            rust-targets: ""
+            args: ""
+          - name: Windows
+            platform: windows-latest
+            rust-targets: ""
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Install Linux system libraries for Tauri
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Builds the bundles (.dmg / .msi + .exe / .deb + .AppImage + .rpm) and
+      # uploads them to the existing release for TAG. Unsigned for now, so
+      # macOS Gatekeeper and Windows SmartScreen warn on first launch.
+      - name: Build and upload
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ env.TAG }}
+          releaseName: Lumina ${{ env.TAG }}
+          tauriScript: pnpm tauri
+          args: ${{ matrix.args }}

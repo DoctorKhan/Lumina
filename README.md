@@ -19,8 +19,25 @@ task shortcuts used to build and ship Lumina.
 - Includes optional side panes for an embedded terminal and a Claude workflow for
   sending context and pulling edited content back into Lumina.
 - Builds into a Tauri desktop app with macOS file association support.
+- Opens each document in its own native macOS tab.
 
 ## Install
+
+### Platform support
+
+| Platform | Status | How to install |
+|---|---|---|
+| macOS (Apple silicon and Intel) | **Supported** | Installer script below, or the `.dmg` from [Releases](https://github.com/DoctorKhan/Lumina/releases) |
+| Windows | **Experimental** | `.msi` or `-setup.exe` from [Releases](https://github.com/DoctorKhan/Lumina/releases) |
+| Linux | **Experimental** | `.AppImage`, `.deb`, or `.rpm` from [Releases](https://github.com/DoctorKhan/Lumina/releases) |
+
+Windows and Linux builds are produced by CI on every release but are lightly
+tested. Known differences there: documents open as separate windows instead of
+native tabs, and the in-app update/install button is macOS-only (download new
+versions from Releases). Release builds are not code-signed yet, so macOS
+Gatekeeper and Windows SmartScreen warn the first time you open the app.
+
+### macOS installer script
 
 On macOS, the public installer clones or updates the managed checkout in
 `~/.lumina`, installs dependencies, builds the app, copies `Lumina.app` to

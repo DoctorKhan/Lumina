@@ -230,9 +230,25 @@ pub fn validate_model_name(model: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `https://github.com/DoctorKhan/Lumina/releases/tag/vX.Y.Z`: where Windows and
+/// Linux users download updates.
+fn is_release_page_url(url: &str) -> bool {
+    let Some(tag) = url
+        .strip_prefix(ALLOWED_EXTERNAL_URL)
+        .and_then(|rest| rest.strip_prefix("/releases/tag/v"))
+    else {
+        return false;
+    };
+    let parts: Vec<&str> = tag.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.len() <= 6 && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
 pub fn validate_external_url(url: &str) -> Result<(), String> {
     let url = url.trim();
-    if url != ALLOWED_EXTERNAL_URL {
+    if url != ALLOWED_EXTERNAL_URL && !is_release_page_url(url) {
         audit_ipc("external-url", url, false);
         return Err("External URL is not allowed.".to_string());
     }
@@ -387,6 +403,19 @@ mod tests {
     fn external_url_is_allowlisted() {
         assert!(validate_external_url("https://evil.example").is_err());
         assert!(validate_external_url(ALLOWED_EXTERNAL_URL).is_ok());
+        assert!(validate_external_url(
+            "https://github.com/DoctorKhan/Lumina/releases/tag/v0.6.1"
+        )
+        .is_ok());
+        for bad in [
+            "https://github.com/DoctorKhan/Lumina/releases/tag/v0.6",
+            "https://github.com/DoctorKhan/Lumina/releases/tag/v0.6.1/../../x",
+            "https://github.com/DoctorKhan/Lumina/releases/tag/v0.6.1?x=1",
+            "https://github.com/DoctorKhan/Lumina/releases/tag/latest",
+            "https://github.com/DoctorKhan/Luminax/releases/tag/v0.6.1",
+        ] {
+            assert!(validate_external_url(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

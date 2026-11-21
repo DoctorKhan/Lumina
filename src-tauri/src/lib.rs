@@ -680,56 +680,73 @@ fn expand_user_path(path: &str, base_dir: Option<&PathBuf>) -> PathBuf {
     path
 }
 
-fn terminal_path() -> String {
-    let mut paths = Vec::new();
-    let mut seen = HashSet::new();
+/// The user's home directory: `HOME`, or `USERPROFILE` on Windows.
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
 
-    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
-        for path in [
-            home.join(".volta/bin"),
-            home.join(".local/bin"),
-            home.join(".cargo/bin"),
-            home.join(".bun/bin"),
-        ] {
-            if path.is_dir() {
-                let path = path.to_string_lossy().to_string();
-                if seen.insert(path.clone()) {
+/// Login shell for terminal tabs: `$SHELL` on macOS/Linux (zsh or bash if
+/// unset), PowerShell on Windows.
+fn default_shell() -> String {
+    if cfg!(windows) {
+        return "powershell.exe".to_string();
+    }
+    env::var("SHELL").unwrap_or_else(|_| {
+        if cfg!(target_os = "macos") {
+            "/bin/zsh".to_string()
+        } else {
+            "/bin/bash".to_string()
+        }
+    })
+}
+
+/// PATH for child processes. GUI apps on macOS start with a minimal PATH, so
+/// common user and Homebrew bin dirs are put first; the inherited PATH follows.
+fn terminal_path() -> String {
+    let mut paths: Vec<PathBuf> = Vec::new();
+
+    if cfg!(unix) {
+        if let Some(home) = home_dir() {
+            for path in [
+                home.join(".volta/bin"),
+                home.join(".local/bin"),
+                home.join(".cargo/bin"),
+                home.join(".bun/bin"),
+            ] {
+                if path.is_dir() {
                     paths.push(path);
                 }
             }
         }
-    }
-
-    for path in [
-        "/opt/homebrew/bin",
-        "/opt/homebrew/sbin",
-        "/usr/local/bin",
-        "/usr/local/sbin",
-        "/usr/bin",
-        "/bin",
-        "/usr/sbin",
-        "/sbin",
-    ] {
-        if seen.insert(path.to_string()) {
-            paths.push(path.to_string());
+        for path in [
+            "/opt/homebrew/bin",
+            "/opt/homebrew/sbin",
+            "/usr/local/bin",
+            "/usr/local/sbin",
+            "/usr/bin",
+            "/bin",
+            "/usr/sbin",
+            "/sbin",
+        ] {
+            paths.push(PathBuf::from(path));
         }
     }
 
-    if let Ok(existing_path) = env::var("PATH") {
-        for path in env::split_paths(&existing_path) {
-            let path = path.to_string_lossy().to_string();
-            if seen.insert(path.clone()) {
-                paths.push(path);
-            }
-        }
+    if let Some(existing_path) = env::var_os("PATH") {
+        paths.extend(env::split_paths(&existing_path));
     }
 
-    paths.join(":")
+    let mut seen = HashSet::new();
+    paths.retain(|path| seen.insert(path.clone()));
+    env::join_paths(paths)
+        .map(|joined| joined.to_string_lossy().to_string())
+        .unwrap_or_else(|_| env::var("PATH").unwrap_or_default())
 }
 
 fn default_cwd() -> PathBuf {
-    env::var_os("HOME")
-        .map(PathBuf::from)
+    home_dir()
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("/")))
 }
 
@@ -947,8 +964,7 @@ fn terminal_spawn(
         return Err("Terminal tab id is required.".to_string());
     }
 
-    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-    let command = CommandBuilder::new(shell);
+    let command = CommandBuilder::new(default_shell());
     let cwd = state
         .cwd
         .lock()

@@ -156,6 +156,23 @@ export const RELEASE_FILES = [
   "index.html",
 ];
 
+/** Release page text. Installers are attached by .github/workflows/release.yml. */
+export function releaseNotes(tag) {
+  return [
+    `Release ${tag}`,
+    "",
+    "Downloads (attached below once the build workflow finishes, ~15 min):",
+    "",
+    "- **macOS** (supported): `.dmg`, universal for Apple silicon and Intel",
+    "- **Windows** (experimental): `.msi` or `-setup.exe`",
+    "- **Linux** (experimental): `.AppImage`, `.deb`, or `.rpm`",
+    "",
+    "Windows and Linux builds are new and lightly tested: each tab opens as a",
+    "separate window, and in-app updates are macOS-only. Builds are unsigned, so",
+    "macOS Gatekeeper and Windows SmartScreen warn on first launch.",
+  ].join("\n");
+}
+
 export function releaseCommandPlan({ branch, tag, nextVersion }) {
   return [
     // Refresh only Lumina's own entry in Cargo.lock. `generate-lockfile` would
@@ -177,7 +194,7 @@ export function releaseCommandPlan({ branch, tag, nextVersion }) {
         "--title",
         `Lumina ${tag}`,
         "--notes",
-        `Release ${tag}`,
+        releaseNotes(tag),
       ],
     ],
   ];
