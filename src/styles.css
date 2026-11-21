@@ -423,22 +423,7 @@ body {
     color: #94a3b8;
 }
 
-.filename-copy-btn {
-    flex: 0 0 auto;
-    border: 1px solid #334155;
-    border-radius: 0.3rem;
-    background: #1e293b;
-    color: #94a3b8;
-    font-size: 0.78rem;
-    line-height: 1;
-    padding: 0.2rem 0.35rem;
-    cursor: pointer;
-}
 
-.filename-copy-btn:hover {
-    color: #f8fafc;
-    border-color: #475569;
-}
 
 .filename-path-editor {
     display: flex;

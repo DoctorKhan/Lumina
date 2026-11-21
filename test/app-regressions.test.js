@@ -171,7 +171,12 @@ test("editor metadata bar leads with the filename, then dimmed dir, with toast a
   assert.match(html, /filename-display-wrap/);
   assert.match(html, /id="filename-name"/);
   assert.match(html, /id="filename-dir"/);
-  assert.match(html, /id="filename-copy-btn"/);
+  // Rare file actions live in menus, not the toolbar.
+  assert.doesNotMatch(html, /id="(filename-copy-btn|reload-file-btn|fix-latex-btn)"/);
+  assert.match(rust, /"Revert to Saved"/);
+  assert.match(rust, /"Copy Path", Some\("CmdOrCtrl\+Alt\+C"\)/);
+  assert.match(rust, /"Convert LaTeX Delimiters"/);
+  assert.match(main, /case 'lumina_revert':\s*void reloadCurrentFile\(\)/);
   assert.match(html, /id="filename-path-input"/);
   assert.match(html, /id="filename-path-toast"/);
   // Filename leads bold and never shrinks; the directory is what truncates.

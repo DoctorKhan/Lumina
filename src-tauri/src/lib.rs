@@ -43,6 +43,9 @@ const MENU_OPEN_RECENT_FILE_PREFIX: &str = "lumina_open_recent_file:";
 const MENU_NO_RECENT_FILES: &str = "lumina_no_recent_files";
 const MENU_SAVE: &str = "lumina_save";
 const MENU_SAVE_AS: &str = "lumina_save_as";
+const MENU_REVERT: &str = "lumina_revert";
+const MENU_COPY_PATH: &str = "lumina_copy_path";
+const MENU_CONVERT_LATEX: &str = "lumina_convert_latex";
 const MENU_EXPORT_PDF: &str = "lumina_export_pdf";
 const MENU_EXPORT_PDF_AS: &str = "lumina_export_pdf_as";
 const MENU_UNDO: &str = "lumina_undo";
@@ -399,6 +402,9 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
     let recent_files_menu = build_recent_files_menu(manager, recent_file_paths)?;
     let save = menu_item(manager, MENU_SAVE, "Save", Some("CmdOrCtrl+S"))?;
     let save_as = menu_item(manager, MENU_SAVE_AS, "Save As…", Some("CmdOrCtrl+Shift+S"))?;
+    let revert = menu_item(manager, MENU_REVERT, "Revert to Saved", None)?;
+    let copy_path = menu_item(manager, MENU_COPY_PATH, "Copy Path", Some("CmdOrCtrl+Alt+C"))?;
+    let convert_latex = menu_item(manager, MENU_CONVERT_LATEX, "Convert LaTeX Delimiters", None)?;
     let export_pdf = menu_item(
         manager,
         MENU_EXPORT_PDF,
@@ -485,6 +491,9 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .close_window_with_text("Close Tab")
         .item(&save)
         .item(&save_as)
+        .item(&revert)
+        .separator()
+        .item(&copy_path)
         .separator()
         .item(&export_pdf)
         .item(&export_pdf_as)
@@ -503,6 +512,8 @@ fn build_app_menu<R: Runtime, M: Manager<R>>(
         .separator()
         .item(&copy_html)
         .select_all()
+        .separator()
+        .item(&convert_latex)
         .build()?;
 
     let view_menu = SubmenuBuilder::new(manager, "View")
@@ -561,6 +572,9 @@ fn is_lumina_menu_id(id: &str) -> bool {
                 | MENU_OPEN_LAST_FILE
                 | MENU_SAVE
                 | MENU_SAVE_AS
+                | MENU_REVERT
+                | MENU_COPY_PATH
+                | MENU_CONVERT_LATEX
                 | MENU_EXPORT_PDF
                 | MENU_EXPORT_PDF_AS
                 | MENU_UNDO

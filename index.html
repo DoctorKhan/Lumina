@@ -17,7 +17,6 @@
                                 <span id="filename-name" class="filename-name">Untitled</span>
                                 <span id="filename-dir" class="filename-dir"></span>
                             </button>
-                            <button type="button" id="filename-copy-btn" class="filename-copy-btn hidden" title="Copy full path" aria-label="Copy full path">⎘</button>
                         </div>
                         <div id="filename-path-editor" class="filename-path-editor hidden">
                             <input id="filename-path-input" class="filename-path-input" type="text" spellcheck="false" autocomplete="off" aria-label="File path" />
@@ -26,9 +25,6 @@
                         </div>
                         <ul id="filename-path-suggestions" class="filename-path-suggestions hidden" role="listbox" aria-label="Path suggestions"></ul>
                     </div>
-                    <button id="reload-file-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Reload from disk — shows a diff when the file differs">Reload</button>
-                    <button id="fix-latex-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors" title="Normalize LaTeX delimiters in source (converts \[…\] and \(…\) to $$ and $)">Fix LaTeX</button>
-                    <button id="toggle-editor-mode-btn" type="button" class="shrink-0 rounded px-2 py-0.5 text-[11px] font-semibold normal-case tracking-normal text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-colors hidden" title="Switch editor mode (textarea / CodeMirror 6)">Editor: textarea</button>
         </div>
         <div class="app-toolbar-panes" aria-label="Pane controls">
             <button

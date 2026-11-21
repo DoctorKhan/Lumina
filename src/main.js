@@ -162,8 +162,6 @@ import {
             clearTimeout(perfAutoSaveTimer);
             perfAutoSaveTimer = setTimeout(flushPerfLogNow, 500);
         }
-const fixLatexBtn = document.getElementById('fix-latex-btn');
-const reloadFileBtn = document.getElementById('reload-file-btn');
 const documentAlertBanner = document.getElementById('document-alert-banner');
 const documentAlertTitle = document.getElementById('document-alert-title');
 const documentAlertMessage = document.getElementById('document-alert-message');
@@ -200,7 +198,6 @@ editorInputWrap?.appendChild(editorScrollMeasure);
         const filenameDisplay = document.getElementById('filename-display');
 const filenameName = document.getElementById('filename-name');
 const filenameDir = document.getElementById('filename-dir');
-const filenameCopyBtn = document.getElementById('filename-copy-btn');
 const filenamePathView = document.getElementById('filename-path-view');
 const filenamePathEditor = document.getElementById('filename-path-editor');
 const filenamePathInput = document.getElementById('filename-path-input');
@@ -1167,14 +1164,12 @@ const maxRecentFilePaths = 10;
                     filenameName.textContent = basename(path);
                     filenameDir.textContent = formatPathForDisplay(dirname(path));
                     filenameDisplay.dataset.fullPath = path;
-                    filenameDisplay.title = `${path}\n\nClick to open another file · ⎘ copies path`;
-                    filenameCopyBtn.classList.remove('hidden');
+                    filenameDisplay.title = `${path}\n\nClick to open another file`;
                 } else {
                     filenameName.textContent = label;
                     filenameDir.textContent = '';
                     delete filenameDisplay.dataset.fullPath;
                     filenameDisplay.title = label || '';
-                    filenameCopyBtn.classList.add('hidden');
                 }
             });
         }
@@ -1299,11 +1294,6 @@ const maxRecentFilePaths = 10;
         filenameDisplay.addEventListener('click', (event) => {
             event.preventDefault();
             openFilenamePathNavigator();
-        });
-
-        filenameCopyBtn.addEventListener('click', (event) => {
-            event.stopPropagation();
-            void copyFilenamePath();
         });
 
         filenamePathOpenBtn.addEventListener('click', () => {
@@ -1483,8 +1473,6 @@ function writeRecentFilePaths(paths) {
         // to know about all three.
         function notifyActiveFileChanged() {
             syncWindowDocument();
-            // Reload only makes sense for a file that exists on disk.
-            reloadFileBtn.classList.toggle('hidden', !currentFilePath);
             if (typeof highlightCurrentFileRow === 'function') highlightCurrentFileRow();
             updateClaudeWorkspaceLabel();
             updateAgentWorkspaceLabel();
@@ -5946,6 +5934,15 @@ async function replaceSelectionFromClipboard() {
                 case 'lumina_save_as':
                     void saveDocumentAs();
                     break;
+                case 'lumina_revert':
+                    void reloadCurrentFile();
+                    break;
+                case 'lumina_copy_path':
+                    void copyFilenamePath();
+                    break;
+                case 'lumina_convert_latex':
+                    convertLatexDelimiters();
+                    break;
                 case 'lumina_export_pdf':
                     void exportToPdf();
                     break;
@@ -6141,9 +6138,6 @@ async function reloadCurrentFile() {
     }
 }
 
-reloadFileBtn.addEventListener('click', () => {
-    void reloadCurrentFile();
-});
 
 documentAlertPrimaryBtn?.addEventListener('click', () => {
     if (documentAlertMode === 'disk-changed') {
@@ -6185,7 +6179,8 @@ documentAlertDismissBtn?.addEventListener('click', () => {
     hideDocumentAlertBanner();
 });
 
-fixLatexBtn.addEventListener('click', () => {
+// Edit > Convert LaTeX Delimiters: \[…\] and \(…\) become $$ and $.
+function convertLatexDelimiters() {
     const fixed = normalizeEscapedLatexDelimiters(normalizeMathBlocks(editor.value));
     if (fixed === editor.value) {
         setUpdateStatus('No LaTeX formatting changes needed.');
@@ -6202,7 +6197,7 @@ fixLatexBtn.addEventListener('click', () => {
     scheduleDirtyIndicatorRefresh();
     schedulePreviewUpdate();
     setUpdateStatus('LaTeX delimiters normalized.');
-});
+}
         closeTerminalBtn.addEventListener('click', () => toggleTerminal(false));
         closeClaudeBtn.addEventListener('click', () => toggleClaude(false));
 document.addEventListener('click', (event) => {
