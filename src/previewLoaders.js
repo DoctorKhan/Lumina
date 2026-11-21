@@ -89,6 +89,11 @@ const MERMAID_INIT = {
     startOnLoad: false,
     securityLevel: 'strict',
     theme: 'base',
+    // Mermaid 11 reads htmlLabels from the top level; `flowchart.htmlLabels`
+    // alone is ignored, so node labels were emitted as <foreignObject> HTML,
+    // which sanitizePreviewHtml strips -> empty node boxes. Keep both so labels
+    // render as plain SVG <text>.
+    htmlLabels: false,
     flowchart: {
         curve: 'basis',
         htmlLabels: false,

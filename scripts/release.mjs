@@ -147,10 +147,21 @@ export function updateVersions(version) {
   fs.writeFileSync(indexPath, updatedIndex);
 }
 
+/** Files a release edits; only these are staged, never unrelated work. */
+export const RELEASE_FILES = [
+  "package.json",
+  "src-tauri/tauri.conf.json",
+  "src-tauri/Cargo.toml",
+  "src-tauri/Cargo.lock",
+  "index.html",
+];
+
 export function releaseCommandPlan({ branch, tag, nextVersion }) {
   return [
-    ["cargo", ["generate-lockfile", "--manifest-path", "src-tauri/Cargo.toml"]],
-    ["git", ["add", "-A"]],
+    // Refresh only Lumina's own entry in Cargo.lock. `generate-lockfile` would
+    // re-resolve and upgrade every dependency, forcing a full Rust recompile.
+    ["cargo", ["update", "--workspace", "--manifest-path", "src-tauri/Cargo.toml"]],
+    ["git", ["add", "--", ...RELEASE_FILES]],
     ["git", ["commit", "-m", `chore(release): v${nextVersion}`]],
     ["git", ["tag", "-a", tag, "-m", `Release ${tag}`]],
     ["git", ["push", "origin", branch]],
@@ -214,6 +225,11 @@ try {
   const branch = run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { capture: true }).trim();
   if (branch === "HEAD") {
     throw new Error("Detached HEAD is not supported for release.");
+  }
+
+  const dirty = run("git", ["status", "--porcelain", "--untracked-files=no"], { capture: true }).trim();
+  if (dirty) {
+    throw new Error(`Commit or stash tracked changes before releasing:\n${dirty}`);
   }
 
   const currentVersion = readJson("package.json").version;

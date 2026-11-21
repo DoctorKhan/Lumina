@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   assertVersionsInSync,
   readIndexBadgeVersion,
+  RELEASE_FILES,
   releaseCommandPlan,
   resolveReleaseVersion
 } from "../scripts/release.mjs";
@@ -15,10 +16,11 @@ test("resolveReleaseVersion bumps patch, minor, major, and exact versions", () =
   assert.equal(resolveReleaseVersion("0.2.4", "2.1.0"), "2.1.0");
 });
 
-test("releaseCommandPlan regenerates Cargo.lock before staging", () => {
+test("releaseCommandPlan refreshes only Lumina's Cargo.lock entry and stages only release files", () => {
   const plan = releaseCommandPlan({ branch: "main", tag: "v0.2.5", nextVersion: "0.2.5" });
-  assert.deepEqual(plan[0], ["cargo", ["generate-lockfile", "--manifest-path", "src-tauri/Cargo.toml"]]);
-  assert.deepEqual(plan[1], ["git", ["add", "-A"]]);
+  assert.deepEqual(plan[0], ["cargo", ["update", "--workspace", "--manifest-path", "src-tauri/Cargo.toml"]]);
+  assert.deepEqual(plan[1], ["git", ["add", "--", ...RELEASE_FILES]]);
+  assert.ok(!plan.some(([, args]) => args.includes("-A") || args.includes("generate-lockfile")));
 });
 
 test("releaseCommandPlan publishes a GitHub Release marked latest", () => {
