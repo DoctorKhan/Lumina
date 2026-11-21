@@ -12,7 +12,8 @@
         } from './documentWindow.ts';
         import { isMacOS, releasePageUrl } from './platform.ts';
         import { relaunch } from '@tauri-apps/plugin-process';
-        import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+        import { open as openDialog, save as saveDialog, message as messageDialog, ask as askDialog } from '@tauri-apps/plugin-dialog';
+        import { updateCheckDialog } from './updateCheckDialog.ts';
 import { compareVersions, isInstallableFromGitHub, parseVersion, selectLatestUpdateTag } from './update.js';
         import {
             createInstallProgressState,
@@ -377,6 +378,8 @@ let claudeWorkspaceFilePath = null;
         // actually opened (where the Develop Lumina feature lives), and only once.
         let sourceCheckoutInfoLoaded = false;
         let latestReleaseTag = null;
+        /** @type {import('./updateCheckDialog.ts').UpdateCheckOutcome | null} */
+        let lastUpdateCheckOutcome = null;
         let updateCheckInProgress = false;
         let updateCheckPromise = null;
         let currentCheckoutInstallCommand = null;
@@ -3455,6 +3458,7 @@ async function checkForUpdate({ background = false, force = false } = {}) {
 
             updateCheckInProgress = true;
             latestReleaseTag = null;
+            lastUpdateCheckOutcome = null;
     hideInstallUpdateBadge();
     if (!background) {
         setUpdateStatus('Checking for updates…');
@@ -3465,6 +3469,7 @@ async function checkForUpdate({ background = false, force = false } = {}) {
                 const latestTagInfo = await resolveLatestUpdateTag();
 
                 if (!latestTagInfo) {
+                    lastUpdateCheckOutcome = { kind: 'none' };
                     if (!background) {
                         setUpdateStatus('No semver releases or tags found in the git repository.');
                     }
@@ -3473,6 +3478,11 @@ async function checkForUpdate({ background = false, force = false } = {}) {
 
                 const { tag: latestTag, source } = latestTagInfo;
                 const versionCmp = compareVersions(latestTag, currentVersion);
+                lastUpdateCheckOutcome = {
+                    kind: versionCmp > 0 ? 'available' : 'current',
+                    latestTag,
+                    currentVersion
+                };
                 if (isInstallableFromGitHub(latestTag, currentVersion)) {
                     latestReleaseTag = latestTag;
                     if (versionCmp > 0) {
@@ -3498,6 +3508,7 @@ async function checkForUpdate({ background = false, force = false } = {}) {
             }
             return false;
             } catch (error) {
+        lastUpdateCheckOutcome = { kind: 'failed', error: String(error?.message || error) };
         hideInstallUpdateBadge();
         if (!background) {
             setUpdateStatus(`Update check failed: ${error?.message || error}`);
@@ -3514,6 +3525,29 @@ async function checkForUpdate({ background = false, force = false } = {}) {
 
         async function runUpdateCheckFromMenu() {
             await checkForUpdate({ background: false, force: true });
+            const outcome = lastUpdateCheckOutcome ?? {
+                kind: 'failed',
+                error: updateStatus?.textContent || 'The update check did not finish.'
+            };
+            const dialog = updateCheckDialog(outcome);
+            try {
+                if (dialog.offerInstall && latestReleaseTag) {
+                    const install = await askDialog(dialog.message, {
+                        title: dialog.title,
+                        kind: 'info',
+                        okLabel: 'Install',
+                        cancelLabel: 'Later'
+                    });
+                    if (install) await installDetectedUpdate({ confirmed: true });
+                } else {
+                    await messageDialog(dialog.message, {
+                        title: dialog.title,
+                        kind: outcome.kind === 'failed' ? 'error' : 'info'
+                    });
+                }
+            } catch (_) {
+                window.alert(`${dialog.title}\n\n${dialog.message}`);
+            }
         }
 
         async function runInstallUpdateFromMenu() {
@@ -3541,7 +3575,7 @@ async function checkForUpdate({ background = false, force = false } = {}) {
             }
         }
 
-        async function installDetectedUpdate() {
+        async function installDetectedUpdate({ confirmed: alreadyConfirmed = false } = {}) {
             if (!latestReleaseTag) {
                 setUpdateStatus('Check for updates first.');
                 return;
@@ -3555,7 +3589,7 @@ async function checkForUpdate({ background = false, force = false } = {}) {
             }
 
             const sameVersion = compareVersions(latestReleaseTag, currentVersion) === 0;
-            const confirmed = window.confirm(
+            const confirmed = alreadyConfirmed || window.confirm(
                 (sameVersion
                     ? `Reinstall Lumina ${latestReleaseTag} from GitHub?`
                     : `Install Lumina ${latestReleaseTag} from GitHub?`) +
