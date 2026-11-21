@@ -62,3 +62,25 @@ test("completed install steps update both event log and local model", () => {
   assert.match(log, /"step_key":"js_deps"/);
   assert.match(log, /"duration_seconds":4/);
 });
+
+function planSteps(env) {
+  return runInstallFunction(
+    'source ./install.sh; echo "$PREBUILT|${INSTALL_STEP_KEYS[*]}|$(prebuilt_dmg_url)"',
+    { LUMINA_INSTALL_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), "lumina-plan-")), ...env }
+  );
+}
+
+test("macOS release installs download the prebuilt app instead of compiling", { skip: process.platform !== "darwin" }, () => {
+  const [prebuilt, steps, url] = planSteps({ GIT_REF: "v1.2.3" }).split("|");
+  assert.equal(prebuilt, "1");
+  assert.equal(steps, "download_app copy_app cli_launcher file_associations");
+  assert.equal(url, "https://github.com/DoctorKhan/Lumina/releases/download/v1.2.3/Lumina_1.2.3_universal.dmg");
+});
+
+test("branch installs, local rebuilds, and LUMINA_FROM_SOURCE build from source", () => {
+  for (const env of [{ GIT_REF: "origin/main" }, { GIT_REF: "v1.2.3", LUMINA_FROM_SOURCE: "1" }, { GIT_REF: "v1.2.3", LUMINA_LOCAL_BUILD: "1" }]) {
+    const [prebuilt, steps] = planSteps(env).split("|");
+    assert.equal(prebuilt, "0", JSON.stringify(env));
+    assert.match(steps, /tauri_build/, JSON.stringify(env));
+  }
+});

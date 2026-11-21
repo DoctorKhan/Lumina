@@ -3086,7 +3086,7 @@ function hideInstallUpdateBadge() {
         }
 
         function releaseInstallCommand(tagName) {
-            return `echo "Downloading the Lumina installer (build steps can take many minutes)…" && curl -fL --connect-timeout 30 --retry 2 ${publicInstallerUrl} | GIT_REF=${shellQuote(tagName)} bash`;
+            return `echo "Downloading the Lumina installer…" && curl -fL --connect-timeout 30 --retry 2 ${publicInstallerUrl} | GIT_REF=${shellQuote(tagName)} bash`;
         }
 
         function waitForTerminalToSettle(ms) {
@@ -3560,8 +3560,8 @@ async function checkForUpdate({ background = false, force = false } = {}) {
                     ? `Reinstall Lumina ${latestReleaseTag} from GitHub?`
                     : `Install Lumina ${latestReleaseTag} from GitHub?`) +
                     '\n\n' +
-                    'This runs the public install.sh and rebuilds the app locally. ' +
-                    'The first build often takes many minutes; wait until it finishes (do not treat a quiet terminal as a hang).'
+                    'This downloads the prebuilt app from the GitHub release, usually in under a minute. ' +
+                    'If the release has no download, it rebuilds the app from source instead, which can take many minutes.'
             );
             if (!confirmed) return;
 

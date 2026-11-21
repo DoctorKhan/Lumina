@@ -36,18 +36,41 @@ GLOBAL_MODEL_BASENAME="scripts/install-estimates-global.tsv"
 INSTALL_STEP_KEYS=()
 INSTALL_TOTAL_STEPS=0
 
-if [[ -n "$LUMINA_LOCAL_BUILD" ]]; then
-  # No clone/fetch/reset — build whatever is checked out locally.
-  INSTALL_STEP_KEYS=(js_deps tauri_icons tauri_build)
-elif [[ -d "$INSTALL_DIR/.git" ]]; then
-  INSTALL_STEP_KEYS=(checkout_update fetch_refs reset_checkout js_deps tauri_icons tauri_build)
-else
-  INSTALL_STEP_KEYS=(checkout_clone fetch_refs reset_checkout js_deps tauri_icons tauri_build)
+# Release installs on macOS (GIT_REF=vX.Y.Z, as the in-app updater passes)
+# download the prebuilt app attached to that GitHub release instead of
+# compiling: seconds instead of minutes. Any download problem falls back to a
+# source build; LUMINA_FROM_SOURCE=1 forces one.
+GITHUB_REPO="${GITHUB_REPO:-DoctorKhan/Lumina}"
+PREBUILT=0
+if [[ "$OSTYPE" == "darwin"* && -z "$LUMINA_LOCAL_BUILD" && "${LUMINA_FROM_SOURCE:-0}" != "1" \
+  && "$GIT_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  PREBUILT=1
 fi
-if [[ "$OSTYPE" == "darwin"* ]]; then
-  INSTALL_STEP_KEYS+=(copy_app cli_launcher file_associations)
-fi
-INSTALL_TOTAL_STEPS="${#INSTALL_STEP_KEYS[@]}"
+
+# Universal (Apple silicon + Intel) .dmg that .github/workflows/release.yml
+# attaches to each release; tauri-action names it <product>_<version>_universal.dmg.
+prebuilt_dmg_url() {
+  printf 'https://github.com/%s/releases/download/%s/Lumina_%s_universal.dmg' \
+    "$GITHUB_REPO" "$GIT_REF" "${GIT_REF#v}"
+}
+
+plan_install_steps() {
+  if [[ "$PREBUILT" == "1" ]]; then
+    INSTALL_STEP_KEYS=(download_app)
+  elif [[ -n "$LUMINA_LOCAL_BUILD" ]]; then
+    # No clone/fetch/reset — build whatever is checked out locally.
+    INSTALL_STEP_KEYS=(js_deps tauri_icons tauri_build)
+  elif [[ -d "$INSTALL_DIR/.git" ]]; then
+    INSTALL_STEP_KEYS=(checkout_update fetch_refs reset_checkout js_deps tauri_icons tauri_build)
+  else
+    INSTALL_STEP_KEYS=(checkout_clone fetch_refs reset_checkout js_deps tauri_icons tauri_build)
+  fi
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    INSTALL_STEP_KEYS+=(copy_app cli_launcher file_associations)
+  fi
+  INSTALL_TOTAL_STEPS="${#INSTALL_STEP_KEYS[@]}"
+}
+plan_install_steps
 # Bar width for plain + TTY; keep in sync for consistent %
 INSTALL_BAR_WIDTH=22
 
@@ -121,6 +144,7 @@ default_step_duration() {
     reset_checkout) echo 5 ;;
     js_deps) echo 90 ;;
     tauri_icons) echo 15 ;;
+    download_app) echo 20 ;;
     tauri_build) echo 720 ;; # often cargo link + strip on macOS; prior errs low when cold
     copy_app) echo 10 ;;
     cli_launcher) echo 2 ;;
@@ -652,6 +676,64 @@ require_command() {
     exit 1
   fi
 }
+
+# Returns non-zero (without touching /Applications) if the download, mount, or
+# bundle check fails, so the caller can fall back to a source build.
+install_prebuilt_app() {
+  local url work mount
+  url="$(prebuilt_dmg_url)"
+  work="$(mktemp -d "${TMPDIR:-/tmp}/lumina-install.XXXXXX")"
+  mount="$work/mnt"
+
+  start_step "download_app" "Downloading Lumina $GIT_REF"
+  if ! curl -fsSL --connect-timeout 30 --retry 2 -o "$work/Lumina.dmg" "$url"; then
+    echo "No prebuilt download for $GIT_REF ($url); building from source instead."
+    rm -rf "$work"
+    return 1
+  fi
+  mkdir -p "$mount"
+  if ! hdiutil attach -nobrowse -readonly -quiet -mountpoint "$mount" "$work/Lumina.dmg"; then
+    echo "Could not open the downloaded disk image; building from source instead."
+    rm -rf "$work"
+    return 1
+  fi
+  if [[ ! -d "$mount/$APP_NAME" ]]; then
+    echo "The disk image has no $APP_NAME; building from source instead."
+    hdiutil detach -quiet "$mount" || true
+    rm -rf "$work"
+    return 1
+  fi
+  finish_step "Downloaded Lumina $GIT_REF"
+
+  start_step "copy_app" "Copying app to /Applications"
+  rm -rf "/Applications/$APP_NAME"
+  ditto "$mount/$APP_NAME" "/Applications/$APP_NAME"
+  hdiutil detach -quiet "$mount" || true
+  rm -rf "$work"
+  # curl doesn't set the quarantine flag, but clear it in case a proxy or
+  # download tool did; the build is unsigned.
+  xattr -dr com.apple.quarantine "/Applications/$APP_NAME" 2>/dev/null || true
+  echo "Installed /Applications/$APP_NAME"
+  finish_step "Copied app to /Applications"
+
+  start_step "cli_launcher" "Installing CLI launcher"
+  install_cli_launcher
+  finish_step "Installed CLI launcher"
+  start_step "file_associations" "Configuring file associations"
+  associate_markdown_files
+  finish_step "Configured file associations"
+  emit_lumina_install_done_marker
+  exit 0
+}
+
+if [[ "$PREBUILT" == "1" ]]; then
+  if install_prebuilt_app; then
+    exit 0
+  fi
+  PREBUILT=0
+  INSTALL_STEP=0
+  plan_install_steps
+fi
 
 require_command git "Install git from https://git-scm.com/"
 require_command pnpm "Install pnpm from https://pnpm.io/installation"
